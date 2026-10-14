@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Flow study · Circulation lab</title><link rel="stylesheet" href="style.css"></head>
+<body>
+<header><span class="brand">F / S</span><div><p class="eyebrow">COMPUTATIONAL DESIGN · PROTOTYPE 01</p><h1>Flow study</h1></div><span class="tag">2D circulation lab</span></header>
+<main>
+<section class="intro"><h2>Small changes.<br>Different paths.</h2><p>Send people through a five-room plan. Move a doorway, repeat the same trips, and see how circulation shifts.</p></section>
+<div class="workspace">
+<aside>
+<section><h3><span>01</span> Choose destinations</h3><p>60 people per run, distributed evenly among selected rooms.</p><div id="destinations"></div></section>
+<section><h3><span>02</span> Trace movement</h3><button id="run" class="primary">Run 60 pedestrians</button><div class="row"><button id="pause" disabled>Pause</button><button id="clear">Clear current run</button></div><label class="speed">Animation speed <select id="speed"><option value="3">Slow</option><option value="8" selected>Normal</option><option value="25">Fast</option></select></label><label><input type="checkbox" id="heat" checked> Show cumulative heatmap</label><label><input type="checkbox" id="routes"> Show planned routes</label></section>
+<section><h3><span>03</span> Compare a change</h3><p>Finish a run and save it. Then move a door and rerun the same destinations.</p><button id="save" disabled>Save “before” snapshot</button><label class="edit-toggle"><input type="checkbox" id="edit"> Edit door locations</label><p id="editHelp">In edit mode, click a room’s corridor-facing wall. Or select a room and use its door slider below.</p><select id="room" aria-label="Room to edit"></select><label class="speed">Door position <input id="door" type="range" aria-label="Door position"></label><button id="reset">Restore original layout</button></section>
+</aside>
+<div class="drawing-area"><div class="plan-heading"><h3>Current layout</h3><span id="layoutLabel">Original doors</span></div><canvas id="plan" width="888" height="600" aria-label="Five-room floor plan. Use the door slider to edit without a mouse."></canvas><div class="legend"><span><i class="dot"></i> Pedestrian</span><span><i class="door-mark"></i> Door</span><span class="heat-key">Fewer visits <i></i> More visits</span></div><p id="status" role="status">Ready. Choose destinations, then run the simulation.</p><div class="metrics"><div><span>Arrivals</span><strong id="arrivals">0 / 60</strong></div><div><span>Mean route length</span><strong id="distance">—</strong></div><div><span>Peak cell visits</span><strong id="peak">0</strong></div></div>
+<section class="comparison"><div class="plan-heading"><h3>Before / after</h3><span>Shared heatmap scale</span></div><p id="comparisonText">Save a completed run to hold its layout and heatmap here.</p><canvas id="before" width="888" height="600" hidden aria-label="Saved before layout and circulation heatmap"></canvas><button id="discard" hidden>Discard saved comparison</button></section></div>
+</div><footer>MODEL NOTES · Four-direction grid A* · Equal-cost cells · One-way trips from the entrance · No crowd avoidance or congestion model. Heat indicates visits, not capacity or safety. Grid steps are illustrative, not metres.</footer>
+</main><script src="pathfinding.js"></script><script src="app.js"></script>
+</body></html>
