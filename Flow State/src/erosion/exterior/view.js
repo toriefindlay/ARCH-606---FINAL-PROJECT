@@ -62,7 +62,8 @@ export function createTrafficView(group) {
 const MIN_TEXEL = 0.06; // metres: the finest the map gets
 const MAX_TEXELS = 1200; // per side
 const HEIGHT_UNIT = 10; // the map stores height in tenths of a metre (one byte, so up to 25.5 m)
-const WALL_TOP_LIFT = 0.05; // metres a wall stands above the mass's top, so no gap shows at the roof
+const ROOF_CLEARANCE = 0.25; // metres of mass always left above a slice: a slice never cuts through the roof
+const MIN_SLICE = 0.3; // metres: a slice that would be lower than this at some spot is not cut there
 
 const heightTextureOf = (data, w, h) => {
   const t = new THREE.DataTexture(data, w, h, THREE.RedFormat, THREE.UnsignedByteType);
@@ -145,9 +146,8 @@ export function createCarveView() {
     return h00 * (1 - fx) * (1 - fz) + h10 * fx * (1 - fz) + h01 * (1 - fx) * fz + h11 * fx * fz;
   };
 
-  // Walls and ceilings of the slices. Each texel with a strand gets a ceiling at its strand's height (unless that is above the
-  // mass's roof, where the slice is open to the sky) and a wall on every side where its neighbour is lower, from the neighbour's
-  // height up to its own, never above the roof.
+  // Walls and ceilings of the slices. Each texel with a strand gets a ceiling at its strand's height and a wall on every side
+  // where its neighbour is lower, from the neighbour's height up to its own.
   function wallGeometry() {
     const { height, wear, nx, nz, t, x0, z0, bbox } = grid;
     const pos = [], nrm = [], col = [];
@@ -162,11 +162,9 @@ export function createCarveView() {
       for (let i = Math.max(0, bbox.i0 - 1); i <= Math.min(nx - 1, bbox.i1 + 1); i++) {
         const k = j * nx + i;
         if (!height[k]) continue;
-        const cx = x0 + (i + 0.5) * t, cz = z0 + (j + 0.5) * t, roof = topAt(cx, cz);
-        if (roof <= 0.3) continue; // off the edge of the mass
-        const h = height[k] / HEIGHT_UNIT, reach = Math.min(h, roof + WALL_TOP_LIFT);
+        const h = height[k] / HEIGHT_UNIT;
         const tint = wearColour(colour, wear[k] / 255), xa = x0 + i * t, xb = xa + t, za = z0 + j * t, zb = za + t;
-        if (h < roof - 0.05) quad([xa, h, za], [xb, h, za], [xb, h, zb], [xa, h, zb], [0, -1, 0], tint);
+        quad([xa, h, za], [xb, h, za], [xb, h, zb], [xa, h, zb], [0, -1, 0], tint);
         const sides = [
           [i + 1 < nx, k + 1, [xb, za], [xb, zb], [-1, 0]],
           [i > 0, k - 1, [xa, za], [xa, zb], [1, 0]],
@@ -175,9 +173,9 @@ export function createCarveView() {
         ];
         for (const [exists, nk, [ax, az], [bx, bz], [nxn, nzn]] of sides) {
           if (!exists) continue;
-          const low = Math.min(height[nk] / HEIGHT_UNIT, reach);
-          if (height[nk] >= height[k] || reach <= low) continue; // the neighbour is as tall, or the wall would be above the roof
-          quad([ax, low, az], [bx, low, bz], [bx, reach, bz], [ax, reach, az], [nxn, 0, nzn], tint);
+          if (height[nk] >= height[k]) continue; // the neighbour is as tall: its own wall (if any) covers this edge
+          const low = height[nk] / HEIGHT_UNIT;
+          quad([ax, low, az], [bx, low, bz], [bx, h, bz], [ax, h, az], [nxn, 0, nzn], tint);
         }
       }
     }
@@ -233,6 +231,16 @@ export function createCarveView() {
             if (j < j0) j0 = j;
             if (j > j1) j1 = j;
           }
+        }
+      }
+      // A slice never cuts through the roof: it stops short of the roof wherever the roof is low, and where there is no
+      // room for even a short slice (the thin rim of a rounded mass, or beyond the mass) it is not cut at all.
+      for (let j = j0; j <= j1; j++) {
+        for (let i = i0; i <= i1; i++) {
+          const k = j * nx + i;
+          if (!height[k]) continue;
+          const room = topAt(x0 + (i + 0.5) * t, z0 + (j + 0.5) * t) - ROOF_CLEARANCE;
+          height[k] = room < MIN_SLICE ? 0 : Math.min(height[k], Math.floor(room * HEIGHT_UNIT));
         }
       }
       Object.assign(bbox, { i0, i1, j0, j1 });

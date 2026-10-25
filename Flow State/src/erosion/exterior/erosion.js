@@ -5,7 +5,7 @@
 // mass, the link between those two cells is one more pass of that channel. A link is a straight piece of strand between the
 // two cells' centres of use; linked cells form continuous strands that follow the routes exactly, and routes that share
 // cells share strands. A strand starts hair-thin and only as tall as the figure that passed (a person or a car); every time
-// its channel is passed through it gets 1% wider and 1% taller.
+// its channel is passed through it gets 1% wider and 1% taller, up to twice the figure's height.
 import * as THREE from "three";
 import { createCut } from "../contract.js";
 
@@ -15,7 +15,7 @@ const GROWTH = 1.01; // each pass makes a strand this much wider
 const MAX_WIDTH = 1.2; // metres: the widest a strand's half-width gets
 const PERSON_HEIGHT = 1.7; // metres: how tall a strand is when only people have passed
 const CAR_HEIGHT = 1.5; // ... and when only cars have
-const MAX_HEIGHT = 25; // metres: the tallest a strand gets
+const MAX_HEIGHT_FACTOR = 2; // a strand never gets taller than this many times the figure's own height
 const DARKEST_PASSES = 200; // a channel passed this many times is as dark as it gets
 const GRACE = 30; // simulated seconds a channel can go unused before it starts to heal
 const HEAL_RATE = 0.15; // passes a channel loses each simulated second once it is healing
@@ -115,7 +115,7 @@ export function createErosion(scan) {
       out.push({
         ax, az, bx, bz,
         w: Math.min(MAX_WIDTH, START_WIDTH * grow) * fade,
-        h: Math.min(MAX_HEIGHT, (l.people ? PERSON_HEIGHT : CAR_HEIGHT) * grow) * fade,
+        h: (l.people ? PERSON_HEIGHT : CAR_HEIGHT) * Math.min(MAX_HEIGHT_FACTOR, grow) * fade,
         wear: Math.min(1, Math.log(1 + l.count) / Math.log(1 + DARKEST_PASSES)),
       });
     }
