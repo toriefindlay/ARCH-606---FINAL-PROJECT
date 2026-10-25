@@ -2,7 +2,7 @@ import * as THREE from "three";
 import { scene, renderer } from "../view/scene.js";
 import { groundPoint } from "../view/pick.js";
 import { state, layers } from "../core/state.js";
-import { on } from "../core/events.js";
+import { on, emit } from "../core/events.js";
 import { $ } from "../core/dom.js";
 import { registerPersist } from "../core/persist.js";
 
@@ -14,6 +14,7 @@ const DRAW_STYLE = {
   path: { width: 2.5, color: 0xd4542b, fill: 0xe9a58e, label: "Path" },
 };
 let userLines = []; // { kind, pts: Vector3[] }
+export const getUserLines = () => userLines;
 let drawKind = null;
 let draftPts = [];
 let cursor = null;
@@ -100,6 +101,7 @@ function renderDrawn() {
     g.add(ribbon, centre);
   }
   renderDrawnList();
+  emit("drawn:changed");
 }
 
 const lineLength = (pts) => pts.slice(1).reduce((s, p, i) => s + p.distanceTo(pts[i]), 0);
