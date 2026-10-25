@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Flow State</title>
+  <link rel="stylesheet" href="style.css">
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+      }
+    }
+  </script>
+</head>
+<body>
+  <canvas id="scene"></canvas>
+
+  <!-- Start screen -->
+  <section id="start" class="overlay">
+    <form id="site-form" autocomplete="off">
+      <p class="eyebrow">Flow State</p>
+      <h1>Where is the site?</h1>
+      <p class="lede">Enter the coordinates of your site. We'll build the surrounding context: roads, public space, greenery and neighbouring massings.</p>
+
+      <div class="row">
+        <label>Latitude
+          <input id="lat" inputmode="decimal" placeholder="40.7484" required>
+        </label>
+        <label>Longitude
+          <input id="lon" inputmode="decimal" placeholder="-73.9857" required>
+        </label>
+      </div>
+
+      <label>Context radius <output id="radius-out">300 m</output>
+        <input id="radius" type="range" min="100" max="600" step="50" value="300">
+      </label>
+
+      <button type="submit" class="primary">Generate context</button>
+      <p id="form-error" class="error" role="alert"></p>
+
+      <div class="presets">
+        <span>Try</span>
+        <button type="button" data-lat="40.7484" data-lon="-73.9857">Midtown NYC</button>
+        <button type="button" data-lat="48.8584" data-lon="2.2945">Paris</button>
+        <button type="button" data-lat="35.6595" data-lon="139.7005">Shibuya</button>
+        <button type="button" data-lat="51.5014" data-lon="-0.1419">London</button>
+      </div>
+      <p class="hint">Tip: paste "lat, lon" straight from Google Maps into either field.</p>
+
+      <div id="saved" class="saved hidden">
+        <h2>Saved sites</h2>
+        <ul id="saved-list"></ul>
+      </div>
+    </form>
+  </section>
+
+  <!-- Loading screen -->
+  <section id="loading" class="overlay hidden">
+    <div class="loader">
+      <p class="eyebrow" id="loading-coords"></p>
+      <ol id="steps">
+        <li data-step="fetch">Fetching map data</li>
+        <li data-step="ground">Laying out the ground</li>
+        <li data-step="lines">Drawing roads &amp; public space</li>
+        <li data-step="mass">Raising neighbouring massings</li>
+      </ol>
+      <div class="bar"><div id="bar-fill"></div></div>
+    </div>
+  </section>
+
+  <!-- HUD -->
+  <aside id="hud" class="hidden">
+    <button id="new-site" type="button">&larr; Sites</button>
+    <div class="save">
+      <input type="text" id="save-name" placeholder="Name this site" maxlength="60" aria-label="Site name">
+      <button id="save-site" type="button" class="tool">Save site</button>
+      <p id="save-status" class="hint"></p>
+    </div>
+    <div class="stats" id="stats"></div>
+    <fieldset id="draw-tools">
+      <legend>Draw</legend>
+      <div class="tools">
+        <button type="button" class="tool" data-draw="road">+ Road</button>
+        <button type="button" class="tool" data-draw="path">+ Path</button>
+      </div>
+      <p id="draw-help" class="hint">Pick a tool, then click the ground to place points. Double-click or Enter to finish, Backspace to undo a point, Esc to cancel.</p>
+      <ul id="drawn-list"></ul>
+    </fieldset>
+    <fieldset id="sun-panel" class="hidden">
+      <legend>Sun</legend>
+      <label>Date <input type="date" id="sun-date"></label>
+      <label>Solar time <output id="sun-time-out">12:00</output>
+        <input type="range" id="sun-time" min="0" max="24" step="0.25" value="12">
+      </label>
+      <button type="button" id="sun-play" class="tool">▶ Play day</button>
+      <p id="sun-readout" class="stats"></p>
+    </fieldset>
+    <fieldset id="wind-panel" class="hidden">
+      <legend>Wind</legend>
+      <label>Period
+        <select id="wind-season">
+          <option value="all">Whole year</option>
+          <option value="djf">Dec – Feb</option>
+          <option value="mam">Mar – May</option>
+          <option value="jja">Jun – Aug</option>
+          <option value="son">Sep – Nov</option>
+        </select>
+      </label>
+      <p id="wind-readout" class="stats"></p>
+    </fieldset>
+    <fieldset>
+      <legend>Layers</legend>
+      <label><input type="checkbox" data-layer="sun"> Sun path &amp; shadows</label>
+      <label><input type="checkbox" data-layer="wind"> Wind</label>
+      <label><input type="checkbox" data-layer="drawn" checked> Drawn</label>
+      <label><input type="checkbox" data-layer="roads" checked> Roads</label>
+      <label><input type="checkbox" data-layer="paths" checked> Pedestrian paths</label>
+      <label><input type="checkbox" data-layer="green" checked> Green &amp; water</label>
+      <label><input type="checkbox" data-layer="buildings" checked> Buildings</label>
+    </fieldset>
+    <label class="toggle"><input type="checkbox" id="orbit"> Slow orbit</label>
+    <p class="credit">Map data &copy; OpenStreetMap contributors</p>
+  </aside>
+
+  <script type="module" src="main.js"></script>
+</body>
+</html>
