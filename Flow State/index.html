@@ -79,6 +79,17 @@
       <p id="save-status" class="hint"></p>
     </div>
     <div class="stats" id="stats"></div>
+    <fieldset id="model-panel">
+      <legend>Model</legend>
+      <button type="button" id="model-import" class="tool">Import .3dm</button>
+      <input type="file" id="model-file" accept=".3dm" hidden>
+      <p class="hint">Or drop a .3dm file on the scene. It lands on the pin; drag a corner handle to scale.</p>
+      <p id="model-info" class="stats hidden"></p>
+      <div id="model-actions" class="tools hidden">
+        <button type="button" class="tool" id="model-reset">Reset size</button>
+        <button type="button" class="tool" id="model-remove">Remove</button>
+      </div>
+    </fieldset>
     <fieldset id="draw-tools">
       <legend>Draw</legend>
       <div class="tools">
@@ -114,6 +125,7 @@
       <legend>Layers</legend>
       <label><input type="checkbox" data-layer="sun"> Sun path &amp; shadows</label>
       <label><input type="checkbox" data-layer="wind"> Wind</label>
+      <label><input type="checkbox" data-layer="model" checked> Model</label>
       <label><input type="checkbox" data-layer="drawn" checked> Drawn</label>
       <label><input type="checkbox" data-layer="roads" checked> Roads</label>
       <label><input type="checkbox" data-layer="paths" checked> Pedestrian paths</label>
@@ -123,6 +135,8 @@
     <label class="toggle"><input type="checkbox" id="orbit"> Slow orbit</label>
     <p class="credit">Map data &copy; OpenStreetMap contributors</p>
   </aside>
+
+  <div id="dropzone" class="hidden">Drop a .3dm file to place it on the pin</div>
 
   <script type="module" src="main.js"></script>
 </body>
