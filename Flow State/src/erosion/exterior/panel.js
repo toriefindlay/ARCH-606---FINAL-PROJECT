@@ -4,14 +4,16 @@
 import { registerPersist } from "../../core/persist.js";
 
 // Read each frame by index.js. `speed` is simulated seconds per real second.
-export const settings = { playing: true, speed: 4, people: 1, cars: 1, size: 2, leftHand: false };
+export const settings = { playing: true, speed: 4, people: 1, cars: 1, size: 2, leftHand: false, carve: true, erode: 2 };
 
 const $ = (id) => document.getElementById(id);
 let onReset = () => {};
+let onClearErosion = () => {};
 let lastReadout = "";
 
 export function mountPanel(el, hooks = {}) {
   onReset = hooks.reset ?? onReset;
+  onClearErosion = hooks.clearErosion ?? onClearErosion;
   el.innerHTML = `
     <p class="hint" style="margin-top:0">Traffic: people and cars moving along the site's paths and roads.</p>
     <div class="tools">
@@ -35,15 +37,24 @@ export function mountPanel(el, hooks = {}) {
       <input type="range" id="traffic-size" min="1" max="6" step="0.5">
     </label>
     <label><input type="checkbox" id="traffic-left"> Left-hand traffic</label>
-    <p id="traffic-readout" class="stats"></p>`;
+    <p id="traffic-readout" class="stats"></p>
+    <label><input type="checkbox" id="traffic-carve"> Carve the mass</label>
+    <label>Erosion speed <output id="traffic-erode-out"></output>
+      <input type="range" id="traffic-erode" min="0.5" max="8" step="0.5">
+    </label>
+    <button type="button" class="tool" id="traffic-clear-erosion" style="width:100%;margin-bottom:8px">Clear erosion</button>
+    <p id="carve-readout" class="stats"></p>
+    <p class="hint" style="margin-top:0">Import a mass: people and cars passing through it wear stepped tunnels, built from the mass's own axis, block size and storey height.</p>`;
 
   $("traffic-play").addEventListener("click", () => { settings.playing = !settings.playing; syncControls(); });
   $("traffic-reset").addEventListener("click", () => onReset());
+  $("traffic-clear-erosion").addEventListener("click", () => onClearErosion());
   $("traffic-speed").addEventListener("change", (e) => (settings.speed = Number(e.target.value)));
-  for (const key of ["people", "cars", "size"]) {
+  for (const key of ["people", "cars", "size", "erode"]) {
     $(`traffic-${key}`).addEventListener("input", (e) => { settings[key] = Number(e.target.value); syncControls(); });
   }
   $("traffic-left").addEventListener("change", (e) => (settings.leftHand = e.target.checked));
+  $("traffic-carve").addEventListener("change", (e) => (settings.carve = e.target.checked));
   syncControls();
 }
 
@@ -52,11 +63,23 @@ export function syncControls() {
   if (!$("traffic-play")) return;
   $("traffic-play").textContent = settings.playing ? "Pause" : "Play";
   $("traffic-speed").value = String(settings.speed);
-  for (const key of ["people", "cars", "size"]) {
+  for (const key of ["people", "cars", "size", "erode"]) {
     $(`traffic-${key}`).value = settings[key];
-    $(`traffic-${key}-out`).textContent = key === "size" ? `${settings.size}×` : `${settings[key]}×`;
+    $(`traffic-${key}-out`).textContent = `${settings[key]}×`;
   }
   $("traffic-left").checked = settings.leftHand;
+  $("traffic-carve").checked = settings.carve;
+}
+
+// What was read from the mass, shown under the carving controls.
+export function showLanguage(scan) {
+  const el = $("carve-readout");
+  if (!el) return;
+  el.innerHTML = scan
+    ? `Mass reads as <b>${scan.organic ? "organic" : "orthogonal"}</b> (${Math.round(scan.orthogonality * 100)}% of walls on one axis pair)<br>` +
+      `axis <b>${scan.theta.toFixed(0)}°</b> · block <b>${scan.module.toFixed(0)} m</b> · storey <b>${scan.storey.toFixed(1)} m</b><br>` +
+      `carving in <b>${scan.cu.toFixed(1)} m</b> cells`
+    : "";
 }
 
 export function updateReadout(sim) {

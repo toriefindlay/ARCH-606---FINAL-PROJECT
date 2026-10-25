@@ -238,7 +238,8 @@ export function createTraffic(features, radius, drawn = { roads: [], paths: [] }
   const walkable = [...features.paths, ...features.roads.filter((r) => WALKABLE_ROADS.has(r.kind))];
   const walks = buildNetwork(connect(walkable, drawn.paths), walkSpec, radius);
   const limit2 = (radius * 1.1) ** 2;
-  const sim = { people: [], cars: [], time: 0, entryPoints: { people: walks.spawns.length, cars: roads.spawns.length } };
+  // sim.visit(isCar, x, y, dt), when set, is told every step where each particle is (site metres): used to wear the mass.
+  const sim = { people: [], cars: [], time: 0, visit: null, entryPoints: { people: walks.spawns.length, cars: roads.spawns.length } };
 
   const release = (points, mult, dt, add) => {
     for (const sp of points) {
@@ -249,8 +250,9 @@ export function createTraffic(features, radius, drawn = { roads: [], paths: [] }
     }
   };
   // Entry points can lie beyond the site circle, so only drop particles that are outside AND heading outward.
-  const inside = (a) => {
+  const inside = (a, dt) => {
     const q = sample(a.way, a.s);
+    sim.visit?.(a.car, q.x, q.y, dt);
     return q.x * q.x + q.y * q.y < limit2 || q.x * q.tx * a.dir + q.y * q.ty * a.dir < 0;
   };
 
@@ -269,7 +271,7 @@ export function createTraffic(features, radius, drawn = { roads: [], paths: [] }
         if (Math.random() < 0.012 * dt) p.pause = 1 + Math.random() * 4; // stop to look, chat, or check a phone
       }
       p.wobble += dt * 0.9;
-      return inside(p);
+      return inside(p, dt);
     });
 
     // Cars follow the one ahead in the same lane of the same way.
@@ -289,7 +291,7 @@ export function createTraffic(features, radius, drawn = { roads: [], paths: [] }
           target = Math.min(target, Math.max(0, (gap - MIN_GAP) / HEADWAY));
         }
         car.v += Math.max(-BRAKE * dt, Math.min(ACCEL * dt, target - car.v));
-        if (!travel(car, car.v * dt) || !inside(car)) gone.add(car);
+        if (!travel(car, car.v * dt) || !inside(car, dt)) gone.add(car);
       });
     }
     if (gone.size) sim.cars = sim.cars.filter((c) => !gone.has(c));
