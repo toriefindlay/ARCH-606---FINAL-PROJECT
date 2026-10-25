@@ -1,57 +1,72 @@
 // MODEL (exterior erosion): wears tunnels into the mass where people and cars pass through it.
 // No scene or DOM code. It works on the lattice from language.js: a grid of cells laid along the
-// mass's own axis, each a fraction of its block size.
-//
-// Every visit adds "heat" to the cell under a particle (a car counts for several people). Heat becomes
-// a number of storeys to carve:  1 storey from a little use, 2 and 3 from a lot. A carved cell also pulls
-// its neighbours down by one storey per cell of distance, so busy routes get a stepped, terraced section
-// like the tiers of the mass (square steps for orthogonal masses, rounder ones for organic masses).
+// mass's own axes. Every visit adds "heat" to the cell under a particle (a car counts for several people).
+// Heat becomes a use level: 1 storey-equivalent from a little use, 2 and 3 from a lot. How that is carved
+// follows the mass's own profile (scan.profile, read in language.js):
+//   stepped    a terraced mass: busy cells open neighbours down one storey per cell, like its tiers
+//   prismatic  a single block: neighbours open to the same height, giving a plain wider room
+//   round      an organic mass: overlapping domed hollows (spheres) along the routes, swelling where use is heavy
 import * as THREE from "three";
 import { createCut } from "../contract.js";
 
-const THRESHOLDS = [30, 120, 480]; // people-seconds of presence for 1, 2, 3 storeys
+const THRESHOLDS = [30, 120, 480]; // people-seconds of presence for use levels 1, 2, 3 (for 4 m cells)
 const CAR_WEIGHT = 4; // one car-second counts as this many people-seconds
-const CAR_CLEARANCE = 4.5; // metres a cell must open up once cars use it
-const ROOF = 1.5; // metres of mass always left above a tunnel
+const CAR_CLEARANCE = 4.5; // metres a space must open up once cars use it
+const ROOF = 1.5; // metres of mass always left above a stepped or prismatic tunnel
+
+export const MAX_SPHERES = 192;
+export const SPHERE_SQUASH = 0.8; // round hollows are this much lower than they are wide
 
 export function createErosion(scan) {
-  const { nU, nV, cu, cv, u0, v0, cos, sin, storey, organic, ok, topMin } = scan;
+  const { nU, nV, cu, cv, storey, profile, ok, topMin } = scan;
   const size = nU * nV;
-  const er = { scan, heatPeople: new Float32Array(size), heatCars: new Float32Array(size), H: new Float32Array(size), version: 0 };
+  const er = {
+    scan, heatPeople: new Float32Array(size), heatCars: new Float32Array(size),
+    H: new Float32Array(size), // carved height per cell (stepped and prismatic)
+    spheres: [], // { x, z, r } domed hollows centred on the ground (round)
+    version: 0,
+  };
   const stepsMax = Float32Array.from(topMin, (t) => Math.max(0, Math.floor((t - ROOF) / storey)));
   const carStoreys = Math.ceil(CAR_CLEARANCE / storey);
+  // Smaller cells see less of each passer-by, so need less heat to count as used.
+  const heatScale = Math.min(2, Math.max(0.4, Math.min(cu, cv) / 4));
+  const T = THRESHOLDS.map((t) => t * heatScale);
 
   // x, y: site metres (east, north). seconds: simulated time spent, already scaled by the erosion speed.
   er.visit = (isCar, x, y, seconds) => {
-    const wx = x, wz = -y;
-    const u = wx * cos + wz * sin - u0, v = -wx * sin + wz * cos - v0;
+    const [u, v] = scan.toUV(x, -y); // site (east, north) -> world (x, z = -north) -> lattice
     const i = Math.floor(u / cu), j = Math.floor(v / cv);
     if (i < 0 || j < 0 || i >= nU || j >= nV) return;
     const k = j * nU + i;
     if (ok[k]) (isCar ? er.heatCars : er.heatPeople)[k] += seconds;
   };
 
-  // Turns heat into carved heights. Returns true if any height changed.
-  er.recompute = () => {
+  const useLevels = () => {
     const level = new Uint8Array(size);
     for (let k = 0; k < size; k++) {
       if (!ok[k]) continue;
       const heat = er.heatPeople[k] + CAR_WEIGHT * er.heatCars[k];
-      let n = heat >= THRESHOLDS[2] ? 3 : heat >= THRESHOLDS[1] ? 2 : heat >= THRESHOLDS[0] ? 1 : 0;
-      if (er.heatCars[k] >= THRESHOLDS[0] / CAR_WEIGHT) n = Math.max(n, carStoreys);
-      level[k] = n;
+      level[k] = heat >= T[2] ? 3 : heat >= T[1] ? 2 : heat >= T[0] ? 1 : 0;
     }
+    return level;
+  };
+  const carsUse = (k) => er.heatCars[k] >= T[0] / CAR_WEIGHT;
+
+  // Stepped and prismatic: carved height per lattice cell.
+  const recomputeCells = () => {
+    const level = useLevels();
+    for (let k = 0; k < size; k++) if (carsUse(k) && ok[k]) level[k] = Math.max(level[k], carStoreys);
     const steps = new Float32Array(size);
     for (let j = 0; j < nV; j++) {
       for (let i = 0; i < nU; i++) {
         const n = level[j * nU + i];
         if (!n) continue;
-        for (let dj = 1 - n; dj < n; dj++) {
-          for (let di = 1 - n; di < n; di++) {
+        const reach = profile === "prismatic" ? n >> 1 : n - 1; // cells the carving spreads from a busy cell
+        for (let dj = -reach; dj <= reach; dj++) {
+          for (let di = -reach; di <= reach; di++) {
             const ti = i + di, tj = j + dj;
             if (ti < 0 || tj < 0 || ti >= nU || tj >= nV) continue;
-            const distance = organic ? Math.hypot(di, dj) : Math.max(Math.abs(di), Math.abs(dj));
-            const value = organic ? Math.floor(n - distance + 1e-6) : n - distance;
+            const value = profile === "prismatic" ? n : n - Math.max(Math.abs(di), Math.abs(dj));
             const t = tj * nU + ti;
             if (value >= 1 && ok[t] && value > steps[t]) steps[t] = value;
           }
@@ -63,6 +78,39 @@ export function createErosion(scan) {
       const h = Math.min(steps[k], stepsMax[k]) * storey;
       if (Math.abs(h - er.H[k]) > 1e-3) { er.H[k] = h; changed = true; }
     }
+    return changed;
+  };
+
+  // Round: one domed hollow per busy cell, bigger where use is heavier, thinned so neighbours don't pile up.
+  // The hollow may break through the roof near the mass's rim, which is how it opens to the outside.
+  const recomputeSpheres = () => {
+    const level = useLevels();
+    const r0 = scan.tunnelRadius;
+    const candidates = [];
+    for (let k = 0; k < size; k++) {
+      let n = level[k];
+      if (carsUse(k) && ok[k]) n = Math.max(n, 1);
+      if (!n) continue;
+      let r = r0 * (1 + 0.35 * (n - 1));
+      if (carsUse(k)) r = Math.max(r, CAR_CLEARANCE / SPHERE_SQUASH);
+      const [x, z] = scan.toXZ(((k % nU) + 0.5) * cu, (Math.floor(k / nU) + 0.5) * cv);
+      candidates.push({ x, z, r });
+    }
+    candidates.sort((a, b) => b.r - a.r);
+    const spheres = [];
+    for (const c of candidates) {
+      if (spheres.length >= MAX_SPHERES) break;
+      if (spheres.every((s) => Math.hypot(s.x - c.x, s.z - c.z) >= 0.45 * Math.min(s.r, c.r))) spheres.push(c);
+    }
+    const same = spheres.length === er.spheres.length &&
+      spheres.every((s, i) => Math.abs(s.x - er.spheres[i].x) + Math.abs(s.z - er.spheres[i].z) + Math.abs(s.r - er.spheres[i].r) < 1e-3);
+    if (!same) er.spheres = spheres;
+    return !same;
+  };
+
+  // Turns heat into the carved shape. Returns true if anything changed.
+  er.recompute = () => {
+    const changed = profile === "round" ? recomputeSpheres() : recomputeCells();
     if (changed) er.version++;
     return changed;
   };
@@ -85,12 +133,43 @@ export function setActiveErosion(er) {
   cached = { version: -1, cuts: [] };
 }
 
-// Signed-distance cut (negative inside the carved volume) for the shared pipeline: union of the carved cell boxes.
+// Signed-distance cut (negative inside the carved volume) for the shared pipeline.
 export function activeErosionCuts() {
   if (!active) return [];
   if (cached.version === active.version) return cached.cuts;
-  const { nU, nV, cu, cv, u0, v0, cos, sin } = active.scan;
-  const H = Float32Array.from(active.H);
+  const make = active.scan.profile === "round" ? roundCut(active) : cellCut(active);
+  cached = { version: active.version, cuts: make ? [make] : [] };
+  return cached.cuts;
+}
+
+const makeCut = (bounds, sdf) =>
+  createCut({ id: "ext-flow-erosion", source: "exterior", label: "Flow erosion (people and cars)", bounds, sdf });
+
+// Union of domed hollows. Distances are measured with the height squashed, so they are lower bounds.
+function roundCut(er) {
+  const spheres = er.spheres.map((s) => ({ ...s }));
+  if (!spheres.length) return null;
+  const bounds = new THREE.Box3();
+  for (const s of spheres) {
+    bounds.expandByPoint(new THREE.Vector3(s.x - s.r, 0, s.z - s.r));
+    bounds.expandByPoint(new THREE.Vector3(s.x + s.r, s.r * SPHERE_SQUASH, s.z + s.r));
+  }
+  const sdf = (x, y, z) => {
+    let best = 1e3;
+    for (const s of spheres) {
+      const d = Math.hypot(x - s.x, y / SPHERE_SQUASH, z - s.z) - s.r;
+      if (d < best) best = d;
+    }
+    return best * SPHERE_SQUASH;
+  };
+  return makeCut(bounds, sdf);
+}
+
+// Union of the carved cell boxes.
+function cellCut(er) {
+  const { scan } = er;
+  const { nU, nV, cu, cv, sinPhi } = scan;
+  const H = Float32Array.from(er.H);
 
   const bounds = new THREE.Box3();
   for (let j = 0; j < nV; j++) {
@@ -98,19 +177,16 @@ export function activeErosionCuts() {
       const h = H[j * nU + i];
       if (!h) continue;
       for (const [a, b] of [[i, j], [i + 1, j], [i, j + 1], [i + 1, j + 1]]) {
-        const u = u0 + a * cu, v = v0 + b * cv, x = u * cos - v * sin, z = u * sin + v * cos;
+        const [x, z] = scan.toXZ(a * cu, b * cv);
         bounds.expandByPoint(new THREE.Vector3(x, 0, z));
         bounds.expandByPoint(new THREE.Vector3(x, h, z));
       }
     }
   }
-  if (bounds.isEmpty()) {
-    cached = { version: active.version, cuts: [] };
-    return cached.cuts;
-  }
+  if (bounds.isEmpty()) return null;
 
   const sdf = (x, y, z) => {
-    const u = x * cos + z * sin - u0, v = -x * sin + z * cos - v0;
+    const [u, v] = scan.toUV(x, z);
     const i0 = Math.floor(u / cu), j0 = Math.floor(v / cv);
     let best = 1e3;
     for (let j = j0 - 1; j <= j0 + 1; j++) {
@@ -123,11 +199,8 @@ export function activeErosionCuts() {
         if (d < best) best = d;
       }
     }
-    return best;
+    // Distances measured along skewed axes overstate the true distance by up to 1 / sin(angle between the axes).
+    return best * Math.min(1, sinPhi);
   };
-  cached = {
-    version: active.version,
-    cuts: [createCut({ id: "ext-flow-erosion", source: "exterior", label: "Flow erosion (people and cars)", bounds, sdf })],
-  };
-  return cached.cuts;
+  return makeCut(bounds, sdf);
 }

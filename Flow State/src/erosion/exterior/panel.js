@@ -75,10 +75,14 @@ export function syncControls() {
 export function showLanguage(scan) {
   const el = $("carve-readout");
   if (!el) return;
+  const form = scan?.organic ? "organic" : scan?.skewed ? "skewed" : "orthogonal";
   el.innerHTML = scan
-    ? `Mass reads as <b>${scan.organic ? "organic" : "orthogonal"}</b> (${Math.round(scan.orthogonality * 100)}% of walls on one axis pair)<br>` +
-      `axis <b>${scan.theta.toFixed(0)}°</b> · block <b>${scan.module.toFixed(0)} m</b> · storey <b>${scan.storey.toFixed(1)} m</b><br>` +
-      `carving in <b>${scan.cu.toFixed(1)} m</b> cells`
+    ? `Mass reads as <b>${form}</b> (${Math.round(scan.orthogonality * 100)}% of walls on its two axes)<br>` +
+      `axes <b>${scan.axis1.toFixed(0)}°</b> and <b>${(scan.axis2 % 180).toFixed(0)}°</b> · blocks <b>${scan.blockU.toFixed(0)} × ${scan.blockV.toFixed(0)} m</b><br>` +
+      (scan.organic
+        ? `lobes about <b>${scan.lobeRadius.toFixed(0)} m</b> across · round hollows <b>${scan.tunnelRadius.toFixed(1)} m</b> radius`
+        : `storey <b>${scan.storey.toFixed(1)} m</b> · <b>${scan.profile}</b> profile<br>` +
+          `carving in <b>${scan.cu.toFixed(1)} × ${scan.cv.toFixed(1)} m</b> cells (${scan.nU} × ${scan.nV})`)
     : "";
 }
 

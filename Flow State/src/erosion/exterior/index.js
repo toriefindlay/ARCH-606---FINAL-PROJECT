@@ -83,7 +83,7 @@ function carveFrame(dt) {
   if (carveClock < CARVE_INTERVAL) return;
   carveClock = 0;
   if (erosion.recompute()) {
-    carve.update(erosion.H);
+    carve.update(erosion);
     notifyCutsChanged();
   }
 }
@@ -95,7 +95,7 @@ export function mountExterior() {
     reset: () => { sim?.reset(); sim?.warmUp(WARM_UP, rates()); },
     clearErosion: () => {
       if (erosion?.clear()) {
-        carve.update(erosion.H);
+        carve.update(erosion);
         notifyCutsChanged();
       }
     },

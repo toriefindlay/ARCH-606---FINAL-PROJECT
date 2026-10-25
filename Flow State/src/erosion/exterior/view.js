@@ -2,6 +2,7 @@
 // Create a group under layers.* on "site:built" and redraw it on "cuts:changed".
 import * as THREE from "three";
 import { MAX_PEOPLE, MAX_CARS } from "./traffic.js";
+import { MAX_SPHERES, SPHERE_SQUASH } from "./erosion.js";
 
 export function renderPreview(cuts) {
   // TODO
@@ -71,7 +72,9 @@ const carveUniforms = {
   uTopTex: { value: EMPTY }, // top of the mass, 2 × 2 samples per cell
   uCarveFrame: { value: new THREE.Vector4() }, // lattice origin u, v and cell size u, v
   uCarveSize: { value: new THREE.Vector2() }, // cells in u, v (0 = nothing carved)
-  uCarveRot: { value: new THREE.Vector2(1, 0) }, // cos, sin of the lattice axis
+  uCarveInv: { value: new THREE.Vector4(1, 0, 0, 1) }, // world (x, z) -> lattice (u, v): u = xy·(x, z), v = zw·(x, z)
+  uSphereTex: { value: EMPTY }, // round hollows: x, z, radius per texel
+  uSphereCount: { value: 0 },
 };
 
 const CARVE_GLSL = /* glsl */ `
@@ -79,10 +82,23 @@ uniform sampler2D uCarveH;
 uniform sampler2D uTopTex;
 uniform vec4 uCarveFrame;
 uniform vec2 uCarveSize;
-uniform vec2 uCarveRot;
+uniform vec4 uCarveInv;
+uniform sampler2D uSphereTex;
+uniform float uSphereCount;
 varying vec3 vCarvePos;
+// True if p is inside a round hollow (a sphere centred on the ground, squashed in height), shrunk by \`shrink\` metres.
+bool carveSphere(vec3 p, float shrink) {
+  for (int i = 0; i < ${MAX_SPHERES}; i++) {
+    if (float(i) >= uSphereCount) break;
+    vec4 s = texture2D(uSphereTex, vec2((float(i) + 0.5) / ${MAX_SPHERES}.0, 0.5));
+    vec3 d = vec3(p.x - s.x, p.y / ${SPHERE_SQUASH.toFixed(2)}, p.z - s.y);
+    float r = s.z - shrink;
+    if (dot(d, d) < r * r) return true;
+  }
+  return false;
+}
 vec2 carveUV(vec3 p) {
-  return vec2(p.x * uCarveRot.x + p.z * uCarveRot.y - uCarveFrame.x, -p.x * uCarveRot.y + p.z * uCarveRot.x - uCarveFrame.y);
+  return vec2(uCarveInv.x * p.x + uCarveInv.y * p.z - uCarveFrame.x, uCarveInv.z * p.x + uCarveInv.w * p.z - uCarveFrame.y);
 }
 bool carveInside(vec3 p, float eps) {
   vec2 uv = carveUV(p);
@@ -107,8 +123,11 @@ float carveTop(vec3 p) {
   return texture2D(uTopTex, uv).r;
 }
 `;
-const DISCARD_CARVED = "if (carveInside(vCarvePos, 0.06)) discard;";
-const DISCARD_OUTSIDE_MASS = "float carveT = carveTop(vCarvePos); if (carveT < 0.05 || vCarvePos.y > carveT + 0.03) discard;";
+// The mass: drop what lies inside a carved cell or a round hollow.
+const DISCARD_CARVED = "if (carveInside(vCarvePos, 0.06) || carveSphere(vCarvePos, -0.06)) discard;";
+// The inside of a carved space: drop what is outside the mass, underground, or inside a neighbouring hollow.
+const DISCARD_OUTSIDE_MASS =
+  "float carveT = carveTop(vCarvePos); if (carveT < 0.05 || vCarvePos.y > carveT + 0.03 || vCarvePos.y < 0.0 || carveSphere(vCarvePos, 0.05)) discard;";
 
 const patched = new WeakSet();
 function patch(material, key, body) {
@@ -118,7 +137,7 @@ function patch(material, key, body) {
     Object.assign(shader.uniforms, carveUniforms);
     shader.vertexShader = shader.vertexShader
       .replace("#include <common>", "#include <common>\nvarying vec3 vCarvePos;")
-      .replace("#include <begin_vertex>", "#include <begin_vertex>\nvCarvePos = (modelMatrix * vec4(transformed, 1.0)).xyz;");
+      .replace("#include <begin_vertex>", "#include <begin_vertex>\nvec4 carveLocal = vec4(transformed, 1.0);\n#ifdef USE_INSTANCING\ncarveLocal = instanceMatrix * carveLocal;\n#endif\nvCarvePos = (modelMatrix * carveLocal).xyz;");
     shader.fragmentShader = shader.fragmentShader
       .replace("#include <common>", `#include <common>\n${CARVE_GLSL}`)
       .replace("#include <clipping_planes_fragment>", `#include <clipping_planes_fragment>\n${body}`);
@@ -144,11 +163,11 @@ patch(wallEdgeMaterial, "carve-wall-edge", DISCARD_OUTSIDE_MASS);
 // Ceiling of every carved cell, and a wall wherever it is taller than a neighbour that is also inside the mass.
 // Neighbours outside the mass get no wall: that side is the opening.
 function wallGeometry(scan, H) {
-  const { nU, nV, cu, cv, u0, v0, cos, sin, ok } = scan;
+  const { nU, nV, cu, cv, ok } = scan;
   const pos = [];
   const P = (u, y, v) => {
-    const U = u0 + u, V = v0 + v;
-    return [U * cos - V * sin, y, U * sin + V * cos];
+    const [x, z] = scan.toXZ(u, v);
+    return [x, y, z];
   };
   const quad = (a, b, c, d) => pos.push(...a, ...b, ...c, ...a, ...c, ...d);
   for (let j = 0; j < nV; j++) {
@@ -178,17 +197,24 @@ function wallGeometry(scan, H) {
   return geo;
 }
 
+// Round hollows are drawn as spheres seen from inside (domed, squashed in height), clipped like the walls above.
+const hollowMaterial = new THREE.MeshLambertMaterial({ color: 0xf2cbb9, side: THREE.BackSide });
+patch(hollowMaterial, "carve-hollow", DISCARD_OUTSIDE_MASS);
+
 export function createCarveView() {
-  let group = null, hTexture = null, topTexture = null, scan = null;
+  let group = null, hTexture = null, topTexture = null, sphereTexture = null, hollows = null, scan = null;
+  const dummy = new THREE.Object3D();
 
   const clear = () => {
     carveUniforms.uCarveSize.value.set(0, 0);
-    carveUniforms.uCarveH.value = carveUniforms.uTopTex.value = EMPTY;
+    carveUniforms.uSphereCount.value = 0;
+    carveUniforms.uCarveH.value = carveUniforms.uTopTex.value = carveUniforms.uSphereTex.value = EMPTY;
     group?.traverse((o) => o.geometry?.dispose());
     group?.parent?.remove(group);
     hTexture?.dispose();
     topTexture?.dispose();
-    group = hTexture = topTexture = scan = null;
+    sphereTexture?.dispose();
+    group = hTexture = topTexture = sphereTexture = hollows = scan = null;
   };
 
   return {
@@ -202,15 +228,42 @@ export function createCarveView() {
       hTexture = dataTexture(new Float32Array(lattice.nU * lattice.nV), lattice.nU, lattice.nV);
       carveUniforms.uCarveFrame.value.set(lattice.u0, lattice.v0, lattice.cu, lattice.cv);
       carveUniforms.uCarveSize.value.set(lattice.nU, lattice.nV);
-      carveUniforms.uCarveRot.value.set(lattice.cos, lattice.sin);
+      carveUniforms.uCarveInv.value.set(...lattice.inv);
       carveUniforms.uCarveH.value = hTexture;
       carveUniforms.uTopTex.value = topTexture;
       group = new THREE.Group();
       parent.add(group);
+      if (lattice.profile === "round") {
+        sphereTexture = new THREE.DataTexture(new Float32Array(MAX_SPHERES * 4), MAX_SPHERES, 1, THREE.RGBAFormat, THREE.FloatType);
+        sphereTexture.minFilter = sphereTexture.magFilter = THREE.NearestFilter;
+        sphereTexture.needsUpdate = true;
+        carveUniforms.uSphereTex.value = sphereTexture;
+        hollows = new THREE.InstancedMesh(new THREE.SphereGeometry(1, 28, 18), hollowMaterial, MAX_SPHERES);
+        hollows.count = 0;
+        hollows.frustumCulled = false;
+        group.add(hollows);
+      }
     },
-    // Show the carved heights H (metres per cell).
-    update(H) {
+    // Show the carved shape of an erosion (see erosion.js): round hollows, or carved heights per cell.
+    update(er) {
       if (!group) return;
+      if (hollows) {
+        const data = sphereTexture.image.data;
+        data.fill(0);
+        er.spheres.forEach((s, i) => {
+          data.set([s.x, s.z, s.r, 0], i * 4);
+          dummy.position.set(s.x, 0, s.z);
+          dummy.scale.set(s.r, s.r * SPHERE_SQUASH, s.r);
+          dummy.updateMatrix();
+          hollows.setMatrixAt(i, dummy.matrix);
+        });
+        hollows.count = er.spheres.length;
+        hollows.instanceMatrix.needsUpdate = true;
+        sphereTexture.needsUpdate = true;
+        carveUniforms.uSphereCount.value = er.spheres.length;
+        return;
+      }
+      const H = er.H;
       hTexture.image.data.set(H);
       hTexture.needsUpdate = true;
       group.traverse((o) => o.geometry?.dispose());
