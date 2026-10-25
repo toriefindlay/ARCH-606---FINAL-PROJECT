@@ -4,7 +4,7 @@
 import { registerPersist } from "../../core/persist.js";
 
 // Read each frame by index.js. `speed` is simulated seconds per real second.
-export const settings = { playing: true, speed: 4, people: 1, cars: 1, size: 2, leftHand: false, carve: true, erode: 2 };
+export const settings = { playing: true, speed: 4, people: 1, cars: 1, size: 2, leftHand: false, erode: 2, erodePeople: false, erodeCars: false };
 
 const $ = (id) => document.getElementById(id);
 let onReset = () => {};
@@ -38,7 +38,11 @@ export function mountPanel(el, hooks = {}) {
     </label>
     <label><input type="checkbox" id="traffic-left"> Left-hand traffic</label>
     <p id="traffic-readout" class="stats"></p>
-    <label><input type="checkbox" id="traffic-carve"> Carve the mass</label>
+    <p class="hint" style="margin-bottom:6px">Erode the mass with (none by default). Traffic must be switched on under Layers.</p>
+    <label><input type="checkbox" id="erode-people"> People</label>
+    <label><input type="checkbox" id="erode-cars"> Cars</label>
+    <label title="Not built yet"><input type="checkbox" disabled> Sun (not built yet)</label>
+    <label title="Not built yet"><input type="checkbox" disabled> Wind (not built yet)</label>
     <label>Erosion speed <output id="traffic-erode-out"></output>
       <input type="range" id="traffic-erode" min="0.5" max="8" step="0.5">
     </label>
@@ -54,7 +58,8 @@ export function mountPanel(el, hooks = {}) {
     $(`traffic-${key}`).addEventListener("input", (e) => { settings[key] = Number(e.target.value); syncControls(); });
   }
   $("traffic-left").addEventListener("change", (e) => (settings.leftHand = e.target.checked));
-  $("traffic-carve").addEventListener("change", (e) => (settings.carve = e.target.checked));
+  $("erode-people").addEventListener("change", (e) => (settings.erodePeople = e.target.checked));
+  $("erode-cars").addEventListener("change", (e) => (settings.erodeCars = e.target.checked));
   syncControls();
 }
 
@@ -68,7 +73,8 @@ export function syncControls() {
     $(`traffic-${key}-out`).textContent = `${settings[key]}×`;
   }
   $("traffic-left").checked = settings.leftHand;
-  $("traffic-carve").checked = settings.carve;
+  $("erode-people").checked = settings.erodePeople;
+  $("erode-cars").checked = settings.erodeCars;
 }
 
 // What was read from the mass, shown under the carving controls.

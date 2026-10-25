@@ -9,14 +9,15 @@ import { $ } from "../core/dom.js";
 import { registerPersist } from "../core/persist.js";
 
 // The starting mass: a Rhino .3dm dropped on the pin, restyled as a white-model massing,
-// with corner handles to scale it. This is the geometry the erosion modules carve.
+// with a gumball to move and turn it and corner points to scale it (shown while "Manipulate" is ticked).
+// This is the geometry the erosion modules carve.
 
 // Rhino UnitSystem enum values and names -> metres per unit.
 const UNIT_BY_ENUM = { 1: 1e-6, 2: 1e-3, 3: 1e-2, 4: 1, 5: 1e3, 6: 2.54e-8, 7: 2.54e-5, 8: 0.0254, 9: 0.3048, 10: 1609.344 };
 const UNIT_BY_NAME = { microns: 1e-6, millimeters: 1e-3, centimeters: 1e-2, meters: 1, kilometers: 1e3, inches: 0.0254, feet: 0.3048, miles: 1609.344 };
 
-let model = null; // { name, buffer, placement, size, scale, initial, handles, outline }
-let modelDrag = null; // { startScale, startDist }
+let model = null; // { name, buffer, placement, size, scale, initial, handles, outline, gumball, manipulating }
+let modelDrag = null; // { part, start, scale, rotation, x, z, distance, angle }: the state when a drag began
 let rhinoLoader = null;
 
 const MODEL_MAT = new THREE.MeshLambertMaterial({ color: 0xffd9c9, side: THREE.DoubleSide });
@@ -65,12 +66,13 @@ function removeModel() {
   controls.enabled = true;
   setModelMsg("");
   $("model-actions").classList.add("hidden");
+  $("model-manipulate").checked = false;
   emit("mass:changed", { mass: null });
 }
 
 // Reads a .3dm, restyles it as a white-model massing and drops it on the pin.
-// `scale` restores a saved size; otherwise the size is chosen from the model's units.
-export async function placeModel(buffer, name, scale = null) {
+// `scale` and `pose` ({ x, z, rot }) restore a saved size and position; otherwise the size is chosen from the model's units.
+export async function placeModel(buffer, name, scale = null, pose = null) {
   if (!state.siteGroup || !layers.model) return;
   setModelMsg(`Reading ${name}…`);
   let obj;
@@ -133,10 +135,15 @@ export async function placeModel(buffer, name, scale = null) {
   if (horiz > R * 0.8) initial = (R * 0.3) / horiz;
   else if (horiz < R * 0.01) initial = (R * 0.05) / horiz;
 
-  model = { name, buffer, placement, size, scale: initial, initial, handles: [], outline: null };
+  model = { name, buffer, placement, size, scale: initial, initial, handles: [], outline: null, gumball: null, manipulating: false };
   if (scale > 0) model.scale = scale;
+  if (pose) {
+    placement.position.set(pose.x ?? 0, 0, pose.z ?? 0);
+    placement.rotation.y = pose.rot ?? 0;
+  }
   buildHandles();
   applyModelScale(model.scale);
+  setManipulating(false);
   $("model-actions").classList.remove("hidden");
   if (!(scale > 0) && initial !== 1) setModelMsg(`${name}: units looked wrong, so it was resized to fit. Drag a corner to adjust.`);
 }
@@ -150,13 +157,85 @@ function buildHandles() {
   model.outline = outline;
 
   for (let i = 0; i < 4; i++) {
-    const h = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshBasicMaterial({ color: 0xffffff, depthTest: false }));
-    h.add(new THREE.LineSegments(new THREE.EdgesGeometry(h.geometry), new THREE.LineBasicMaterial({ color: 0xd4542b, depthTest: false })));
-    h.renderOrder = 21;
-    h.children[0].renderOrder = 22;
+    // An invisible sphere keeps the handle easy to grab; the small orange point inside it is what you see.
+    const h = new THREE.Mesh(new THREE.SphereGeometry(0.5, 8, 6), new THREE.MeshBasicMaterial({ visible: false }));
+    const dot = new THREE.Mesh(new THREE.SphereGeometry(0.5, 12, 8), new THREE.MeshBasicMaterial({ color: 0xd4542b, depthTest: false }));
+    dot.scale.setScalar(0.3);
+    dot.renderOrder = 21;
+    h.add(dot);
+    h.userData.part = "scale";
     layers.model.add(h);
     model.handles.push(h);
   }
+  model.gumball = buildGumball();
+  layers.model.add(model.gumball.group);
+}
+
+// The gumball: arrows to slide the mass east-west (red) and north-south (green), a square to slide it freely,
+// and a ring (blue) to turn it about the vertical axis. Drawn on top of everything; picked through invisible stand-ins.
+const GUMBALL = { east: 0xd23c3c, north: 0x3c9a4a, turn: 0x3c6ed2, free: 0xe0b040 };
+
+function buildGumball() {
+  const group = new THREE.Group(), pickers = [];
+  const solid = (color) => new THREE.MeshBasicMaterial({ color, depthTest: false });
+  const invisible = new THREE.MeshBasicMaterial({ visible: false });
+  const show = (geometry, color) => {
+    const mesh = new THREE.Mesh(geometry, solid(color));
+    mesh.renderOrder = 25;
+    group.add(mesh);
+    return mesh;
+  };
+  const pick = (geometry, part) => {
+    const mesh = new THREE.Mesh(geometry, invisible);
+    mesh.userData.part = part;
+    group.add(mesh);
+    pickers.push(mesh);
+    return mesh;
+  };
+  for (const [part, color, direction] of [["slide-x", GUMBALL.east, [1, 0, 0]], ["slide-z", GUMBALL.north, [0, 0, -1]]]) {
+    const turnToAxis = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), new THREE.Vector3(...direction));
+    show(new THREE.CylinderGeometry(0.025, 0.025, 0.55, 8).translate(0, 0.5, 0), color).quaternion.copy(turnToAxis);
+    show(new THREE.ConeGeometry(0.09, 0.25, 12).translate(0, 0.9, 0), color).quaternion.copy(turnToAxis);
+    pick(new THREE.CylinderGeometry(0.1, 0.1, 1, 6).translate(0, 0.6, 0), part).quaternion.copy(turnToAxis);
+  }
+  show(new THREE.TorusGeometry(0.8, 0.02, 8, 64).rotateX(Math.PI / 2), GUMBALL.turn);
+  pick(new THREE.TorusGeometry(0.8, 0.09, 6, 48).rotateX(Math.PI / 2), "turn");
+  show(new THREE.BoxGeometry(0.2, 0.04, 0.2), GUMBALL.free);
+  pick(new THREE.BoxGeometry(0.32, 0.2, 0.32), "slide");
+  return { group, pickers };
+}
+
+// Manipulating shows the scale box, its corner points and the gumball. Otherwise only the model itself is drawn.
+function setManipulating(on) {
+  model.manipulating = on;
+  model.outline.visible = on;
+  model.handles.forEach((h) => (h.visible = on));
+  model.gumball.group.visible = on;
+  $("model-manipulate").checked = on;
+  if (!on) canvasEl.style.cursor = "";
+}
+
+const rad2deg = (r) => ((((r * 180) / Math.PI) % 360) + 360) % 360;
+
+// Puts the scale box, corner points and gumball where the mass is, and tells everyone the mass changed.
+function layout() {
+  const { placement, size, scale: s } = model;
+  const hx = (size.x * s) / 2, hz = (size.z * s) / 2, y = 0.6;
+  const cos = Math.cos(placement.rotation.y), sin = Math.sin(placement.rotation.y);
+  // Rotating about Y by r sends local (x, z) to (x cos r + z sin r, -x sin r + z cos r).
+  const corners = [[-hx, -hz], [hx, -hz], [hx, hz], [-hx, hz]].map(([x, z]) => [
+    placement.position.x + x * cos + z * sin,
+    placement.position.z - x * sin + z * cos,
+  ]);
+  model.outline.geometry.setFromPoints(corners.map(([x, z]) => new THREE.Vector3(x, y, z)));
+  model.handles.forEach((h, i) => h.position.set(corners[i][0], y, corners[i][1]));
+  model.gumball.group.position.set(placement.position.x, y, placement.position.z);
+
+  setModelMsg(
+    `<b>${model.name}</b><br>${(size.x * s).toFixed(1)} × ${(size.z * s).toFixed(1)} m footprint · ${(size.y * s).toFixed(1)} m high<br>` +
+      `Scale <b>×${(s / model.initial).toFixed(2)}</b> · turned <b>${rad2deg(-placement.rotation.y).toFixed(0)}°</b>`
+  );
+  emit("mass:changed", { mass: getMassInfo() });
 }
 
 function applyModelScale(s) {
@@ -165,40 +244,39 @@ function applyModelScale(s) {
   s = Math.min(Math.max(s, 1 / horiz), (R * 2) / horiz); // between 1 m and twice the context radius
   model.scale = s;
   model.placement.scale.setScalar(s);
-
-  const hx = (model.size.x * s) / 2, hz = (model.size.z * s) / 2, y = 0.6;
-  const corners = [[-hx, -hz], [hx, -hz], [hx, hz], [-hx, hz]];
-  model.outline.geometry.setFromPoints(corners.map(([x, z]) => new THREE.Vector3(x, y, z)));
-  model.handles.forEach((h, i) => h.position.set(corners[i][0], y, corners[i][1]));
-
-  setModelMsg(
-    `<b>${model.name}</b><br>${(model.size.x * s).toFixed(1)} × ${(model.size.z * s).toFixed(1)} m footprint · ${(model.size.y * s).toFixed(1)} m high<br>` +
-      `Scale <b>×${(s / model.initial).toFixed(2)}</b>`
-  );
-  emit("mass:changed", { mass: getMassInfo() });
+  layout();
 }
 
-// Keep the corner handles a constant size on screen.
+// Keep the corner points and the gumball a constant size on screen.
 onFrame(() => {
-  if (!model || !layers.model.visible) return;
+  if (!model || !model.manipulating || !layers.model.visible) return;
   for (const h of model.handles) h.scale.setScalar(camera.position.distanceTo(h.position) * 0.018);
+  model.gumball.group.scale.setScalar(camera.position.distanceTo(model.gumball.group.position) * 0.12);
 });
 
-function pickHandle(e) {
-  if (!model || !layers.model.visible) return null;
-  return aimRay(e).intersectObjects(model.handles, false)[0]?.object ?? null;
+// The part of the manipulation controls under the pointer: a corner point, or one of the gumball's pieces.
+function pickPart(e) {
+  if (!model || !model.manipulating || !layers.model.visible) return null;
+  return aimRay(e).intersectObjects([...model.handles, ...model.gumball.pickers], false)[0]?.object.userData.part ?? null;
 }
 
-// Capture-phase listeners so a handle drag takes priority over orbiting and line drawing.
+const CURSORS = { scale: "nwse-resize", slide: "move", "slide-x": "ew-resize", "slide-z": "ns-resize", turn: "grab" };
+
+// Capture-phase listeners so a drag on the controls takes priority over orbiting and line drawing.
 const canvasEl = renderer.domElement;
 canvasEl.addEventListener(
   "pointerdown",
   (e) => {
     if (e.button !== 0) return;
-    const handle = pickHandle(e);
-    const p = handle && groundPoint(e);
-    if (!handle || !p) return;
-    modelDrag = { startScale: model.scale, startDist: Math.max(Math.hypot(p.x, p.z), 0.01) };
+    const part = pickPart(e);
+    const p = part && groundPoint(e);
+    if (!part || !p) return;
+    const { position, rotation } = model.placement;
+    modelDrag = {
+      part, start: p, scale: model.scale, rotation: rotation.y, x: position.x, z: position.z,
+      distance: Math.max(Math.hypot(p.x - position.x, p.z - position.z), 0.01),
+      angle: Math.atan2(p.z - position.z, p.x - position.x),
+    };
     controls.enabled = false;
     canvasEl.setPointerCapture(e.pointerId);
     e.stopImmediatePropagation();
@@ -209,15 +287,31 @@ canvasEl.addEventListener(
   "pointermove",
   (e) => {
     if (!modelDrag) {
-      canvasEl.style.cursor = pickHandle(e) ? "nwse-resize" : "";
+      canvasEl.style.cursor = CURSORS[pickPart(e)] ?? "";
       return;
     }
     const p = groundPoint(e);
-    if (p) applyModelScale((modelDrag.startScale * Math.hypot(p.x, p.z)) / modelDrag.startDist);
+    if (p) dragTo(p);
     e.stopImmediatePropagation();
   },
   true
 );
+
+function dragTo(p) {
+  const d = modelDrag, { position, rotation } = model.placement;
+  if (d.part === "scale") {
+    applyModelScale((d.scale * Math.hypot(p.x - position.x, p.z - position.z)) / d.distance);
+    return;
+  }
+  if (d.part === "turn") {
+    // The angle the pointer sweeps about the centre turns the mass the opposite way in this coordinate system.
+    rotation.y = d.rotation - (Math.atan2(p.z - position.z, p.x - position.x) - d.angle);
+  } else {
+    if (d.part !== "slide-z") position.x = d.x + (p.x - d.start.x);
+    if (d.part !== "slide-x") position.z = d.z + (p.z - d.start.z);
+  }
+  layout();
+}
 const endDrag = (e) => {
   if (!modelDrag) return;
   modelDrag = null;
@@ -247,6 +341,10 @@ $("model-file").addEventListener("change", (e) => {
 });
 $("model-reset").addEventListener("click", () => model && applyModelScale(model.initial));
 $("model-remove").addEventListener("click", removeModel);
+$("model-manipulate").addEventListener("change", (e) => model && setManipulating(e.target.checked));
+addEventListener("keydown", (e) => {
+  if (e.key === "Delete" && model && !e.target.matches("input, textarea, select")) removeModel();
+});
 
 const hasFiles = (e) => e.dataTransfer?.types?.includes("Files");
 let dragDepth = 0;
@@ -286,8 +384,11 @@ on("site:cleared", () => {
 });
 
 registerPersist("model", {
-  capture: () => (model ? { name: model.name, scale: model.scale } : null),
+  capture: () =>
+    model
+      ? { name: model.name, scale: model.scale, pose: { x: model.placement.position.x, z: model.placement.position.z, rot: model.placement.rotation.y } }
+      : null,
   restore: async (saved, extras) => {
-    if (saved && extras.modelBuffer) await placeModel(extras.modelBuffer, saved.name ?? "model.3dm", saved.scale);
+    if (saved && extras.modelBuffer) await placeModel(extras.modelBuffer, saved.name ?? "model.3dm", saved.scale, saved.pose);
   },
 });

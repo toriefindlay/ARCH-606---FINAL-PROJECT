@@ -35,7 +35,7 @@ const rates = () => ({ people: settings.people, cars: settings.cars });
 
 // Called by the traffic for every particle step: wears the mass where particles pass through it.
 const visit = (isCar, x, y, dt) => {
-  if (settings.carve && erosion) erosion.visit(isCar, x, y, dt * settings.erode);
+  if (erosion && (isCar ? settings.erodeCars : settings.erodePeople)) erosion.visit(isCar, x, y, dt * settings.erode);
 };
 
 // Drawn lines are world coordinates (x east, z = -north); traffic uses site coordinates (x east, y north).
@@ -78,7 +78,7 @@ function startCarving() {
 }
 
 function carveFrame(dt) {
-  if (!erosion || !settings.carve) return;
+  if (!erosion) return;
   carveClock += dt;
   if (carveClock < CARVE_INTERVAL) return;
   carveClock = 0;
@@ -104,6 +104,7 @@ export function mountExterior() {
 
   on("site:built", ({ site }) => {
     layers.traffic = new THREE.Group();
+    layers.traffic.visible = false; // a site opens bare: traffic, sun and wind are switched on by the user
     state.siteGroup.add(layers.traffic);
     view = createTrafficView(layers.traffic);
     settings.leftHand = drivesLeft(site);
@@ -126,7 +127,7 @@ export function mountExterior() {
 
   onFrame((dt) => {
     if (!sim) return;
-    if (settings.playing) {
+    if (settings.playing && layers.traffic?.visible) {
       const total = dt * settings.speed, n = Math.max(1, Math.ceil(total / MAX_SUBSTEP));
       for (let i = 0; i < n; i++) sim.step(total / n, rates());
       carveFrame(dt);
