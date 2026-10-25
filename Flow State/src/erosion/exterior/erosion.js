@@ -10,12 +10,13 @@ import * as THREE from "three";
 import { createCut } from "../contract.js";
 
 const THRESHOLDS = [30, 120, 480]; // people-seconds of presence for use levels 1, 2, 3 (for 4 m cells)
-const CAR_WEIGHT = 4; // one car-second counts as this many people-seconds
+const CAR_WEIGHT = 8; // one car-second counts as this many people-seconds (a car is gone from a cell far sooner)
 const CAR_CLEARANCE = 4.5; // metres a space must open up once cars use it
 const ROOF = 1.5; // metres of mass always left above a stepped or prismatic tunnel
+const CAR_HOLLOW = 2.6; // metres high a round hollow is once cars pass through it
 
-export const MAX_SPHERES = 192;
-export const SPHERE_SQUASH = 0.8; // round hollows are this much lower than they are wide
+export const MAX_SPHERES = 768;
+export const SPHERE_SQUASH = 1.6; // round hollows are this much higher than they are wide: thin passages, standing height
 
 export function createErosion(scan) {
   const { nU, nV, cu, cv, storey, profile, ok, topMin } = scan;
@@ -32,11 +33,28 @@ export function createErosion(scan) {
   const heatScale = Math.min(2, Math.max(0.4, Math.min(cu, cv) / 4));
   const T = THRESHOLDS.map((t) => t * heatScale);
 
+  // Round erosion records contact on a much finer grid than the lattice, so each route wears as a thin line.
+  let fine = null;
+  if (profile === "round") {
+    const g = Math.max(0.6, Math.max(nU * cu, nV * cv) / 220); // metres per fine cell
+    const fU = Math.ceil((nU * cu) / g), fV = Math.ceil((nV * cv) / g);
+    fine = { g, nU: fU, nV: fV, heatPeople: new Float32Array(fU * fV), heatCars: new Float32Array(fU * fV), T: THRESHOLDS.map((t) => (t * g) / 4) };
+  }
+
   // x, y: site metres (east, north). seconds: simulated time spent, already scaled by the erosion speed.
+  // Only counts where the figure touches the mass: the mass's height map must have mass under the figure.
   er.visit = (isCar, x, y, seconds) => {
     const [u, v] = scan.toUV(x, -y); // site (east, north) -> world (x, z = -north) -> lattice
+    if (u < 0 || v < 0) return;
+    const si = Math.floor(u / (cu / scan.sub)), sj = Math.floor(v / (cv / scan.sub));
+    if (si >= scan.hw || sj >= scan.hh || scan.hf[sj * scan.hw + si] <= 0.5) return;
+    if (fine) {
+      const fi = Math.floor(u / fine.g), fj = Math.floor(v / fine.g);
+      if (fi < fine.nU && fj < fine.nV) (isCar ? fine.heatCars : fine.heatPeople)[fj * fine.nU + fi] += seconds;
+      return;
+    }
     const i = Math.floor(u / cu), j = Math.floor(v / cv);
-    if (i < 0 || j < 0 || i >= nU || j >= nV) return;
+    if (i >= nU || j >= nV) return;
     const k = j * nU + i;
     if (ok[k]) (isCar ? er.heatCars : er.heatPeople)[k] += seconds;
   };
@@ -81,26 +99,29 @@ export function createErosion(scan) {
     return changed;
   };
 
-  // Round: one domed hollow per busy cell, bigger where use is heavier, thinned so neighbours don't pile up.
-  // The hollow may break through the roof near the mass's rim, which is how it opens to the outside.
+  // Round: one small domed hollow per worn fine cell, a little wider where use is heavier. Along a route they overlap
+  // into a thin passage. The most-worn cells are kept first if there are more than MAX_SPHERES.
+  // A hollow may break through the roof near the mass's rim, which is how it opens to the outside.
   const recomputeSpheres = () => {
-    const level = useLevels();
+    const { g, nU: fU, T: fT, heatPeople, heatCars } = fine;
     const r0 = scan.tunnelRadius;
     const candidates = [];
-    for (let k = 0; k < size; k++) {
-      let n = level[k];
-      if (carsUse(k) && ok[k]) n = Math.max(n, 1);
+    for (let k = 0; k < heatPeople.length; k++) {
+      const heat = heatPeople[k] + CAR_WEIGHT * heatCars[k];
+      const cars = heatCars[k] >= fT[0] / CAR_WEIGHT;
+      let n = heat >= fT[2] ? 3 : heat >= fT[1] ? 2 : heat >= fT[0] ? 1 : 0;
+      if (cars) n = Math.max(n, 1);
       if (!n) continue;
-      let r = r0 * (1 + 0.35 * (n - 1));
-      if (carsUse(k)) r = Math.max(r, CAR_CLEARANCE / SPHERE_SQUASH);
-      const [x, z] = scan.toXZ(((k % nU) + 0.5) * cu, (Math.floor(k / nU) + 0.5) * cv);
-      candidates.push({ x, z, r });
+      let r = r0 * (1 + 0.25 * (n - 1));
+      if (cars) r = Math.max(r, CAR_HOLLOW / SPHERE_SQUASH);
+      const [x, z] = scan.toXZ(((k % fU) + 0.5) * g, (Math.floor(k / fU) + 0.5) * g);
+      candidates.push({ x, z, r, heat });
     }
-    candidates.sort((a, b) => b.r - a.r);
+    candidates.sort((a, b) => b.heat - a.heat);
     const spheres = [];
     for (const c of candidates) {
       if (spheres.length >= MAX_SPHERES) break;
-      if (spheres.every((s) => Math.hypot(s.x - c.x, s.z - c.z) >= 0.45 * Math.min(s.r, c.r))) spheres.push(c);
+      if (spheres.every((s) => Math.hypot(s.x - c.x, s.z - c.z) >= 0.7 * Math.min(s.r, c.r))) spheres.push({ x: c.x, z: c.z, r: c.r });
     }
     const same = spheres.length === er.spheres.length &&
       spheres.every((s, i) => Math.abs(s.x - er.spheres[i].x) + Math.abs(s.z - er.spheres[i].z) + Math.abs(s.r - er.spheres[i].r) < 1e-3);
@@ -118,6 +139,8 @@ export function createErosion(scan) {
   er.clear = () => {
     er.heatPeople.fill(0);
     er.heatCars.fill(0);
+    fine?.heatPeople.fill(0);
+    fine?.heatCars.fill(0);
     return er.recompute();
   };
   return er;
@@ -160,7 +183,7 @@ function roundCut(er) {
       const d = Math.hypot(x - s.x, y / SPHERE_SQUASH, z - s.z) - s.r;
       if (d < best) best = d;
     }
-    return best * SPHERE_SQUASH;
+    return best * Math.min(1, SPHERE_SQUASH);
   };
   return makeCut(bounds, sdf);
 }

@@ -75,6 +75,7 @@ const carveUniforms = {
   uCarveInv: { value: new THREE.Vector4(1, 0, 0, 1) }, // world (x, z) -> lattice (u, v): u = xy·(x, z), v = zw·(x, z)
   uSphereTex: { value: EMPTY }, // round hollows: x, z, radius per texel
   uSphereCount: { value: 0 },
+  uSphereMask: { value: EMPTY }, // 1 in every lattice cell a round hollow reaches
 };
 
 const CARVE_GLSL = /* glsl */ `
@@ -85,18 +86,8 @@ uniform vec2 uCarveSize;
 uniform vec4 uCarveInv;
 uniform sampler2D uSphereTex;
 uniform float uSphereCount;
+uniform sampler2D uSphereMask;
 varying vec3 vCarvePos;
-// True if p is inside a round hollow (a sphere centred on the ground, squashed in height), shrunk by \`shrink\` metres.
-bool carveSphere(vec3 p, float shrink) {
-  for (int i = 0; i < ${MAX_SPHERES}; i++) {
-    if (float(i) >= uSphereCount) break;
-    vec4 s = texture2D(uSphereTex, vec2((float(i) + 0.5) / ${MAX_SPHERES}.0, 0.5));
-    vec3 d = vec3(p.x - s.x, p.y / ${SPHERE_SQUASH.toFixed(2)}, p.z - s.y);
-    float r = s.z - shrink;
-    if (dot(d, d) < r * r) return true;
-  }
-  return false;
-}
 vec2 carveUV(vec3 p) {
   return vec2(uCarveInv.x * p.x + uCarveInv.y * p.z - uCarveFrame.x, uCarveInv.z * p.x + uCarveInv.w * p.z - uCarveFrame.y);
 }
@@ -121,6 +112,22 @@ float carveTop(vec3 p) {
   vec2 uv = carveUV(p) / (uCarveSize * uCarveFrame.zw);
   if (uv.x < 0.0 || uv.y < 0.0 || uv.x > 1.0 || uv.y > 1.0) return 0.0;
   return texture2D(uTopTex, uv).r;
+}
+// True if p is inside a round hollow (a sphere centred on the ground, stretched in height), shrunk by \`shrink\` metres.
+// The mask says which lattice cells any hollow reaches, so most of the mass skips the loop.
+bool carveSphere(vec3 p, float shrink) {
+  if (uSphereCount <= 0.0) return false;
+  vec2 uv = carveUV(p) / (uCarveSize * uCarveFrame.zw);
+  if (uv.x < 0.0 || uv.y < 0.0 || uv.x > 1.0 || uv.y > 1.0) return false;
+  if (texture2D(uSphereMask, uv).r < 0.5) return false;
+  for (int i = 0; i < ${MAX_SPHERES}; i++) {
+    if (float(i) >= uSphereCount) break;
+    vec4 s = texture2D(uSphereTex, vec2((float(i) + 0.5) / ${MAX_SPHERES}.0, 0.5));
+    vec3 d = vec3(p.x - s.x, p.y / ${SPHERE_SQUASH.toFixed(2)}, p.z - s.y);
+    float r = s.z - shrink;
+    if (dot(d, d) < r * r) return true;
+  }
+  return false;
 }
 `;
 // The mass: drop what lies inside a carved cell or a round hollow.
@@ -202,19 +209,20 @@ const hollowMaterial = new THREE.MeshLambertMaterial({ color: 0xf2cbb9, side: TH
 patch(hollowMaterial, "carve-hollow", DISCARD_OUTSIDE_MASS);
 
 export function createCarveView() {
-  let group = null, hTexture = null, topTexture = null, sphereTexture = null, hollows = null, scan = null;
+  let group = null, hTexture = null, topTexture = null, sphereTexture = null, maskTexture = null, hollows = null, scan = null;
   const dummy = new THREE.Object3D();
 
   const clear = () => {
     carveUniforms.uCarveSize.value.set(0, 0);
     carveUniforms.uSphereCount.value = 0;
-    carveUniforms.uCarveH.value = carveUniforms.uTopTex.value = carveUniforms.uSphereTex.value = EMPTY;
+    carveUniforms.uCarveH.value = carveUniforms.uTopTex.value = carveUniforms.uSphereTex.value = carveUniforms.uSphereMask.value = EMPTY;
     group?.traverse((o) => o.geometry?.dispose());
     group?.parent?.remove(group);
     hTexture?.dispose();
     topTexture?.dispose();
     sphereTexture?.dispose();
-    group = hTexture = topTexture = sphereTexture = hollows = scan = null;
+    maskTexture?.dispose();
+    group = hTexture = topTexture = sphereTexture = maskTexture = hollows = scan = null;
   };
 
   return {
@@ -238,7 +246,9 @@ export function createCarveView() {
         sphereTexture.minFilter = sphereTexture.magFilter = THREE.NearestFilter;
         sphereTexture.needsUpdate = true;
         carveUniforms.uSphereTex.value = sphereTexture;
-        hollows = new THREE.InstancedMesh(new THREE.SphereGeometry(1, 28, 18), hollowMaterial, MAX_SPHERES);
+        maskTexture = dataTexture(new Float32Array(lattice.nU * lattice.nV), lattice.nU, lattice.nV);
+        carveUniforms.uSphereMask.value = maskTexture;
+        hollows = new THREE.InstancedMesh(new THREE.SphereGeometry(1, 16, 10), hollowMaterial, MAX_SPHERES);
         hollows.count = 0;
         hollows.frustumCulled = false;
         group.add(hollows);
@@ -248,10 +258,17 @@ export function createCarveView() {
     update(er) {
       if (!group) return;
       if (hollows) {
-        const data = sphereTexture.image.data;
+        const data = sphereTexture.image.data, mask = maskTexture.image.data;
         data.fill(0);
+        mask.fill(0);
+        const { nU, nV, cu, cv } = scan;
         er.spheres.forEach((s, i) => {
           data.set([s.x, s.z, s.r, 0], i * 4);
+          // Mark the lattice cells this hollow reaches, with a cell to spare.
+          const [u, v] = scan.toUV(s.x, s.z), reach = s.r * 1.5;
+          for (let j = Math.max(0, Math.floor((v - reach) / cv) - 1); j <= Math.min(nV - 1, Math.floor((v + reach) / cv) + 1); j++) {
+            for (let k = Math.max(0, Math.floor((u - reach) / cu) - 1); k <= Math.min(nU - 1, Math.floor((u + reach) / cu) + 1); k++) mask[j * nU + k] = 1;
+          }
           dummy.position.set(s.x, 0, s.z);
           dummy.scale.set(s.r, s.r * SPHERE_SQUASH, s.r);
           dummy.updateMatrix();
@@ -260,6 +277,7 @@ export function createCarveView() {
         hollows.count = er.spheres.length;
         hollows.instanceMatrix.needsUpdate = true;
         sphereTexture.needsUpdate = true;
+        maskTexture.needsUpdate = true;
         carveUniforms.uSphereCount.value = er.spheres.length;
         return;
       }

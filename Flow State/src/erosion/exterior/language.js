@@ -9,20 +9,20 @@
 import * as THREE from "three";
 
 const DEG = Math.PI / 180;
-const MAX_CELLS = 40; // per axis, keeps the height sampling to a few thousand rays
-const SUB = 2; // height samples per cell, per axis
+// Height-map samples are one ray each, so the sample count (cells × samples per cell) is kept to under ~10 000 rays.
+// Organic masses use coarse cells with 2 × 2 samples each; orthogonal and skewed masses use fine cells with one sample.
 const WINDOW = 6; // degrees either side of a direction that still count as that direction
 const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
 const median = (list) => Float64Array.from(list).sort()[list.length >> 1];
 const apart180 = (a, b) => { const d = Math.abs(a - b) % 180; return Math.min(d, 180 - d); }; // angle between two directions
 
 // Number of cells along one axis (from `lo`, `length` long) whose boundaries best fall on `lines` [{at, w}].
-function fitCells(lo, length, target, lines) {
-  const n0 = clamp(Math.round(length / target), 1, MAX_CELLS);
+function fitCells(lo, length, target, lines, maxCells) {
+  const n0 = clamp(Math.round(length / target), 1, maxCells);
   if (!lines.length) return n0;
   const total = lines.reduce((sum, l) => sum + l.w, 0);
   let best = n0, bestCost = Infinity;
-  for (let n = Math.max(1, Math.floor(n0 * 0.6)); n <= Math.min(MAX_CELLS, Math.ceil(n0 * 1.6)); n++) {
+  for (let n = Math.max(1, Math.floor(n0 * 0.6)); n <= Math.min(maxCells, Math.ceil(n0 * 1.6)); n++) {
     const cell = length / n;
     let miss = 0;
     for (const l of lines) {
@@ -117,6 +117,8 @@ export function scanMass(info) {
   // Mostly curved or sloping surface (domes, blobs) is organic whatever the wall directions say.
   if (surfaceArea > 0 && slantedArea / surfaceArea >= 0.5) { organic = true; skewed = false; axis2 = axis1 + 90; }
   const orthogonality = Math.max(orthoShare, skewed ? skewShare : 0);
+  const SUB = organic ? 2 : 1; // height samples per cell, per axis
+  const MAX_CELLS = organic ? 40 : 96; // per axis
 
   // Lattice: cells span axis1 (u) and axis2 (v). (u, v) are distances along those axes from the lattice origin.
   const phi = (((axis2 - axis1) % 180) + 180) % 180;
@@ -138,9 +140,10 @@ export function scanMass(info) {
   const along = (axis) => edgeLengths.filter((_, i) => organic || apart180(edgeAngles[i], axis) <= WINDOW);
   const blockU = clamp(median(along(axis1).concat([Lu / 4])), 6, 60);
   const blockV = clamp(median(along(axis1 + phi).concat([Lv / 4])), 6, 60);
-  // Organic masses use small square cells only to record where traffic passes; the carving itself is round.
+  // Organic masses use cells only to read the mass and keep a lattice; the carving itself is round hollows.
+  // Otherwise a cell is the width of one thin passage, an eighth of the block size along each axis.
   const fine = Math.max(2.5, Math.max(Lu, Lv) / MAX_CELLS);
-  const [targetU, targetV] = organic ? [fine, fine] : [clamp(blockU / 4, 2.5, 8), clamp(blockV / 4, 2.5, 8)];
+  const [targetU, targetV] = organic ? [fine, fine] : [clamp(blockU / 8, 1.2, 2.2), clamp(blockV / 8, 1.2, 2.2)];
 
   // Wall lines: walls running along axis1 sit at fixed v, walls along axis2 at fixed u. Cells snap to them.
   const linesU = [], linesV = [];
@@ -151,8 +154,8 @@ export function scanMass(info) {
       else if (apart180(direction, axis1 + phi) <= WINDOW) linesU.push([u, area]);
     }
   }
-  const nU = fitCells(umin, Lu, targetU, wallLines(linesU, wallArea));
-  const nV = fitCells(vmin, Lv, targetV, wallLines(linesV, wallArea));
+  const nU = fitCells(umin, Lu, targetU, wallLines(linesU, wallArea), MAX_CELLS);
+  const nV = fitCells(vmin, Lv, targetV, wallLines(linesV, wallArea), MAX_CELLS);
   const cu = Lu / nU, cv = Lv / nV; // cells span the mass's own extent, so edge cells meet its outer walls
 
   // Top height of the mass at SUB × SUB samples per cell, by casting rays straight down.
@@ -208,7 +211,7 @@ export function scanMass(info) {
       }
     }
     lobeRadius = Math.sqrt((covered * (cu / SUB) * (cv / SUB)) / (Math.PI * Math.max(1, lobes)));
-    tunnelRadius = clamp(lobeRadius * 0.3, 2.5, 7);
+    tunnelRadius = clamp(lobeRadius * 0.06, 1, 1.8); // thin: a person-wide passage, scaled a little with the lobes
   }
 
   // Storey: the usual step between the mass's tier heights. Several tiers make the carving stepped too.
@@ -219,7 +222,7 @@ export function scanMass(info) {
 
   return {
     axis1, axis2: axis1 + phi, skewed, organic, orthogonality, profile,
-    blockU, blockV, storey, lobeRadius, tunnelRadius, sinPhi: Math.sin(phi * DEG),
+    blockU, blockV, storey, lobeRadius, tunnelRadius, sinPhi: Math.sin(phi * DEG), sub: SUB,
     nU, nV, cu, cv, u0: umin, v0: vmin, inv, toUV, toXZ, hf, hw, hh, ok, topMin, tiers,
   };
 }
