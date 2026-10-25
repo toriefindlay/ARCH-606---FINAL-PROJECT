@@ -31,7 +31,26 @@ let erosion = null;
 let carve = null;
 let rescanTimer = 0;
 let carveClock = 0;
+let massArea = null; // the mass's footprint, as the traffic needs it (see makeArea)
 const rates = () => ({ people: settings.people, cars: settings.cars });
+
+// The mass's footprint in site metres, for the people who walk into it: where there is mass (the height map says so),
+// and a box around it.
+function makeArea(scan) {
+  const { hf, hw, hh, cu, cv, sub, nU, nV } = scan;
+  const contains = (x, y) => {
+    const [u, v] = scan.toUV(x, -y); // site (east, north) -> world (x, z = -north) -> lattice
+    if (u < 0 || v < 0) return false;
+    const i = Math.floor(u / (cu / sub)), j = Math.floor(v / (cv / sub));
+    return i < hw && j < hh && hf[j * hw + i] > 0.5;
+  };
+  const corners = [[0, 0], [nU * cu, 0], [0, nV * cv], [nU * cu, nV * cv]].map(([u, v]) => {
+    const [x, z] = scan.toXZ(u, v);
+    return [x, -z];
+  });
+  const xs = corners.map((c) => c[0]), ys = corners.map((c) => c[1]);
+  return { contains, bounds: { minX: Math.min(...xs), maxX: Math.max(...xs), minY: Math.min(...ys), maxY: Math.max(...ys) } };
+}
 
 // Called by the traffic for every particle step: wears the mass where particles pass through it.
 const visit = (isCar, x, y, dt) => {
@@ -53,6 +72,7 @@ function rebuild() {
   sim = createTraffic(state.features, state.site.radius, drawnLines());
   sim.warmUp(WARM_UP, rates()); // before the mass is hooked up: the warm-up should not carve
   sim.visit = visit;
+  sim.setMass(massArea);
 }
 
 // The mass moved, scaled or went away: its carving no longer fits, so start again from the new mass.
@@ -60,6 +80,8 @@ function stopCarving() {
   clearTimeout(rescanTimer);
   const had = !!erosion;
   erosion = null;
+  massArea = null;
+  sim?.setMass(null);
   setActiveErosion(null);
   carve?.clear();
   showLanguage(null);
@@ -73,6 +95,8 @@ function startCarving() {
   if (!scan) return;
   erosion = createErosion(scan);
   setActiveErosion(erosion);
+  massArea = makeArea(scan);
+  sim?.setMass(massArea); // from now on people who walk into the mass wander its floor
   carve.setLattice(scan, layers.model, info.object);
   showLanguage(scan);
 }
@@ -117,7 +141,7 @@ export function mountExterior() {
   });
   on("site:ready", syncControls);
   on("site:cleared", () => {
-    sim = view = erosion = null;
+    sim = view = erosion = massArea = null;
     clearTimeout(rescanTimer);
     setActiveErosion(null);
     carve.clear();

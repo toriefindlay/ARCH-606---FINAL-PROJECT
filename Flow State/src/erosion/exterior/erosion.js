@@ -9,7 +9,11 @@
 import * as THREE from "three";
 import { createCut } from "../contract.js";
 
-const THRESHOLDS = [30, 120, 480]; // people-seconds of presence for use levels 1, 2, 3 (for 4 m cells)
+const FIRST_WEAR = 30; // people-seconds in a 4 m cell before it first wears
+const GROWTH = 1.9; // each time the heat grows by this factor, a stepped or prismatic cell gains a use level
+const MAX_LEVEL = 5;
+const WIDEN = 0.45; // a round hollow gains this fraction of its base radius each time the heat doubles
+const MAX_WIDEN = 3; // ... up to this many times its base radius
 const CAR_WEIGHT = 8; // one car-second counts as this many people-seconds (a car is gone from a cell far sooner)
 const CAR_CLEARANCE = 4.5; // metres a space must open up once cars use it
 const ROOF = 1.5; // metres of mass always left above a stepped or prismatic tunnel
@@ -31,14 +35,14 @@ export function createErosion(scan) {
   const carStoreys = Math.ceil(CAR_CLEARANCE / storey);
   // Smaller cells see less of each passer-by, so need less heat to count as used.
   const heatScale = Math.min(2, Math.max(0.4, Math.min(cu, cv) / 4));
-  const T = THRESHOLDS.map((t) => t * heatScale);
+  const T0 = FIRST_WEAR * heatScale;
 
   // Round erosion records contact on a much finer grid than the lattice, so each route wears as a thin line.
   let fine = null;
   if (profile === "round") {
     const g = Math.max(0.6, Math.max(nU * cu, nV * cv) / 220); // metres per fine cell
     const fU = Math.ceil((nU * cu) / g), fV = Math.ceil((nV * cv) / g);
-    fine = { g, nU: fU, nV: fV, heatPeople: new Float32Array(fU * fV), heatCars: new Float32Array(fU * fV), T: THRESHOLDS.map((t) => (t * g) / 4) };
+    fine = { g, nU: fU, nV: fV, heatPeople: new Float32Array(fU * fV), heatCars: new Float32Array(fU * fV), T0: (FIRST_WEAR * g) / 4 };
   }
 
   // x, y: site metres (east, north). seconds: simulated time spent, already scaled by the erosion speed.
@@ -64,11 +68,11 @@ export function createErosion(scan) {
     for (let k = 0; k < size; k++) {
       if (!ok[k]) continue;
       const heat = er.heatPeople[k] + CAR_WEIGHT * er.heatCars[k];
-      level[k] = heat >= T[2] ? 3 : heat >= T[1] ? 2 : heat >= T[0] ? 1 : 0;
+      level[k] = heat >= T0 ? Math.min(MAX_LEVEL, 1 + Math.floor(Math.log(heat / T0) / Math.log(GROWTH))) : 0;
     }
     return level;
   };
-  const carsUse = (k) => er.heatCars[k] >= T[0] / CAR_WEIGHT;
+  const carsUse = (k) => er.heatCars[k] >= T0 / CAR_WEIGHT;
 
   // Stepped and prismatic: carved height per lattice cell.
   const recomputeCells = () => {
@@ -103,16 +107,15 @@ export function createErosion(scan) {
   // into a thin passage. The most-worn cells are kept first if there are more than MAX_SPHERES.
   // A hollow may break through the roof near the mass's rim, which is how it opens to the outside.
   const recomputeSpheres = () => {
-    const { g, nU: fU, T: fT, heatPeople, heatCars } = fine;
+    const { g, nU: fU, T0: fT0, heatPeople, heatCars } = fine;
     const r0 = scan.tunnelRadius;
     const candidates = [];
     for (let k = 0; k < heatPeople.length; k++) {
       const heat = heatPeople[k] + CAR_WEIGHT * heatCars[k];
-      const cars = heatCars[k] >= fT[0] / CAR_WEIGHT;
-      let n = heat >= fT[2] ? 3 : heat >= fT[1] ? 2 : heat >= fT[0] ? 1 : 0;
-      if (cars) n = Math.max(n, 1);
-      if (!n) continue;
-      let r = r0 * (1 + 0.25 * (n - 1));
+      const cars = heatCars[k] >= fT0 / CAR_WEIGHT;
+      if (heat < fT0 && !cars) continue;
+      // The more has passed, the wider it gets: a little more with every pass, not in jumps.
+      let r = r0 * Math.min(MAX_WIDEN, 1 + WIDEN * Math.log2(Math.max(1, heat / fT0)));
       if (cars) r = Math.max(r, CAR_HOLLOW / SPHERE_SQUASH);
       const [x, z] = scan.toXZ(((k % fU) + 0.5) * g, (Math.floor(k / fU) + 0.5) * g);
       candidates.push({ x, z, r, heat });
