@@ -52,6 +52,7 @@ const LANE_BAND = 1.2; // metres either side of a lane's centre that a car's lan
 const CROSS_LOOKAHEAD = 1.5; // metres ahead a person looks before stepping onto a road
 const MAX_WAIT = 40; // seconds a person waits to cross before giving up
 const ROAM_CELL = 1; // metres: the grid people wander on inside the mass
+const ATTRACTION = 2.5; // how strongly people inside the mass favour worn ground (in steps of the route to their goal)
 
 const gauss = () => Math.sqrt(-2 * Math.log(1 - Math.random())) * Math.cos(2 * Math.PI * Math.random());
 const expo = (rate) => -Math.log(1 - Math.random()) / rate; // seconds until the next Poisson arrival
@@ -274,7 +275,8 @@ export function createTraffic(features, radius, drawn = { roads: [], paths: [] }
   const onCarriageway = buildCarriageway(roads.ways);
   const limit2 = (radius * 1.1) ** 2;
   // sim.visit(isCar, x, y, dt), when set, is told every step where each particle is (site metres): used to wear the mass.
-  const sim = { people: [], cars: [], time: 0, visit: null, entryPoints: { people: walks.spawns.length, cars: roads.spawns.length } };
+  // sim.wear(x, y), when set, says how worn the mass is at a point (0..1): people inside it are drawn to worn ground.
+  const sim = { people: [], cars: [], time: 0, visit: null, wear: null, entryPoints: { people: walks.spawns.length, cars: roads.spawns.length } };
   let mass = null; // the floor people can wander on inside the mass (see buildFloor), or null
 
   const release = (points, mult, dt, add) => {
@@ -432,14 +434,17 @@ export function createTraffic(features, radius, drawn = { roads: [], paths: [] }
       if (Math.random() < 0.4) p.pause = 1 + Math.random() * 3; // stop and look around
       return true;
     }
-    // Head for the neighbouring cell that is closest to the goal, turning gradually and wandering a little.
+    // Head for a neighbouring cell that is no farther from the goal, preferring worn ground: that is what makes separate
+    // trails settle into the same few routes, which merge like tributaries and branch out again near the entrances and exits.
     const i = c % mass.nx, j = Math.floor(c / mass.nx);
-    let best = -1, bestValue = field[c];
+    let best = -1, bestScore = Infinity;
     for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]]) {
       const ni = i + di, nj = j + dj;
       if (ni < 0 || nj < 0 || ni >= mass.nx || nj >= mass.ny) continue;
       const nk = nj * mass.nx + ni;
-      if (mass.free[nk] && field[nk] < bestValue) { bestValue = field[nk]; best = nk; }
+      if (!mass.free[nk] || field[nk] > field[c]) continue;
+      const score = field[nk] - (sim.wear ? ATTRACTION * sim.wear(...mass.centre(nk)) : 0) + Math.random() * 0.3;
+      if (score < bestScore) { bestScore = score; best = nk; }
     }
     if (best < 0) { p.goals.shift(); if (!p.goals.length) return false; p.field = mass.fieldTo(p.goals[0]); return true; }
     const [tx, ty] = mass.centre(best);

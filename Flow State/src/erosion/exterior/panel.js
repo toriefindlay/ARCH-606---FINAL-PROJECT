@@ -47,8 +47,7 @@ export function mountPanel(el, hooks = {}) {
       <input type="range" id="traffic-erode" min="0.5" max="8" step="0.5">
     </label>
     <button type="button" class="tool" id="traffic-clear-erosion" style="width:100%;margin-bottom:8px">Clear erosion</button>
-    <p id="carve-readout" class="stats"></p>
-    <p class="hint" style="margin-top:0">Import a mass: people and cars passing through it wear stepped tunnels, built from the mass's own axis, block size and storey height.</p>`;
+    <p class="hint" style="margin-top:0">Import a mass: where people and cars touch it they wear thin passages along their routes. Each pass widens a passage and darkens its purple.</p>`;
 
   $("traffic-play").addEventListener("click", () => { settings.playing = !settings.playing; syncControls(); });
   $("traffic-reset").addEventListener("click", () => onReset());
@@ -75,21 +74,6 @@ export function syncControls() {
   $("traffic-left").checked = settings.leftHand;
   $("erode-people").checked = settings.erodePeople;
   $("erode-cars").checked = settings.erodeCars;
-}
-
-// What was read from the mass, shown under the carving controls.
-export function showLanguage(scan) {
-  const el = $("carve-readout");
-  if (!el) return;
-  const form = scan?.organic ? "organic" : scan?.skewed ? "skewed" : "orthogonal";
-  el.innerHTML = scan
-    ? `Mass reads as <b>${form}</b> (${Math.round(scan.orthogonality * 100)}% of walls on its two axes)<br>` +
-      `axes <b>${scan.axis1.toFixed(0)}°</b> and <b>${(scan.axis2 % 180).toFixed(0)}°</b> · blocks <b>${scan.blockU.toFixed(0)} × ${scan.blockV.toFixed(0)} m</b><br>` +
-      (scan.organic
-        ? `lobes about <b>${scan.lobeRadius.toFixed(0)} m</b> across · round hollows <b>${scan.tunnelRadius.toFixed(1)} m</b> radius`
-        : `storey <b>${scan.storey.toFixed(1)} m</b> · <b>${scan.profile}</b> profile<br>` +
-          `carving in <b>${scan.cu.toFixed(1)} × ${scan.cv.toFixed(1)} m</b> cells (${scan.nU} × ${scan.nV})`)
-    : "";
 }
 
 export function updateReadout(sim) {

@@ -55,9 +55,9 @@ export function createTrafficView(group) {
 /* ---------- carved mass ---------- */
 
 // The mass is a plain mesh with no boolean applied (see ARCHITECTURE: erosion uses distance fields), so the carve is
-// shown in two parts. (1) The mass's material discards any fragment inside a carved cell. (2) The inside of each carved
-// space (ceiling and walls) is drawn as its own mesh, clipped to where the mass actually is.
-// Cells live on the lattice from language.js; both parts read it from textures through these shared uniforms.
+// shown in two parts. (1) The mass's material discards any fragment inside a hollow. (2) The inside of each hollow is
+// drawn as its own surface, clipped to where the mass actually is, and coloured purple: lighter where little has
+// passed, darker with every pass. Both read the hollows from textures through these shared uniforms.
 
 const dataTexture = (data, w, h) => {
   const t = new THREE.DataTexture(data, w, h, THREE.RedFormat, THREE.FloatType);
@@ -68,18 +68,16 @@ const dataTexture = (data, w, h) => {
 const EMPTY = dataTexture(new Float32Array(1), 1, 1);
 
 const carveUniforms = {
-  uCarveH: { value: EMPTY }, // carved height per cell
   uTopTex: { value: EMPTY }, // top of the mass, 2 × 2 samples per cell
-  uCarveFrame: { value: new THREE.Vector4() }, // lattice origin u, v and cell size u, v
+  uCarveFrame: { value: new THREE.Vector4() }, // grid origin u, v and cell size u, v
   uCarveSize: { value: new THREE.Vector2() }, // cells in u, v (0 = nothing carved)
-  uCarveInv: { value: new THREE.Vector4(1, 0, 0, 1) }, // world (x, z) -> lattice (u, v): u = xy·(x, z), v = zw·(x, z)
-  uSphereTex: { value: EMPTY }, // round hollows: x, z, radius per texel
+  uCarveInv: { value: new THREE.Vector4(1, 0, 0, 1) }, // world (x, z) -> grid (u, v): u = xy·(x, z), v = zw·(x, z)
+  uSphereTex: { value: EMPTY }, // hollows: x, z, radius per texel
   uSphereCount: { value: 0 },
-  uSphereMask: { value: EMPTY }, // 1 in every lattice cell a round hollow reaches
+  uSphereMask: { value: EMPTY }, // 1 in every grid cell a hollow reaches
 };
 
 const CARVE_GLSL = /* glsl */ `
-uniform sampler2D uCarveH;
 uniform sampler2D uTopTex;
 uniform vec4 uCarveFrame;
 uniform vec2 uCarveSize;
@@ -91,30 +89,14 @@ varying vec3 vCarvePos;
 vec2 carveUV(vec3 p) {
   return vec2(uCarveInv.x * p.x + uCarveInv.y * p.z - uCarveFrame.x, uCarveInv.z * p.x + uCarveInv.w * p.z - uCarveFrame.y);
 }
-bool carveInside(vec3 p, float eps) {
-  vec2 uv = carveUV(p);
-  vec2 cell = uCarveFrame.zw;
-  vec2 c0 = floor(uv / cell);
-  for (int a = -1; a <= 1; a++) {
-    for (int b = -1; b <= 1; b++) {
-      vec2 c = c0 + vec2(float(a), float(b));
-      if (c.x < 0.0 || c.y < 0.0 || c.x >= uCarveSize.x || c.y >= uCarveSize.y) continue;
-      float h = texture2D(uCarveH, (c + 0.5) / uCarveSize).r;
-      if (h <= 0.0) continue;
-      vec2 d = abs(uv - (c + 0.5) * cell) - (0.5 * cell + eps);
-      if (d.x <= 0.0 && d.y <= 0.0 && p.y < h) return true;
-    }
-  }
-  return false;
-}
 float carveTop(vec3 p) {
   if (uCarveSize.x <= 0.0) return 0.0;
   vec2 uv = carveUV(p) / (uCarveSize * uCarveFrame.zw);
   if (uv.x < 0.0 || uv.y < 0.0 || uv.x > 1.0 || uv.y > 1.0) return 0.0;
   return texture2D(uTopTex, uv).r;
 }
-// True if p is inside a round hollow (a sphere centred on the ground, stretched in height), shrunk by \`shrink\` metres.
-// The mask says which lattice cells any hollow reaches, so most of the mass skips the loop.
+// True if p is inside a hollow (a sphere centred on the ground, stretched in height), shrunk by \`shrink\` metres.
+// The mask says which grid cells any hollow reaches, so most of the mass skips the loop.
 bool carveSphere(vec3 p, float shrink) {
   if (uSphereCount <= 0.0) return false;
   vec2 uv = carveUV(p) / (uCarveSize * uCarveFrame.zw);
@@ -130,9 +112,9 @@ bool carveSphere(vec3 p, float shrink) {
   return false;
 }
 `;
-// The mass: drop what lies inside a carved cell or a round hollow.
-const DISCARD_CARVED = "if (carveInside(vCarvePos, 0.06) || carveSphere(vCarvePos, -0.06)) discard;";
-// The inside of a carved space: drop what is outside the mass, underground, or inside a neighbouring hollow.
+// The mass: drop what lies inside a hollow.
+const DISCARD_CARVED = "if (carveSphere(vCarvePos, -0.06)) discard;";
+// The inside of a hollow: drop what is outside the mass, underground, or inside a neighbouring hollow.
 const DISCARD_OUTSIDE_MASS =
   "float carveT = carveTop(vCarvePos); if (carveT < 0.05 || vCarvePos.y > carveT + 0.03 || vCarvePos.y < 0.0 || carveSphere(vCarvePos, 0.05)) discard;";
 
@@ -153,7 +135,7 @@ function patch(material, key, body) {
   material.needsUpdate = true;
 }
 
-// The mass's own materials (shared white-model material and its edge lines) start discarding carved cells.
+// The mass's own materials (shared white-model material and its edge lines) start discarding what lies in a hollow.
 function patchMass(root) {
   root.traverse((o) => {
     const materials = [o.material].flat().filter(Boolean);
@@ -162,133 +144,82 @@ function patchMass(root) {
   });
 }
 
-const wallMaterial = new THREE.MeshLambertMaterial({ color: 0xf2cbb9, side: THREE.DoubleSide });
-const wallEdgeMaterial = new THREE.LineBasicMaterial({ color: 0x7a2a12 });
-patch(wallMaterial, "carve-wall", DISCARD_OUTSIDE_MASS);
-patch(wallEdgeMaterial, "carve-wall-edge", DISCARD_OUTSIDE_MASS);
-
-// Ceiling of every carved cell, and a wall wherever it is taller than a neighbour that is also inside the mass.
-// Neighbours outside the mass get no wall: that side is the opening.
-function wallGeometry(scan, H) {
-  const { nU, nV, cu, cv, ok } = scan;
-  const pos = [];
-  const P = (u, y, v) => {
-    const [x, z] = scan.toXZ(u, v);
-    return [x, y, z];
-  };
-  const quad = (a, b, c, d) => pos.push(...a, ...b, ...c, ...a, ...c, ...d);
-  for (let j = 0; j < nV; j++) {
-    for (let i = 0; i < nU; i++) {
-      const h = H[j * nU + i];
-      if (!h) continue;
-      const x0 = i * cu, x1 = x0 + cu, z0 = j * cv, z1 = z0 + cv;
-      quad(P(x0, h, z0), P(x1, h, z0), P(x1, h, z1), P(x0, h, z1));
-      const sides = [
-        [1, 0, [x1, z0], [x1, z1]],
-        [-1, 0, [x0, z0], [x0, z1]],
-        [0, 1, [x0, z1], [x1, z1]],
-        [0, -1, [x0, z0], [x1, z0]],
-      ];
-      for (const [di, dj, [au, av], [bu, bv]] of sides) {
-        const ni = i + di, nj = j + dj;
-        if (ni < 0 || nj < 0 || ni >= nU || nj >= nV || !ok[nj * nU + ni]) continue;
-        const low = H[nj * nU + ni];
-        if (low >= h) continue;
-        quad(P(au, low, av), P(bu, low, bv), P(bu, h, bv), P(au, h, av));
-      }
-    }
-  }
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
-  geo.computeVertexNormals();
-  return geo;
-}
-
-// Round hollows are drawn as spheres seen from inside (domed, squashed in height), clipped like the walls above.
-const hollowMaterial = new THREE.MeshLambertMaterial({ color: 0xf2cbb9, side: THREE.BackSide });
+// Hollows are drawn as spheres seen from inside (domed, stretched in height). Each one's colour comes from its wear.
+const hollowMaterial = new THREE.MeshLambertMaterial({ color: 0xffffff, side: THREE.BackSide });
 patch(hollowMaterial, "carve-hollow", DISCARD_OUTSIDE_MASS);
 
+// Light lilac where little has passed, deep purple where most has: wear 0..1.
+const LIGHT_PURPLE = 0.8, DARK_PURPLE = 0.13; // lightness
+const wearColour = (color, wear) => color.setHSL(0.76, 0.5, LIGHT_PURPLE + (DARK_PURPLE - LIGHT_PURPLE) * wear);
+
 export function createCarveView() {
-  let group = null, hTexture = null, topTexture = null, sphereTexture = null, maskTexture = null, hollows = null, scan = null;
-  const dummy = new THREE.Object3D();
+  let group = null, topTexture = null, sphereTexture = null, maskTexture = null, hollows = null, scan = null;
+  const dummy = new THREE.Object3D(), colour = new THREE.Color();
 
   const clear = () => {
     carveUniforms.uCarveSize.value.set(0, 0);
     carveUniforms.uSphereCount.value = 0;
-    carveUniforms.uCarveH.value = carveUniforms.uTopTex.value = carveUniforms.uSphereTex.value = carveUniforms.uSphereMask.value = EMPTY;
+    carveUniforms.uTopTex.value = carveUniforms.uSphereTex.value = carveUniforms.uSphereMask.value = EMPTY;
     group?.traverse((o) => o.geometry?.dispose());
     group?.parent?.remove(group);
-    hTexture?.dispose();
     topTexture?.dispose();
     sphereTexture?.dispose();
     maskTexture?.dispose();
-    group = hTexture = topTexture = sphereTexture = maskTexture = hollows = scan = null;
+    group = topTexture = sphereTexture = maskTexture = hollows = scan = null;
   };
 
   return {
     clear,
-    // Start showing carving on `root` (the placed mass), adding the interior meshes to `parent`.
+    // Start showing hollows in `root` (the placed mass), adding their inside surfaces to `parent`.
     setLattice(lattice, parent, root) {
       clear();
       scan = lattice;
       patchMass(root);
       topTexture = dataTexture(lattice.hf, lattice.hw, lattice.hh);
-      hTexture = dataTexture(new Float32Array(lattice.nU * lattice.nV), lattice.nU, lattice.nV);
+      sphereTexture = new THREE.DataTexture(new Float32Array(MAX_SPHERES * 4), MAX_SPHERES, 1, THREE.RGBAFormat, THREE.FloatType);
+      sphereTexture.minFilter = sphereTexture.magFilter = THREE.NearestFilter;
+      sphereTexture.needsUpdate = true;
+      maskTexture = dataTexture(new Float32Array(lattice.nU * lattice.nV), lattice.nU, lattice.nV);
       carveUniforms.uCarveFrame.value.set(lattice.u0, lattice.v0, lattice.cu, lattice.cv);
       carveUniforms.uCarveSize.value.set(lattice.nU, lattice.nV);
       carveUniforms.uCarveInv.value.set(...lattice.inv);
-      carveUniforms.uCarveH.value = hTexture;
       carveUniforms.uTopTex.value = topTexture;
+      carveUniforms.uSphereTex.value = sphereTexture;
+      carveUniforms.uSphereMask.value = maskTexture;
+      hollows = new THREE.InstancedMesh(new THREE.SphereGeometry(1, 16, 10), hollowMaterial, MAX_SPHERES);
+      hollows.setColorAt(0, colour.set(0xffffff)); // creates the per-instance colour, so the material uses it from the start
+      hollows.count = 0;
+      hollows.frustumCulled = false;
       group = new THREE.Group();
+      group.add(hollows);
       parent.add(group);
-      if (lattice.profile === "round") {
-        sphereTexture = new THREE.DataTexture(new Float32Array(MAX_SPHERES * 4), MAX_SPHERES, 1, THREE.RGBAFormat, THREE.FloatType);
-        sphereTexture.minFilter = sphereTexture.magFilter = THREE.NearestFilter;
-        sphereTexture.needsUpdate = true;
-        carveUniforms.uSphereTex.value = sphereTexture;
-        maskTexture = dataTexture(new Float32Array(lattice.nU * lattice.nV), lattice.nU, lattice.nV);
-        carveUniforms.uSphereMask.value = maskTexture;
-        hollows = new THREE.InstancedMesh(new THREE.SphereGeometry(1, 16, 10), hollowMaterial, MAX_SPHERES);
-        hollows.count = 0;
-        hollows.frustumCulled = false;
-        group.add(hollows);
-      }
     },
-    // Show the carved shape of an erosion (see erosion.js): round hollows, or carved heights per cell.
+    // Show the hollows of an erosion (see erosion.js).
     update(er) {
       if (!group) return;
-      if (hollows) {
-        const data = sphereTexture.image.data, mask = maskTexture.image.data;
-        data.fill(0);
-        mask.fill(0);
-        const { nU, nV, cu, cv } = scan;
-        er.spheres.forEach((s, i) => {
-          data.set([s.x, s.z, s.r, 0], i * 4);
-          // Mark the lattice cells this hollow reaches, with a cell to spare.
-          const [u, v] = scan.toUV(s.x, s.z), reach = s.r * 1.5;
-          for (let j = Math.max(0, Math.floor((v - reach) / cv) - 1); j <= Math.min(nV - 1, Math.floor((v + reach) / cv) + 1); j++) {
-            for (let k = Math.max(0, Math.floor((u - reach) / cu) - 1); k <= Math.min(nU - 1, Math.floor((u + reach) / cu) + 1); k++) mask[j * nU + k] = 1;
-          }
-          dummy.position.set(s.x, 0, s.z);
-          dummy.scale.set(s.r, s.r * SPHERE_SQUASH, s.r);
-          dummy.updateMatrix();
-          hollows.setMatrixAt(i, dummy.matrix);
-        });
-        hollows.count = er.spheres.length;
-        hollows.instanceMatrix.needsUpdate = true;
-        sphereTexture.needsUpdate = true;
-        maskTexture.needsUpdate = true;
-        carveUniforms.uSphereCount.value = er.spheres.length;
-        return;
-      }
-      const H = er.H;
-      hTexture.image.data.set(H);
-      hTexture.needsUpdate = true;
-      group.traverse((o) => o.geometry?.dispose());
-      group.clear();
-      const geo = wallGeometry(scan, H);
-      if (!geo.attributes.position.count) return;
-      group.add(new THREE.Mesh(geo, wallMaterial), new THREE.LineSegments(new THREE.EdgesGeometry(geo, 30), wallEdgeMaterial));
+      const data = sphereTexture.image.data, mask = maskTexture.image.data;
+      data.fill(0);
+      mask.fill(0);
+      const { nU, nV, cu, cv } = scan;
+      er.spheres.forEach((s, i) => {
+        data.set([s.x, s.z, s.r, 0], i * 4);
+        // Mark the grid cells this hollow reaches, with a cell to spare.
+        const [u, v] = scan.toUV(s.x, s.z), reach = s.r * 1.5;
+        for (let j = Math.max(0, Math.floor((v - reach) / cv) - 1); j <= Math.min(nV - 1, Math.floor((v + reach) / cv) + 1); j++) {
+          for (let k = Math.max(0, Math.floor((u - reach) / cu) - 1); k <= Math.min(nU - 1, Math.floor((u + reach) / cu) + 1); k++) mask[j * nU + k] = 1;
+        }
+        dummy.position.set(s.x, 0, s.z);
+        dummy.scale.set(s.r, s.r * SPHERE_SQUASH, s.r);
+        dummy.updateMatrix();
+        hollows.setMatrixAt(i, dummy.matrix);
+        hollows.setColorAt(i, wearColour(colour, s.wear));
+      });
+      hollows.count = er.spheres.length;
+      hollows.instanceMatrix.needsUpdate = true;
+      hollows.instanceColor.needsUpdate = true;
+      sphereTexture.needsUpdate = true;
+      maskTexture.needsUpdate = true;
+      carveUniforms.uSphereCount.value = er.spheres.length;
     },
   };
 }

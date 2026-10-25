@@ -8,8 +8,8 @@
 // away from neighbouring buildings, step it back for sun (see site/sun.js), channel or shelter
 // from the prevailing wind (ctx.wind.from).
 //
-// Built so far: flow erosion. People and cars passing through the mass wear tunnels into it,
-// shaped by the mass's own geometry (see erosion.js and language.js).
+// Built so far: flow erosion. People and cars touching the mass wear thin passages into it, following their routes
+// and widening with every pass (see erosion.js). The mass's own shape does not influence it.
 import { activeErosionCuts } from "./erosion.js";
 
 export function provideCuts(ctx) {

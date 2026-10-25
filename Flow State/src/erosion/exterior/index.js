@@ -8,10 +8,10 @@ import { getMassInfo } from "../../mass/model3dm.js";
 import { registerCutProvider, collectCuts, notifyCutsChanged } from "../combine.js";
 import { provideCuts } from "./rules.js";
 import { createTraffic } from "./traffic.js";
-import { scanMass } from "./language.js";
+import { scanMass } from "./massScan.js";
 import { createErosion, setActiveErosion } from "./erosion.js";
 import { renderPreview, createTrafficView, createCarveView } from "./view.js";
-import { mountPanel, settings, syncControls, updateReadout, showLanguage } from "./panel.js";
+import { mountPanel, settings, syncControls, updateReadout } from "./panel.js";
 
 // Rough check for the places a preset or a user is most likely to pick that drive on the left.
 const LEFT_HAND = [
@@ -72,6 +72,7 @@ function rebuild() {
   sim = createTraffic(state.features, state.site.radius, drawnLines());
   sim.warmUp(WARM_UP, rates()); // before the mass is hooked up: the warm-up should not carve
   sim.visit = visit;
+  sim.wear = (x, y) => (erosion ? erosion.wearAt(x, y) : 0); // people inside the mass favour worn ground
   sim.setMass(massArea);
 }
 
@@ -84,7 +85,6 @@ function stopCarving() {
   sim?.setMass(null);
   setActiveErosion(null);
   carve?.clear();
-  showLanguage(null);
   if (had) notifyCutsChanged();
 }
 
@@ -98,7 +98,6 @@ function startCarving() {
   massArea = makeArea(scan);
   sim?.setMass(massArea); // from now on people who walk into the mass wander its floor
   carve.setLattice(scan, layers.model, info.object);
-  showLanguage(scan);
 }
 
 function carveFrame(dt) {
@@ -146,8 +145,7 @@ export function mountExterior() {
     setActiveErosion(null);
     carve.clear();
     updateReadout(null);
-    showLanguage(null);
-  });
+    });
 
   onFrame((dt) => {
     if (!sim) return;
