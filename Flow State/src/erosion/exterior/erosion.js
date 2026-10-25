@@ -1,84 +1,133 @@
-// MODEL (exterior erosion): wears thin passages into the mass where people and cars touch it.
-// No scene or DOM code. The erosion is uniform: it does not depend on the mass's shape, only on where figures
-// have been and how often. Contact with the mass is recorded on a fine grid; every worn spot becomes a small
-// domed hollow, and hollows along a route overlap into a passage. Each pass widens its hollow a little and
-// darkens it, so heavily used routes grow into the widest, darkest channels.
+// MODEL (exterior erosion): slices thin strands into the mass wherever people and cars touch it.
+// No scene or DOM code. The erosion is uniform: it does not depend on the mass's shape, only on the routes taken.
+//
+// Contact is recorded on a grid of small cells. Each time a figure moves from one cell to the next while touching the
+// mass, the link between those two cells is one more pass of that channel. A link is a straight piece of strand between the
+// two cells' centres of use; linked cells form continuous strands that follow the routes exactly, and routes that share
+// cells share strands. A strand starts hair-thin and gets 1% wider every time its channel is passed through.
 import * as THREE from "three";
 import { createCut } from "../contract.js";
 
-const FIRST_WEAR = 30; // people-seconds in a 4 m cell before it first wears (scaled to the fine cells)
-const CAR_WEIGHT = 8; // one car-second counts as this many people-seconds (a car is gone from a spot far sooner)
-const HOLLOW_RADIUS = 1.2; // metres: a hollow before it has been passed many times
-const CAR_HOLLOW = 2.6; // metres high a hollow is once cars pass through it
-const WIDEN = 0.45; // a hollow gains this fraction of its base radius each time its wear doubles
-const MAX_WIDEN = 3; // ... up to this many times its base radius
-const DARKEST = 64; // wear this many times the first wear is as dark as it gets
-
-export const MAX_SPHERES = 768;
-export const SPHERE_SQUASH = 1.6; // hollows are this much higher than they are wide: standing height
+const CELL = 0.5; // metres: the grid that passes are recorded on
+const START_WIDTH = 0.03; // metres: half the width of a strand that has been passed once
+const GROWTH = 1.01; // each pass makes a strand this much wider
+const MAX_WIDTH = 1.2; // metres: the widest a strand's half-width gets
+const DARKEST_PASSES = 200; // a channel passed this many times is as dark as it gets
+const MAX_LINKS = 40000;
+const JUMP = 8; // metres: a figure that moves farther than this between two steps has not walked there
 
 export function createErosion(scan) {
   const { nU, nV, cu, cv } = scan;
-  const g = Math.max(0.6, Math.max(nU * cu, nV * cv) / 220); // metres per fine cell
-  const fU = Math.ceil((nU * cu) / g), fV = Math.ceil((nV * cv) / g);
-  const T0 = (FIRST_WEAR * g) / 4;
-  const er = { scan, heatPeople: new Float32Array(fU * fV), heatCars: new Float32Array(fU * fV), spheres: [], version: 0 };
-  // Wear so far: 1 at the first wear, 2 once it has doubled, and so on.
-  const wearOf = (k) => (er.heatPeople[k] + CAR_WEIGHT * er.heatCars[k]) / T0;
+  const cell = Math.max(CELL, Math.max(nU * cu, nV * cv) / 600);
+  const fU = Math.ceil((nU * cu) / cell), fV = Math.ceil((nV * cv) / cell);
+  const cells = fU * fV;
+  const er = { scan, version: 0 };
+  const passes = new Float32Array(cells); // passes through each cell
+  const sumX = new Float32Array(cells), sumZ = new Float32Array(cells), uses = new Uint32Array(cells); // where in the cell figures were
+  const links = new Map(); // "lower cell, higher cell" -> { a, b, count }
+  let dirty = false;
 
-  // x, y: site metres (east, north). seconds: simulated time spent, already scaled by the erosion speed.
-  // Only counts where the figure touches the mass: the mass's height map must have mass under the figure.
-  er.visit = (isCar, x, y, seconds) => {
-    const [u, v] = scan.toUV(x, -y); // site (east, north) -> world (x, z = -north) -> lattice
-    if (u < 0 || v < 0) return;
-    const si = Math.floor(u / (cu / scan.sub)), sj = Math.floor(v / (cv / scan.sub));
-    if (si >= scan.hw || sj >= scan.hh || scan.hf[sj * scan.hw + si] <= 0.5) return;
-    const fi = Math.floor(u / g), fj = Math.floor(v / g);
-    if (fi < fU && fj < fV) (isCar ? er.heatCars : er.heatPeople)[fj * fU + fi] += seconds;
+  const touching = (x, y) => {
+    const [u, v] = scan.toUV(x, -y); // site (east, north) -> world (x, z = -north) -> grid
+    if (u < 0 || v < 0) return false;
+    const i = Math.floor(u / (cu / scan.sub)), j = Math.floor(v / (cv / scan.sub));
+    return i < scan.hw && j < scan.hh && scan.hf[j * scan.hw + i] > 0.5;
+  };
+  const cellOf = (x, y) => {
+    const [u, v] = scan.toUV(x, -y);
+    const i = Math.floor(u / cell), j = Math.floor(v / cell);
+    return u < 0 || v < 0 || i >= fU || j >= fV ? -1 : j * fU + i;
+  };
+  const note = (k, x, y) => {
+    sumX[k] += x;
+    sumZ[k] += -y;
+    uses[k]++;
+  };
+  const link = (a, b, strength) => {
+    const key = a < b ? a * cells + b : b * cells + a;
+    let l = links.get(key);
+    if (!l) {
+      if (links.size >= MAX_LINKS) return;
+      l = { a: Math.min(a, b), b: Math.max(a, b), count: 0 };
+      links.set(key, l);
+    }
+    l.count += strength;
+    passes[b] += strength;
+    dirty = true;
+  };
+
+  // A figure at (x, y) (site metres). `strength` is how many passes this counts as (the erosion speed). `agent` is the
+  // figure, which remembers where it last touched the mass so that the cells in between can be linked.
+  er.visit = (isCar, x, y, strength, agent) => {
+    if (agent.erOwner !== er) { agent.erOwner = er; agent.erContact = false; } // its remembered cell belongs to an older erosion
+    if (!touching(x, y)) { agent.erContact = false; return; }
+    const k = cellOf(x, y);
+    if (k < 0) { agent.erContact = false; return; }
+    if (agent.erContact && Math.hypot(x - agent.erX, y - agent.erY) <= JUMP) {
+      // Step along from the last position in half-cell steps, linking each new cell to the one before.
+      const d = Math.hypot(x - agent.erX, y - agent.erY), steps = Math.max(1, Math.ceil(d / (cell * 0.5)));
+      let last = agent.erCell;
+      for (let s = 1; s <= steps; s++) {
+        const px = agent.erX + ((x - agent.erX) * s) / steps, py = agent.erY + ((y - agent.erY) * s) / steps;
+        const c = cellOf(px, py);
+        if (c < 0 || c === last) continue;
+        note(c, px, py);
+        if (last >= 0) link(last, c, strength);
+        last = c;
+      }
+      agent.erCell = last;
+    } else {
+      note(k, x, y);
+      agent.erCell = k;
+    }
+    agent.erX = x;
+    agent.erY = y;
+    agent.erContact = true;
   };
 
   // How worn the ground is at a point, 0 (untouched) to 1 (very worn). People inside the mass are drawn to worn ground,
-  // which is what makes separate trails merge into larger channels.
+  // which is what makes separate trails settle into the same channels.
   er.wearAt = (x, y) => {
-    const [u, v] = scan.toUV(x, -y);
-    const fi = Math.floor(u / g), fj = Math.floor(v / g);
-    if (u < 0 || v < 0 || fi >= fU || fj >= fV) return 0;
-    return Math.min(1, Math.log2(1 + wearOf(fj * fU + fi)) / 6);
+    const k = cellOf(x, y);
+    return k < 0 ? 0 : Math.min(1, Math.log2(1 + passes[k]) / 8);
   };
 
-  // Turns wear into hollows: one per worn fine cell, wider and darker the more it has been passed, thinned so that
-  // neighbours don't pile up. The most-worn cells are kept first if there are more than MAX_SPHERES.
-  // A hollow may break through the roof near the mass's rim, which is how it opens to the outside.
+  // Every strand as { ax, az, bx, bz, w, wear } in world metres: w is its half-width, wear 0..1 sets how dark it is.
+  er.segments = () => {
+    const at = (k) => {
+      const n = uses[k];
+      return n ? [sumX[k] / n, sumZ[k] / n] : scan.toXZ(((k % fU) + 0.5) * cell, (Math.floor(k / fU) + 0.5) * cell);
+    };
+    const out = [];
+    for (const l of links.values()) {
+      const [ax, az] = at(l.a), [bx, bz] = at(l.b);
+      out.push({
+        ax, az, bx, bz,
+        w: Math.min(MAX_WIDTH, START_WIDTH * GROWTH ** Math.max(0, l.count - 1)),
+        wear: Math.min(1, Math.log(1 + l.count) / Math.log(1 + DARKEST_PASSES)),
+      });
+    }
+    return out;
+  };
+
+  // Call every so often: says whether the strands have changed since the last call.
   er.recompute = () => {
-    const candidates = [];
-    for (let k = 0; k < er.heatPeople.length; k++) {
-      const wear = wearOf(k);
-      const cars = er.heatCars[k] >= T0 / CAR_WEIGHT;
-      if (wear < 1 && !cars) continue;
-      let r = HOLLOW_RADIUS * Math.min(MAX_WIDEN, 1 + WIDEN * Math.log2(Math.max(1, wear)));
-      if (cars) r = Math.max(r, CAR_HOLLOW / SPHERE_SQUASH);
-      const [x, z] = scan.toXZ(((k % fU) + 0.5) * g, (Math.floor(k / fU) + 0.5) * g);
-      candidates.push({ x, z, r, wear: Math.min(1, Math.log2(Math.max(1, wear)) / Math.log2(DARKEST)), heat: wear });
-    }
-    candidates.sort((a, b) => b.heat - a.heat);
-    const spheres = [];
-    for (const c of candidates) {
-      if (spheres.length >= MAX_SPHERES) break;
-      if (spheres.every((s) => Math.hypot(s.x - c.x, s.z - c.z) >= 0.7 * Math.min(s.r, c.r))) spheres.push({ x: c.x, z: c.z, r: c.r, wear: c.wear });
-    }
-    const same = spheres.length === er.spheres.length &&
-      spheres.every((s, i) => Math.abs(s.x - er.spheres[i].x) + Math.abs(s.z - er.spheres[i].z) + Math.abs(s.r - er.spheres[i].r) + Math.abs(s.wear - er.spheres[i].wear) < 1e-3);
-    if (!same) {
-      er.spheres = spheres;
-      er.version++;
-    }
-    return !same;
+    if (!dirty) return false;
+    dirty = false;
+    er.version++;
+    return true;
   };
 
   er.clear = () => {
-    er.heatPeople.fill(0);
-    er.heatCars.fill(0);
-    return er.recompute();
+    const had = links.size > 0;
+    passes.fill(0);
+    sumX.fill(0);
+    sumZ.fill(0);
+    uses.fill(0);
+    links.clear();
+    dirty = false;
+    if (had) er.version++;
+    return had;
   };
   return er;
 }
@@ -93,26 +142,30 @@ export function setActiveErosion(er) {
   cached = { version: -1, cuts: [] };
 }
 
-// Signed-distance cut (negative inside the carved volume) for the shared pipeline: the union of the hollows.
-// Distances are measured with the height squashed, so they are lower bounds.
+// Signed-distance cut (negative inside the carved volume) for the shared pipeline: the union of the strands, each a vertical
+// slice through the full height of the mass.
 export function activeErosionCuts() {
   if (!active) return [];
   if (cached.version === active.version) return cached.cuts;
-  const spheres = active.spheres.map((s) => ({ ...s }));
+  const segments = active.segments();
   let cut = null;
-  if (spheres.length) {
+  if (segments.length) {
+    let top = 0;
+    for (const h of active.scan.hf) top = Math.max(top, h);
     const bounds = new THREE.Box3();
-    for (const s of spheres) {
-      bounds.expandByPoint(new THREE.Vector3(s.x - s.r, 0, s.z - s.r));
-      bounds.expandByPoint(new THREE.Vector3(s.x + s.r, s.r * SPHERE_SQUASH, s.z + s.r));
+    for (const s of segments) {
+      bounds.expandByPoint(new THREE.Vector3(Math.min(s.ax, s.bx) - s.w, 0, Math.min(s.az, s.bz) - s.w));
+      bounds.expandByPoint(new THREE.Vector3(Math.max(s.ax, s.bx) + s.w, top, Math.max(s.az, s.bz) + s.w));
     }
     const sdf = (x, y, z) => {
       let best = 1e3;
-      for (const s of spheres) {
-        const d = Math.hypot(x - s.x, y / SPHERE_SQUASH, z - s.z) - s.r;
+      for (const s of segments) {
+        const dx = s.bx - s.ax, dz = s.bz - s.az;
+        const t = Math.max(0, Math.min(1, ((x - s.ax) * dx + (z - s.az) * dz) / (dx * dx + dz * dz || 1)));
+        const d = Math.hypot(x - s.ax - dx * t, z - s.az - dz * t) - s.w;
         if (d < best) best = d;
       }
-      return best * Math.min(1, SPHERE_SQUASH);
+      return best;
     };
     cut = createCut({ id: "ext-flow-erosion", source: "exterior", label: "Flow erosion (people and cars)", bounds, sdf });
   }

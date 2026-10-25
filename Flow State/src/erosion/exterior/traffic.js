@@ -274,7 +274,7 @@ export function createTraffic(features, radius, drawn = { roads: [], paths: [] }
   const walks = buildNetwork(connect(features.paths, drawn.paths), walkSpec, radius); // people stay off the roads
   const onCarriageway = buildCarriageway(roads.ways);
   const limit2 = (radius * 1.1) ** 2;
-  // sim.visit(isCar, x, y, dt), when set, is told every step where each particle is (site metres): used to wear the mass.
+  // sim.visit(isCar, x, y, dt, particle), when set, is told every step where each particle is (site metres): used to wear the mass.
   // sim.wear(x, y), when set, says how worn the mass is at a point (0..1): people inside it are drawn to worn ground.
   const sim = { people: [], cars: [], time: 0, visit: null, wear: null, entryPoints: { people: walks.spawns.length, cars: roads.spawns.length } };
   let mass = null; // the floor people can wander on inside the mass (see buildFloor), or null
@@ -290,11 +290,11 @@ export function createTraffic(features, radius, drawn = { roads: [], paths: [] }
   // Entry points can lie beyond the site circle, so only drop particles that are outside AND heading outward.
   const inside = (a, dt) => {
     if (a.roam) { // wandering inside the mass: it never leaves except by a path
-      sim.visit?.(false, a.x, a.y, dt);
+      sim.visit?.(false, a.x, a.y, dt, a);
       return true;
     }
     const q = sample(a.way, a.s);
-    sim.visit?.(a.car, q.x, q.y, dt);
+    sim.visit?.(a.car, q.x, q.y, dt, a);
     return q.x * q.x + q.y * q.y < limit2 || q.x * q.tx * a.dir + q.y * q.ty * a.dir < 0;
   };
 

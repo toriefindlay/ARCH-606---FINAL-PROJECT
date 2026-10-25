@@ -47,7 +47,7 @@ export function mountPanel(el, hooks = {}) {
       <input type="range" id="traffic-erode" min="0.5" max="8" step="0.5">
     </label>
     <button type="button" class="tool" id="traffic-clear-erosion" style="width:100%;margin-bottom:8px">Clear erosion</button>
-    <p class="hint" style="margin-top:0">Import a mass: where people and cars touch it they wear thin passages along their routes. Each pass widens a passage and darkens its purple.</p>`;
+    <p class="hint" style="margin-top:0">Import a mass: where people and cars touch it they slice hair-thin strands along their routes. Each pass through a channel makes it 1% wider and its purple darker.</p>`;
 
   $("traffic-play").addEventListener("click", () => { settings.playing = !settings.playing; syncControls(); });
   $("traffic-reset").addEventListener("click", () => onReset());

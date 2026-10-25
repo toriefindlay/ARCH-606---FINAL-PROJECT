@@ -23,7 +23,7 @@ const drivesLeft = ({ lat, lon }) => LEFT_HAND.some((b) => lat >= b.lat[0] && la
 const MAX_SUBSTEP = 0.2; // seconds: keeps car-following stable when playback is fast
 const WARM_UP = 90; // seconds simulated before the site first appears
 const RESCAN_DELAY = 350; // ms after the mass stops moving before it is analysed again
-const CARVE_INTERVAL = 0.4; // seconds between updates of the carved shape
+const CARVE_INTERVAL = 0.6; // seconds between updates of the carved shape
 
 let sim = null;
 let view = null;
@@ -53,8 +53,8 @@ function makeArea(scan) {
 }
 
 // Called by the traffic for every particle step: wears the mass where particles pass through it.
-const visit = (isCar, x, y, dt) => {
-  if (erosion && (isCar ? settings.erodeCars : settings.erodePeople)) erosion.visit(isCar, x, y, dt * settings.erode);
+const visit = (isCar, x, y, dt, particle) => {
+  if (erosion && (isCar ? settings.erodeCars : settings.erodePeople)) erosion.visit(isCar, x, y, settings.erode, particle); // a pass counts as erode passes, however long a step is
 };
 
 // Drawn lines are world coordinates (x east, z = -north); traffic uses site coordinates (x east, y north).
