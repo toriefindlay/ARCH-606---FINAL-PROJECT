@@ -4,7 +4,7 @@
 import { registerPersist } from "../../core/persist.js";
 
 // Read each frame by index.js. `speed` is simulated seconds per real second.
-export const settings = { playing: true, speed: 4, people: 1, cars: 1, size: 2, leftHand: false, erode: 2, erodePeople: false, erodeCars: false };
+export const settings = { playing: true, speed: 4, people: 1, cars: 1, size: 2, leftHand: false, erode: 2, heal: 1, erodePeople: false, erodeCars: false };
 
 const $ = (id) => document.getElementById(id);
 let onReset = () => {};
@@ -46,6 +46,9 @@ export function mountPanel(el, hooks = {}) {
     <label>Erosion speed <output id="traffic-erode-out"></output>
       <input type="range" id="traffic-erode" min="0.5" max="8" step="0.5">
     </label>
+    <label>Healing <output id="traffic-heal-out"></output>
+      <input type="range" id="traffic-heal" min="0" max="4" step="0.25">
+    </label>
     <button type="button" class="tool" id="traffic-clear-erosion" style="width:100%;margin-bottom:8px">Clear erosion</button>
     <p class="hint" style="margin-top:0">Import a mass: where people and cars touch it they slice hair-thin strands along their routes. Each pass through a channel makes it 1% wider and its purple darker.</p>`;
 
@@ -53,7 +56,7 @@ export function mountPanel(el, hooks = {}) {
   $("traffic-reset").addEventListener("click", () => onReset());
   $("traffic-clear-erosion").addEventListener("click", () => onClearErosion());
   $("traffic-speed").addEventListener("change", (e) => (settings.speed = Number(e.target.value)));
-  for (const key of ["people", "cars", "size", "erode"]) {
+  for (const key of ["people", "cars", "size", "erode", "heal"]) {
     $(`traffic-${key}`).addEventListener("input", (e) => { settings[key] = Number(e.target.value); syncControls(); });
   }
   $("traffic-left").addEventListener("change", (e) => (settings.leftHand = e.target.checked));
@@ -67,7 +70,7 @@ export function syncControls() {
   if (!$("traffic-play")) return;
   $("traffic-play").textContent = settings.playing ? "Pause" : "Play";
   $("traffic-speed").value = String(settings.speed);
-  for (const key of ["people", "cars", "size", "erode"]) {
+  for (const key of ["people", "cars", "size", "erode", "heal"]) {
     $(`traffic-${key}`).value = settings[key];
     $(`traffic-${key}-out`).textContent = `${settings[key]}×`;
   }

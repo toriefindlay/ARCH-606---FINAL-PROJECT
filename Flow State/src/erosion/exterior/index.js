@@ -31,6 +31,7 @@ let erosion = null;
 let carve = null;
 let rescanTimer = 0;
 let carveClock = 0;
+let healClock = 0; // simulated seconds since the erosion last healed
 let massArea = null; // the mass's footprint, as the traffic needs it (see makeArea)
 const rates = () => ({ people: settings.people, cars: settings.cars });
 
@@ -100,11 +101,14 @@ function startCarving() {
   carve.setLattice(scan, layers.model, info.object);
 }
 
-function carveFrame(dt) {
+function carveFrame(dt, simSeconds) {
   if (!erosion) return;
   carveClock += dt;
+  healClock += simSeconds;
   if (carveClock < CARVE_INTERVAL) return;
   carveClock = 0;
+  if (settings.heal > 0) erosion.heal(healClock * settings.heal); // channels nobody uses fade
+  healClock = 0;
   if (erosion.recompute()) {
     carve.update(erosion);
     notifyCutsChanged();
@@ -152,7 +156,7 @@ export function mountExterior() {
     if (settings.playing && layers.traffic?.visible) {
       const total = dt * settings.speed, n = Math.max(1, Math.ceil(total / MAX_SUBSTEP));
       for (let i = 0; i < n; i++) sim.step(total / n, rates());
-      carveFrame(dt);
+      carveFrame(dt, total);
     }
     if (layers.traffic?.visible) {
       sim.pose(settings.leftHand);

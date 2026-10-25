@@ -52,6 +52,7 @@ const LANE_BAND = 1.2; // metres either side of a lane's centre that a car's lan
 const CROSS_LOOKAHEAD = 1.5; // metres ahead a person looks before stepping onto a road
 const MAX_WAIT = 40; // seconds a person waits to cross before giving up
 const ROAM_CELL = 1; // metres: the grid people wander on inside the mass
+const MAX_BOUNCES = 6; // times someone turns back at the end of a path before they finally leave (so a closed-off path can't fill up)
 const ATTRACTION = 2.5; // how strongly people inside the mass favour worn ground (in steps of the route to their goal)
 
 const gauss = () => Math.sqrt(-2 * Math.log(1 - Math.random())) * Math.cos(2 * Math.PI * Math.random());
@@ -399,37 +400,41 @@ export function createTraffic(features, radius, drawn = { roads: [], paths: [] }
     return { nx, ny, cell, free, area, areaCells, portalsByArea, cellAt, centre, nearestFree, fieldTo, contains };
   }
 
-  // Someone on a path has just walked into the mass: they leave the path and wander its floor to one of the exits.
+  // Someone on a path has just walked into the mass: they leave the path and wander its floor to an exit anywhere but
+  // the one they came in by (the other end of the same path is fine, and so is any other path). Returns true if there is
+  // no such exit, so they should not go in.
   function startRoaming(p, x, y) {
     const k = mass.nearestFree(x, y);
-    if (k < 0) return;
-    const area = mass.area[k], exits = mass.portalsByArea.get(area);
-    if (!exits?.length) return;
-    const farther = exits.filter((e) => Math.hypot(e.x - x, e.y - y) > 4); // not straight back out the way they came
-    const pool = farther.length ? farther : exits;
+    if (k < 0) return false; // nowhere to stand here: they just carry on along the path
+    const area = mass.area[k], pool = (mass.portalsByArea.get(area) ?? []).filter((e) => Math.hypot(e.x - x, e.y - y) > 4);
+    if (!pool.length) return true;
     const exit = pool[Math.floor(Math.random() * pool.length)];
     const cells = mass.areaCells[area], goals = [];
     for (let n = 1 + Math.floor(Math.random() * 3); n > 0; n--) goals.push(cells[Math.floor(Math.random() * cells.length)]);
     goals.push(exit.cell);
     const q = sample(p.way, p.s);
     Object.assign(p, { roam: true, x, y, hx: q.tx * p.dir, hy: q.ty * p.dir, exit, goals, field: mass.fieldTo(goals[0]), pause: 0, inRoad: false, waiting: 0 });
+    return false;
   }
 
-  // One step of someone wandering inside the mass. Returns false if they should be removed.
+  // Someone has reached their exit: back onto that path, heading out. Nobody vanishes inside the mass.
+  function leaveMass(p) {
+    const e = p.exit;
+    Object.assign(p, { roam: false, way: e.way, s: e.s, dir: e.dir, wasIn: true, inRoad: false, waiting: 0 });
+    setLane(p);
+    return true;
+  }
+
+  // One step of someone wandering inside the mass. Returns false only if the mass has gone.
   function roam(p, dt) {
     if (!mass) return false;
     if (p.pause > 0) { p.pause -= dt; return true; }
     const c = mass.cellAt(p.x, p.y);
-    if (c < 0) return false;
+    if (c < 0) return leaveMass(p);
     const field = p.field;
     if (field[c] <= 1.5) { // reached this goal
       p.goals.shift();
-      if (!p.goals.length) { // reached the exit: back onto the path, heading out
-        const e = p.exit;
-        Object.assign(p, { roam: false, way: e.way, s: e.s, dir: e.dir, wasIn: true, inRoad: false, waiting: 0 });
-        setLane(p);
-        return true;
-      }
+      if (!p.goals.length) return leaveMass(p); // reached the exit
       p.field = mass.fieldTo(p.goals[0]);
       if (Math.random() < 0.4) p.pause = 1 + Math.random() * 3; // stop and look around
       return true;
@@ -446,7 +451,7 @@ export function createTraffic(features, radius, drawn = { roads: [], paths: [] }
       const score = field[nk] - (sim.wear ? ATTRACTION * sim.wear(...mass.centre(nk)) : 0) + Math.random() * 0.3;
       if (score < bestScore) { bestScore = score; best = nk; }
     }
-    if (best < 0) { p.goals.shift(); if (!p.goals.length) return false; p.field = mass.fieldTo(p.goals[0]); return true; }
+    if (best < 0) { p.goals.shift(); if (!p.goals.length) return leaveMass(p); p.field = mass.fieldTo(p.goals[0]); return true; }
     const [tx, ty] = mass.centre(best);
     const dx = tx - p.x, dy = ty - p.y, d = Math.hypot(dx, dy) || 1;
     let hx = 0.85 * p.hx + 0.15 * (dx / d) + (Math.random() - 0.5) * 0.12;
@@ -495,12 +500,20 @@ export function createTraffic(features, radius, drawn = { roads: [], paths: [] }
       if (p.roam) return roam(p, dt) && inside(p, dt);
       if (p.pause > 0) p.pause -= dt;
       else if (!waitsForCars(p, dt)) {
-        if (!travel(p, p.v * dt)) return false;
+        if (!travel(p, p.v * dt)) {
+          // The end of the path. If it is inside the site, nobody disappears there: they turn round and walk back.
+          p.s = Math.max(0, Math.min(p.way.length, p.s));
+          const end = sample(p.way, p.s);
+          if (Math.hypot(end.x, end.y) > radius * 0.95 || (p.bounces ?? 0) >= MAX_BOUNCES) return false; // leaving the site
+          p.dir = -p.dir;
+          p.bounces = (p.bounces ?? 0) + 1;
+        }
         if (Math.random() < 0.012 * dt) p.pause = 1 + Math.random() * 4; // stop to look, chat, or check a phone
         if (mass) {
           const q = sample(p.way, p.s), now = mass.contains(q.x, q.y);
-          if (p.wasIn === false && now) startRoaming(p, q.x, q.y); // walked in from a path
-          p.wasIn = now;
+          if (p.wasIn === false && now && startRoaming(p, q.x, q.y)) p.dir = -p.dir; // no other way out: don't go in, turn back
+          if (p.roam) p.wasIn = true;
+          else p.wasIn = now;
         }
       }
       if (p.waiting > MAX_WAIT) return false; // gave up

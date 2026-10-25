@@ -13,6 +13,8 @@ const START_WIDTH = 0.03; // metres: half the width of a strand that has been pa
 const GROWTH = 1.01; // each pass makes a strand this much wider
 const MAX_WIDTH = 1.2; // metres: the widest a strand's half-width gets
 const DARKEST_PASSES = 200; // a channel passed this many times is as dark as it gets
+const GRACE = 30; // simulated seconds a channel can go unused before it starts to heal
+const HEAL_RATE = 0.15; // passes a channel loses each simulated second once it is healing
 const MAX_LINKS = 40000;
 const JUMP = 8; // metres: a figure that moves farther than this between two steps has not walked there
 
@@ -26,6 +28,7 @@ export function createErosion(scan) {
   const sumX = new Float32Array(cells), sumZ = new Float32Array(cells), uses = new Uint32Array(cells); // where in the cell figures were
   const links = new Map(); // "lower cell, higher cell" -> { a, b, count }
   let dirty = false;
+  let clock = 0; // simulated seconds, advanced by heal()
 
   const touching = (x, y) => {
     const [u, v] = scan.toUV(x, -y); // site (east, north) -> world (x, z = -north) -> grid
@@ -48,10 +51,11 @@ export function createErosion(scan) {
     let l = links.get(key);
     if (!l) {
       if (links.size >= MAX_LINKS) return;
-      l = { a: Math.min(a, b), b: Math.max(a, b), count: 0 };
+      l = { a: Math.min(a, b), b: Math.max(a, b), count: 0, last: clock };
       links.set(key, l);
     }
     l.count += strength;
+    l.last = clock;
     passes[b] += strength;
     dirty = true;
   };
@@ -103,11 +107,27 @@ export function createErosion(scan) {
       const [ax, az] = at(l.a), [bx, bz] = at(l.b);
       out.push({
         ax, az, bx, bz,
-        w: Math.min(MAX_WIDTH, START_WIDTH * GROWTH ** Math.max(0, l.count - 1)),
+        // A healing channel also narrows away to nothing as its last passes go.
+        w: Math.min(MAX_WIDTH, START_WIDTH * GROWTH ** Math.max(0, l.count - 1)) * Math.min(1, l.count),
         wear: Math.min(1, Math.log(1 + l.count) / Math.log(1 + DARKEST_PASSES)),
       });
     }
     return out;
+  };
+
+  // Healing: a channel that has not been passed for a while starts to close. It loses a fixed amount of its passes each
+  // second, so the thin, little-used channels (few passes) close first and busy ones last a long time. A channel that is
+  // used again stops healing and carries on from where it was. `seconds` is simulated time since the last call.
+  er.heal = (seconds) => {
+    clock += seconds;
+    for (const [key, l] of links) {
+      if (clock - l.last < GRACE) continue;
+      l.count -= HEAL_RATE * seconds;
+      dirty = true;
+      if (l.count <= 0) links.delete(key);
+    }
+    const fade = Math.exp(-seconds / 300); // the pull of worn ground fades too
+    for (let k = 0; k < cells; k++) if (passes[k] > 0) passes[k] = passes[k] * fade < 0.05 ? 0 : passes[k] * fade;
   };
 
   // Call every so often: says whether the strands have changed since the last call.
