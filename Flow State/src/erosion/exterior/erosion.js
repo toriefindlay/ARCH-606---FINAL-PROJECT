@@ -4,7 +4,8 @@
 // Contact is recorded on a grid of small cells. Each time a figure moves from one cell to the next while touching the
 // mass, the link between those two cells is one more pass of that channel. A link is a straight piece of strand between the
 // two cells' centres of use; linked cells form continuous strands that follow the routes exactly, and routes that share
-// cells share strands. A strand starts hair-thin and gets 1% wider every time its channel is passed through.
+// cells share strands. A strand starts hair-thin and only as tall as the figure that passed (a person or a car); every time
+// its channel is passed through it gets 1% wider and 1% taller.
 import * as THREE from "three";
 import { createCut } from "../contract.js";
 
@@ -12,6 +13,9 @@ const CELL = 0.5; // metres: the grid that passes are recorded on
 const START_WIDTH = 0.03; // metres: half the width of a strand that has been passed once
 const GROWTH = 1.01; // each pass makes a strand this much wider
 const MAX_WIDTH = 1.2; // metres: the widest a strand's half-width gets
+const PERSON_HEIGHT = 1.7; // metres: how tall a strand is when only people have passed
+const CAR_HEIGHT = 1.5; // ... and when only cars have
+const MAX_HEIGHT = 25; // metres: the tallest a strand gets
 const DARKEST_PASSES = 200; // a channel passed this many times is as dark as it gets
 const GRACE = 30; // simulated seconds a channel can go unused before it starts to heal
 const HEAL_RATE = 0.15; // passes a channel loses each simulated second once it is healing
@@ -46,16 +50,17 @@ export function createErosion(scan) {
     sumZ[k] += -y;
     uses[k]++;
   };
-  const link = (a, b, strength) => {
+  const link = (a, b, strength, isCar) => {
     const key = a < b ? a * cells + b : b * cells + a;
     let l = links.get(key);
     if (!l) {
       if (links.size >= MAX_LINKS) return;
-      l = { a: Math.min(a, b), b: Math.max(a, b), count: 0, last: clock };
+      l = { a: Math.min(a, b), b: Math.max(a, b), count: 0, last: clock, people: false };
       links.set(key, l);
     }
     l.count += strength;
     l.last = clock;
+    if (!isCar) l.people = true;
     passes[b] += strength;
     dirty = true;
   };
@@ -76,7 +81,7 @@ export function createErosion(scan) {
         const c = cellOf(px, py);
         if (c < 0 || c === last) continue;
         note(c, px, py);
-        if (last >= 0) link(last, c, strength);
+        if (last >= 0) link(last, c, strength, isCar);
         last = c;
       }
       agent.erCell = last;
@@ -96,7 +101,7 @@ export function createErosion(scan) {
     return k < 0 ? 0 : Math.min(1, Math.log2(1 + passes[k]) / 8);
   };
 
-  // Every strand as { ax, az, bx, bz, w, wear } in world metres: w is its half-width, wear 0..1 sets how dark it is.
+  // Every strand as { ax, az, bx, bz, w, h, wear } in world metres: w is its half-width, h its height, wear 0..1 sets how dark it is.
   er.segments = () => {
     const at = (k) => {
       const n = uses[k];
@@ -105,10 +110,12 @@ export function createErosion(scan) {
     const out = [];
     for (const l of links.values()) {
       const [ax, az] = at(l.a), [bx, bz] = at(l.b);
+      // Width and height grow at the same rate, 1% per pass. A healing channel also shrinks away to nothing as its last passes go.
+      const grow = GROWTH ** Math.max(0, l.count - 1), fade = Math.min(1, l.count);
       out.push({
         ax, az, bx, bz,
-        // A healing channel also narrows away to nothing as its last passes go.
-        w: Math.min(MAX_WIDTH, START_WIDTH * GROWTH ** Math.max(0, l.count - 1)) * Math.min(1, l.count),
+        w: Math.min(MAX_WIDTH, START_WIDTH * grow) * fade,
+        h: Math.min(MAX_HEIGHT, (l.people ? PERSON_HEIGHT : CAR_HEIGHT) * grow) * fade,
         wear: Math.min(1, Math.log(1 + l.count) / Math.log(1 + DARKEST_PASSES)),
       });
     }
@@ -163,15 +170,14 @@ export function setActiveErosion(er) {
 }
 
 // Signed-distance cut (negative inside the carved volume) for the shared pipeline: the union of the strands, each a vertical
-// slice through the full height of the mass.
+// slice as tall as its channel (a person or a car, growing).
 export function activeErosionCuts() {
   if (!active) return [];
   if (cached.version === active.version) return cached.cuts;
   const segments = active.segments();
   let cut = null;
   if (segments.length) {
-    let top = 0;
-    for (const h of active.scan.hf) top = Math.max(top, h);
+    const top = segments.reduce((m, s) => Math.max(m, s.h), 0);
     const bounds = new THREE.Box3();
     for (const s of segments) {
       bounds.expandByPoint(new THREE.Vector3(Math.min(s.ax, s.bx) - s.w, 0, Math.min(s.az, s.bz) - s.w));
@@ -182,7 +188,7 @@ export function activeErosionCuts() {
       for (const s of segments) {
         const dx = s.bx - s.ax, dz = s.bz - s.az;
         const t = Math.max(0, Math.min(1, ((x - s.ax) * dx + (z - s.az) * dz) / (dx * dx + dz * dz || 1)));
-        const d = Math.hypot(x - s.ax - dx * t, z - s.az - dz * t) - s.w;
+        const d = Math.max(Math.hypot(x - s.ax - dx * t, z - s.az - dz * t) - s.w, y - s.h); // beside the strand, or above it
         if (d < best) best = d;
       }
       return best;

@@ -54,37 +54,39 @@ export function createTrafficView(group) {
 /* ---------- carved mass ---------- */
 
 // The mass is a plain mesh with no boolean applied (see ARCHITECTURE: erosion uses distance fields), so the carve is
-// shown in two parts. (1) The strands are drawn into a fine mask over the mass's footprint, and the mass's material
-// discards every fragment that lies on a strand, at any height: each strand is a vertical slice. (2) The two faces of
-// every slice are built as walls along the edges of that mask, from the ground to the mass's top, and tinted purple:
-// lighter where a channel has been passed few times, darker with every pass.
+// shown in two parts. (1) The strands are drawn into a fine map over the mass's footprint that holds how tall each strand is
+// there, and the mass's material discards every fragment that lies on a strand below that height. (2) The faces of every
+// slice are built as walls and ceilings along that map, tinted purple: lighter where a channel has been passed few times,
+// darker with every pass.
 
-const MIN_TEXEL = 0.06; // metres: the finest the mask gets
+const MIN_TEXEL = 0.06; // metres: the finest the map gets
 const MAX_TEXELS = 1200; // per side
+const HEIGHT_UNIT = 10; // the map stores height in tenths of a metre (one byte, so up to 25.5 m)
 const WALL_TOP_LIFT = 0.05; // metres a wall stands above the mass's top, so no gap shows at the roof
 
-const maskTextureOf = (data, w, h) => {
+const heightTextureOf = (data, w, h) => {
   const t = new THREE.DataTexture(data, w, h, THREE.RedFormat, THREE.UnsignedByteType);
   t.unpackAlignment = 1; // rows are one byte per texel, not padded to four
   t.minFilter = t.magFilter = THREE.NearestFilter;
   t.needsUpdate = true;
   return t;
 };
-const EMPTY = maskTextureOf(new Uint8Array(1), 1, 1);
+const EMPTY = heightTextureOf(new Uint8Array(1), 1, 1);
 
 const carveUniforms = {
-  uCarveMask: { value: EMPTY }, // 255 where a strand slices the mass
-  uCarveBox: { value: new THREE.Vector4(0, 0, 1, 1) }, // the mask's corner (x, z) and size
+  uCarveHeight: { value: EMPTY }, // height of the strand on each texel, in tenths of a metre (0 = none)
+  uCarveBox: { value: new THREE.Vector4(0, 0, 1, 1) }, // the map's corner (x, z) and size
 };
 
 const CARVE_GLSL = /* glsl */ `
-uniform sampler2D uCarveMask;
+uniform sampler2D uCarveHeight;
 uniform vec4 uCarveBox;
 varying vec3 vCarvePos;
 bool carved(vec3 p) {
   vec2 uv = (p.xz - uCarveBox.xy) / uCarveBox.zw;
   if (uv.x < 0.0 || uv.y < 0.0 || uv.x > 1.0 || uv.y > 1.0) return false;
-  return texture2D(uCarveMask, uv).r > 0.5;
+  float h = texture2D(uCarveHeight, uv).r * ${(255 / HEIGHT_UNIT).toFixed(1)};
+  return h > 0.0 && p.y < h;
 }
 `;
 
@@ -105,7 +107,7 @@ function patch(material, key) {
   material.needsUpdate = true;
 }
 
-// The mass's own materials (shared white-model material and its edge lines) start discarding what lies on a strand.
+// The mass's own materials (shared white-model material and its edge lines) start discarding what lies in a slice.
 function patchMass(root) {
   root.traverse((o) => {
     const materials = [o.material].flat().filter(Boolean);
@@ -121,15 +123,15 @@ const LIGHT_PURPLE = 0.8, DARK_PURPLE = 0.12; // lightness
 const wearColour = (color, wear) => color.setHSL(0.76, 0.5, LIGHT_PURPLE + (DARK_PURPLE - LIGHT_PURPLE) * wear);
 
 export function createCarveView() {
-  let group = null, maskTexture = null, scan = null, grid = null;
+  let group = null, heightTexture = null, scan = null, grid = null;
   const colour = new THREE.Color();
 
   const clear = () => {
-    carveUniforms.uCarveMask.value = EMPTY;
+    carveUniforms.uCarveHeight.value = EMPTY;
     group?.traverse((o) => o.geometry?.dispose());
     group?.parent?.remove(group);
-    maskTexture?.dispose();
-    group = maskTexture = scan = grid = null;
+    heightTexture?.dispose();
+    group = heightTexture = scan = grid = null;
   };
 
   // The mass's top height at (x, z): bilinear between the height-map samples, or the nearest one near the mass's edge.
@@ -143,32 +145,40 @@ export function createCarveView() {
     return h00 * (1 - fx) * (1 - fz) + h10 * fx * (1 - fz) + h01 * (1 - fx) * fz + h11 * fx * fz;
   };
 
-  // Walls on every edge between a covered and an uncovered texel, standing on the covered side's boundary.
+  // Walls and ceilings of the slices. Each texel with a strand gets a ceiling at its strand's height (unless that is above the
+  // mass's roof, where the slice is open to the sky) and a wall on every side where its neighbour is lower, from the neighbour's
+  // height up to its own, never above the roof.
   function wallGeometry() {
-    const { mask, wear, nx, nz, t, x0, z0, bbox } = grid;
+    const { height, wear, nx, nz, t, x0, z0, bbox } = grid;
     const pos = [], nrm = [], col = [];
-    const quad = (ax, az, bx, bz, top, normal, c) => {
-      const p = [[ax, 0, az], [bx, 0, bz], [bx, top, bz], [ax, 0, az], [bx, top, bz], [ax, top, az]];
-      for (const v of p) {
+    const quad = (a, b, c, d, normal, tint) => {
+      for (const v of [a, b, c, a, c, d]) {
         pos.push(v[0], v[1], v[2]);
-        nrm.push(normal[0], 0, normal[1]);
-        col.push(c.r, c.g, c.b);
+        nrm.push(normal[0], normal[1], normal[2]);
+        col.push(tint.r, tint.g, tint.b);
       }
     };
     for (let j = Math.max(0, bbox.j0 - 1); j <= Math.min(nz - 1, bbox.j1 + 1); j++) {
       for (let i = Math.max(0, bbox.i0 - 1); i <= Math.min(nx - 1, bbox.i1 + 1); i++) {
         const k = j * nx + i;
-        if (!mask[k]) continue;
-        const east = i + 1 < nx && !mask[k + 1], west = i > 0 && !mask[k - 1];
-        const south = j + 1 < nz && !mask[k + nx], north = j > 0 && !mask[k - nx];
-        if (!(east || west || south || north)) continue;
-        const cx = x0 + (i + 0.5) * t, cz = z0 + (j + 0.5) * t, top = topAt(cx, cz);
-        if (top <= 0.3) continue; // off the edge of the mass
-        const h = top + WALL_TOP_LIFT, c = wearColour(colour, wear[k] / 255), xa = x0 + i * t, xb = xa + t, za = z0 + j * t, zb = za + t;
-        if (east) quad(xb, za, xb, zb, h, [-1, 0], c);
-        if (west) quad(xa, za, xa, zb, h, [1, 0], c);
-        if (south) quad(xa, zb, xb, zb, h, [0, -1], c);
-        if (north) quad(xa, za, xb, za, h, [0, 1], c);
+        if (!height[k]) continue;
+        const cx = x0 + (i + 0.5) * t, cz = z0 + (j + 0.5) * t, roof = topAt(cx, cz);
+        if (roof <= 0.3) continue; // off the edge of the mass
+        const h = height[k] / HEIGHT_UNIT, reach = Math.min(h, roof + WALL_TOP_LIFT);
+        const tint = wearColour(colour, wear[k] / 255), xa = x0 + i * t, xb = xa + t, za = z0 + j * t, zb = za + t;
+        if (h < roof - 0.05) quad([xa, h, za], [xb, h, za], [xb, h, zb], [xa, h, zb], [0, -1, 0], tint);
+        const sides = [
+          [i + 1 < nx, k + 1, [xb, za], [xb, zb], [-1, 0]],
+          [i > 0, k - 1, [xa, za], [xa, zb], [1, 0]],
+          [j + 1 < nz, k + nx, [xa, zb], [xb, zb], [0, -1]],
+          [j > 0, k - nx, [xa, za], [xb, za], [0, 1]],
+        ];
+        for (const [exists, nk, [ax, az], [bx, bz], [nxn, nzn]] of sides) {
+          if (!exists) continue;
+          const low = Math.min(height[nk] / HEIGHT_UNIT, reach);
+          if (height[nk] >= height[k] || reach <= low) continue; // the neighbour is as tall, or the wall would be above the roof
+          quad([ax, low, az], [bx, low, bz], [bx, reach, bz], [ax, reach, az], [nxn, 0, nzn], tint);
+        }
       }
     }
     const geo = new THREE.BufferGeometry();
@@ -188,24 +198,25 @@ export function createCarveView() {
       const Lu = lattice.nU * lattice.cu, Lv = lattice.nV * lattice.cv;
       const t = Math.max(MIN_TEXEL, Math.max(Lu, Lv) / MAX_TEXELS);
       const nx = Math.ceil(Lu / t), nz = Math.ceil(Lv / t);
-      grid = { t, nx, nz, x0: lattice.u0, z0: lattice.v0, mask: new Uint8Array(nx * nz), wear: new Uint8Array(nx * nz), bbox: { i0: 0, i1: -1, j0: 0, j1: -1 } };
-      maskTexture = maskTextureOf(grid.mask, nx, nz);
+      grid = { t, nx, nz, x0: lattice.u0, z0: lattice.v0, height: new Uint8Array(nx * nz), wear: new Uint8Array(nx * nz), bbox: { i0: 0, i1: -1, j0: 0, j1: -1 } };
+      heightTexture = heightTextureOf(grid.height, nx, nz);
       carveUniforms.uCarveBox.value.set(lattice.u0, lattice.v0, nx * t, nz * t);
-      carveUniforms.uCarveMask.value = maskTexture;
+      carveUniforms.uCarveHeight.value = heightTexture;
       group = new THREE.Group();
       parent.add(group);
     },
     // Show the strands of an erosion (see erosion.js).
     update(er) {
       if (!group) return;
-      const { mask, wear, nx, nz, t, x0, z0, bbox } = grid;
-      mask.fill(0);
+      const { height, wear, nx, nz, t, x0, z0, bbox } = grid;
+      height.fill(0);
       wear.fill(0);
       let i0 = nx, i1 = -1, j0 = nz, j1 = -1;
       for (const s of er.segments()) {
         // Texels within the strand's half-width, plus 0.75 texel so that even the thinnest strand stays unbroken.
         const r = s.w + 0.75 * t;
-        const dx = s.bx - s.ax, dz = s.bz - s.az, len2 = dx * dx + dz * dz || 1, level = Math.round(s.wear * 255);
+        const dx = s.bx - s.ax, dz = s.bz - s.az, len2 = dx * dx + dz * dz || 1;
+        const level = Math.max(1, Math.min(255, Math.round(s.h * HEIGHT_UNIT))), shade = Math.round(s.wear * 255);
         const ia = Math.max(0, Math.floor((Math.min(s.ax, s.bx) - r - x0) / t)), ib = Math.min(nx - 1, Math.floor((Math.max(s.ax, s.bx) + r - x0) / t));
         const ja = Math.max(0, Math.floor((Math.min(s.az, s.bz) - r - z0) / t)), jb = Math.min(nz - 1, Math.floor((Math.max(s.az, s.bz) + r - z0) / t));
         for (let j = ja; j <= jb; j++) {
@@ -215,8 +226,8 @@ export function createCarveView() {
             const u = Math.max(0, Math.min(1, ((x - s.ax) * dx + (z - s.az) * dz) / len2));
             if (Math.hypot(x - s.ax - dx * u, z - s.az - dz * u) > r) continue;
             const k = j * nx + i;
-            mask[k] = 255;
-            if (wear[k] < level) wear[k] = level;
+            if (height[k] < level) height[k] = level;
+            if (wear[k] < shade) wear[k] = shade;
             if (i < i0) i0 = i;
             if (i > i1) i1 = i;
             if (j < j0) j0 = j;
@@ -225,7 +236,7 @@ export function createCarveView() {
         }
       }
       Object.assign(bbox, { i0, i1, j0, j1 });
-      maskTexture.needsUpdate = true;
+      heightTexture.needsUpdate = true;
       group.traverse((o) => o.geometry?.dispose());
       group.clear();
       if (i1 < 0) return;
