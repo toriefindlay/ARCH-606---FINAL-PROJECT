@@ -13,7 +13,7 @@ index.html, style.css
 src/
   main.js              bootstrap only: imports every module
   pipeline.js          builds / tears down a site; emits the site:* events
-  library.js           saved sites: Save button, start-screen list, "← Sites"
+  library.js           saved sites: Save button, start-screen list, "â† Sites"
   core/                shared plumbing: events, state, persist, storage, coords, dom
   view/                scene (renderer, camera, lights, frame loop), pick (pointer -> ground), labels
   ui/                  hud (layers, stats), start (coordinate form)
@@ -36,6 +36,18 @@ src/
 | `src/erosion/contract.js`, `sdf.js`, `combine.js`, everything else | shared: change by review |
 
 Work on your own branch, edit only your own folder, merge small and often.
+
+## Decision: erosion uses distance fields
+
+Cuts are signed-distance functions, not mesh booleans. Why: combining cuts is just taking the
+minimum, so it never fails on messy meshes, order doesn't matter, cuts can be toggled and
+compared instantly, and cuts can blend smoothly (organic forms). Trade-off: there is no surface
+until one is extracted from the field (marching cubes), and sharp edges round off at coarse
+resolution. If crisp, exportable geometry is needed later, redo the chosen design as a clean
+boolean in Rhino.
+
+Still to build: the step that samples the combined field over the mass and extracts the carved
+mesh (suggested home: `erosion/carve.js`, called from `combine.js` on `cuts:changed`).
 
 ## How the two erosion modules combine
 
