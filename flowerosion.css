@@ -1,0 +1,6 @@
+#site { cursor: crosshair; max-width: 100%; touch-action: none; }
+#site.erase { cursor: not-allowed; }
+button[data-tool].active { outline: 2px solid #264d43; background: #d9e8df; }
+aside output { display: inline-block; min-width: 2.2em; text-align: right; font-variant-numeric: tabular-nums; }
+.car-mark { display: inline-block; width: 14px; height: 7px; background: #b5502f; border-radius: 2px; margin-right: 4px; vertical-align: middle; }
+#coords { font-variant-numeric: tabular-nums; }

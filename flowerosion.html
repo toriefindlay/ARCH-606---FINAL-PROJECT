@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Flow study · Site traffic</title><link rel="stylesheet" href="style.css"><link rel="stylesheet" href="flowerosion.css"></head>
+<body>
+<header><span class="brand">F / S</span><div><p class="eyebrow">EXTERIOR EROSION · STEP 01</p><h1>Site traffic</h1></div><span class="tag">people + vehicles</span></header>
+<main>
+<section class="intro"><h2>Who passes<br>the site?</h2><p>Upload a site plan, trace its roads and pedestrian paths, and release particles that move like the people and cars that use them. Their accumulated density will later decide where the massing is eroded.</p></section>
+<div class="workspace">
+<aside>
+<section><h3><span>01</span> Site plan</h3><label>Upload plan image <input type="file" id="file" accept="image/*"></label><label class="speed">Site width (m) <input type="number" id="width" value="480" min="20" max="5000"></label><p id="scaleNote"></p><button id="sample">Load sample network</button></section>
+<section><h3><span>02</span> Define layers</h3><div class="row"><button id="toolRoad" data-tool="road">Draw road</button><button id="toolWalk" data-tool="walk">Draw path</button></div><div class="row"><button id="toolErase" data-tool="erase">Erase</button><button id="finish" disabled>Finish line</button></div><p id="toolHelp">Pick a tool. Click to add points; double-click or Finish to end a line, Esc to cancel. Lines are traffic routes in both directions.</p><button id="clearNet">Clear all lines</button></section>
+<section><h3><span>03</span> Traffic</h3>
+<label class="speed">People per path per min <input type="range" id="peopleRate" min="0" max="40" value="12"><output id="peopleRateOut"></output></label>
+<label class="speed">Cars per road per min <input type="range" id="carRate" min="0" max="40" value="10"><output id="carRateOut"></output></label>
+<label class="speed">Simulation speed <select id="speed"><option value="1">Real time</option><option value="4" selected>4×</option><option value="12">12×</option></select></label>
+<div class="row"><button id="pause" class="primary">Pause</button><button id="reset">Reset particles</button></div></section>
+<section><h3><span>04</span> Display</h3><label><input type="checkbox" id="showDensity" checked> Accumulated density</label><label><input type="checkbox" id="showPeople" checked> People</label><label><input type="checkbox" id="showCars" checked> Cars</label><button id="clearDensity">Clear density</button></section>
+</aside>
+<div class="drawing-area"><div class="plan-heading"><h3>Site</h3><span id="coords"></span></div><canvas id="site" width="960" height="640" aria-label="Site plan with roads, pedestrian paths and moving particles"></canvas>
+<div class="legend"><span><i class="dot"></i> Person</span><span><i class="car-mark"></i> Car</span><span class="heat-key">Fewer passes <i></i> More passes</span></div>
+<div class="metrics"><div><span>People on site</span><strong id="nPeople">0</strong></div><div><span>Cars on site</span><strong id="nCars">0</strong></div><div><span>Simulated time</span><strong id="clock">0:00</strong></div></div></div>
+</div><footer>MODEL NOTES · People ≈ 1.4 m/s with individual variation, wandering and pauses. Cars ≈ 40 km/h, slowing for bends and for the car ahead, driving on the right. Routes are independent lines: vehicles do not turn between roads or yield at crossings yet. Illustrative, not a traffic study.</footer>
+</main><script src="flowerosion.js"></script>
+</body></html>
