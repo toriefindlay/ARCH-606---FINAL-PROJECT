@@ -79,6 +79,28 @@
       <p id="save-status" class="hint"></p>
     </div>
     <div class="stats" id="stats"></div>
+<<<<<<< Updated upstream
+=======
+    <fieldset id="model-panel">
+      <legend>Model</legend>
+      <button type="button" id="model-import" class="tool">Import .3dm</button>
+      <input type="file" id="model-file" accept=".3dm" hidden>
+      <p class="hint">Or drop a .3dm file on the scene. It lands on the pin; drag a corner handle to scale.</p>
+      <p id="model-info" class="stats hidden"></p>
+      <div id="model-actions" class="tools hidden">
+        <button type="button" class="tool" id="model-reset">Reset size</button>
+        <button type="button" class="tool" id="model-remove">Remove</button>
+      </div>
+    </fieldset>
+    <fieldset>
+      <legend>Exterior erosion</legend>
+      <div id="exterior-panel"></div>
+    </fieldset>
+    <fieldset>
+      <legend>Interior erosion</legend>
+      <div id="interior-panel"></div>
+    </fieldset>
+>>>>>>> Stashed changes
     <fieldset id="draw-tools">
       <legend>Draw</legend>
       <div class="tools">
@@ -124,6 +146,12 @@
     <p class="credit">Map data &copy; OpenStreetMap contributors</p>
   </aside>
 
+<<<<<<< Updated upstream
   <script type="module" src="main.js"></script>
+=======
+  <div id="dropzone" class="hidden">Drop a .3dm file to place it on the pin</div>
+
+  <script type="module" src="src/main.js"></script>
+>>>>>>> Stashed changes
 </body>
 </html>
