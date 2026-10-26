@@ -1,0 +1,89 @@
+/* Match the shared Flow State palette and typography without changing shared CSS. */
+:root {
+  --bg: #eceae4;
+  --ink: #1d1d1b;
+  --muted: #6d6b64;
+  --line: #cfccc3;
+  --accent: #d4542b;
+  --panel: rgba(247, 246, 242, .94);
+  font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+  color: var(--ink);
+  background: var(--bg);
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.5;
+  background:
+    repeating-linear-gradient(0deg, transparent 0 39px, rgba(0,0,0,.05) 39px 40px),
+    repeating-linear-gradient(90deg, transparent 0 39px, rgba(0,0,0,.05) 39px 40px),
+    var(--bg);
+}
+header {
+  max-width: 1600px;
+  margin: auto;
+  padding: 42px 40px 30px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 24px;
+}
+.eyebrow {
+  color: var(--accent);
+  font-size: 12px;
+  letter-spacing: .18em;
+  text-transform: uppercase;
+}
+h1 {
+  font-size: clamp(32px, 4vw, 52px);
+  font-weight: 600;
+  line-height: 1.08;
+  letter-spacing: -.035em;
+  margin: 14px 0 18px;
+}
+header p { margin: 0; color: var(--muted); font-size: 17px; }
+.badge { text-align: right; white-space: nowrap; font-size: 18px; }
+.badge span { display: block; font-size: 10px; letter-spacing: .14em; color: var(--muted); margin-top: 8px; }
+main { max-width: 1600px; margin: auto; display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 32px; padding: 0 40px 40px; }
+aside { background: var(--panel); padding: 24px; border: 1px solid var(--line); }
+h2 { margin: 0 0 18px; font-size: 11px; font-weight: 400; letter-spacing: .14em; text-transform: uppercase; color: var(--muted); }
+h2:not(:first-child) { margin-top: 30px; padding-top: 22px; border-top: 1px solid var(--line); }
+.tools { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+button, select, input[type=number] { font: inherit; color: var(--ink); background: transparent; border: 1px solid var(--line); border-radius: 0; padding: 9px 8px; }
+button { cursor: pointer; transition: background .15s, color .15s, border-color .15s; }
+button:hover { border-color: var(--ink); background: #1d1d1b08; }
+button[aria-pressed=true], .primary { color: white; background: var(--ink); border-color: var(--ink); }
+button[aria-pressed=true]:hover, .primary:hover { color: white; background: var(--accent); border-color: var(--accent); }
+button:disabled { opacity: .4; cursor: default; }
+.tools button { font-size: 12px; }
+label { display: block; font-size: 11px; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); margin: 16px 0 6px; }
+input[type=range] { width: 100%; accent-color: var(--accent); display: block; margin: 10px 0 0; }
+input[type=checkbox] { accent-color: var(--accent); }
+input[type=number], select { width: 100%; margin-top: 6px; padding: 8px 0; border: 0; border-bottom: 1.5px solid var(--ink); font-size: 13px; letter-spacing: 0; }
+input[type=number] { font-size: 22px; }
+output { float: right; color: var(--ink); }
+.hint, .footnote { font-size: 12px; color: var(--muted); line-height: 1.5; }
+.pair { display: flex; gap: 8px; }
+.pair > * { flex: 1; min-width: 0; }
+#delete, #export { width: 100%; margin-top: 12px; }
+#export { background: var(--ink); color: white; border-color: var(--ink); }
+#export:hover { background: var(--accent); border-color: var(--accent); }
+#example, #clear { border-radius: 99px; margin-top: 12px; font-size: 12px; padding: 6px; }
+.viewbar { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding-bottom: 14px; }
+.viewbar .pair { gap: 0; }
+.viewbar .pair button { padding: 9px 18px; }
+.viewbar label { display: inline-block; margin: 0 0 0 14px; font-size: 12px; text-transform: none; letter-spacing: 0; color: var(--ink); }
+.canvas-wrap { position: relative; height: 580px; min-height: 350px; background: rgba(236,234,228,.7); border: 1px solid var(--line); overflow: hidden; }
+canvas { width: 100%; height: 100%; display: block; touch-action: none; cursor: crosshair; }
+.legend { position: absolute; bottom: 16px; left: 20px; font-size: 11px; color: var(--muted); pointer-events: none; display: flex; align-items: center; gap: 8px; }
+.dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ink); }
+.gradient { margin-left: 14px; width: 60px; height: 6px; background: linear-gradient(90deg, #eceae4, #d4542b); }
+.metrics { display: grid; grid-template-columns: repeat(3,1fr); gap: 16px; margin-top: 22px; border-bottom: 1px solid var(--line); padding-bottom: 22px; }
+.metrics strong { font-size: 34px; font-weight: 500; letter-spacing: -.035em; display: block; }
+.metrics span { font-size: 10px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+#status { font-size: 13px; color: var(--ink); }
+.footnote { max-width: 750px; }
+button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+@media(max-width: 1000px) { main { gap: 20px; padding: 0 24px 24px; grid-template-columns: 280px minmax(0,1fr); } header { padding: 30px 24px; } .badge { display: none; } .viewbar { flex-wrap: wrap; } }
+@media(max-width: 760px) { header { padding: 26px 20px; } header p { font-size: 15px; } main { padding: 0 16px 24px; grid-template-columns: 1fr; } .workspace { grid-row: 1; } .canvas-wrap { height: 420px; } aside { padding: 22px; } h1 { font-size: 36px; } .metrics strong { font-size: 28px; } .legend { left: 12px; gap: 6px; font-size: 10px; } .gradient { width: 42px; margin-left: 6px; } }
