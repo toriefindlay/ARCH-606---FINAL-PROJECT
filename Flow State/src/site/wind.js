@@ -6,15 +6,46 @@ import { on } from "../core/events.js";
 import { $ } from "../core/dom.js";
 import { registerPersist } from "../core/persist.js";
 import { compass } from "./sun.js";
+import { getMassInfo } from "../mass/model3dm.js";
+import { scanMass } from "../erosion/exterior/massScan.js";
+import { createSiteFlow } from "./windFlow.js";
 
 // Wind layer: a wind rose at the site centre plus streaks drifting downwind at the average speed.
+// Streaks bend around the site's buildings and the placed mass (see windFlow.js): they split at a face, glide along the
+// walls, climb over low roofs and slow in the lee.
 // Data: a year of hourly 10 m reanalysis wind from Open-Meteo (regional, not measured on site).
 
 const RAD = Math.PI / 180;
 let windState = null; // { raw, stats, streaks }
 const windRaw = new Map(); // site key -> hourly series
 const SEASONS = { all: null, djf: [12, 1, 2], mam: [3, 4, 5], jja: [6, 7, 8], son: [9, 10, 11] };
-const STREAKS = 450;
+const STREAKS = 900;
+const TRAIL = 8; // points per streak: it bends where the wind does
+const FLOW_DELAY = 350; // ms after the mass stops moving before the wind is worked out around it
+const SPAWN_MAX_Y = 60; // streaks that climb over a mass higher than this start again upwind
+
+let flow = null; // the wind around the site's buildings and the placed mass, or null
+let massScan = null; // the placed mass as a height map (as placed, or rounded by the wind erosion)
+let flowTimer = 0;
+const wind = { vx: 0, vz: 0, vy: 0, k: 1 }; // scratch: the wind at one streak
+const probe = { x: 0, y: 0, z: 0 };
+
+function rebuildFlow() {
+  flow = state.site ? createSiteFlow({ radius: state.site.radius, buildings: state.features?.buildings, mass: massScan }) : null;
+}
+
+function updateFlow() {
+  const info = getMassInfo();
+  massScan = info ? scanMass(info) : null;
+  rebuildFlow();
+}
+
+// The wind erosion rounds the mass: from now on the streaks bend around that shape (a scanMass()-style height map) instead.
+export function setWindObstacle(scan) {
+  clearTimeout(flowTimer);
+  massScan = scan;
+  rebuildFlow();
+}
 
 async function fetchWind(lat, lon) {
   const key = `${lat.toFixed(2)},${lon.toFixed(2)}`;
@@ -55,9 +86,11 @@ function windStats(raw, months) {
   return { n, mean: n ? sum / n : 0, calm: n ? calm / n : 0, bins: out, top, from: top * 22.5 };
 }
 
+let loading = false;
 async function ensureWind() {
   const s = state.site;
-  if (!s || windState) return;
+  if (!s || windState || loading) return;
+  loading = true;
   $("wind-readout").textContent = "Loading wind data…";
   try {
     const raw = await fetchWind(s.lat, s.lon);
@@ -66,8 +99,13 @@ async function ensureWind() {
     refreshWind();
   } catch (e) {
     if (state.site === s) $("wind-readout").textContent = `Couldn't load wind data (${e.message}).`;
+  } finally {
+    loading = false;
   }
 }
+
+// For modules that need the wind (the exterior erosion) before the wind layer has been switched on. Poll getWind().
+export const requestWind = ensureWind;
 
 function refreshWind() {
   if (!windState) return;
@@ -133,12 +171,19 @@ function buildWind() {
   g.add(n);
 
   // Streaks drifting downwind at the average speed.
+  // Each streak is a short trail of TRAIL points (head first), drawn as TRAIL - 1 segments fading to the sky colour.
+  const SEG = TRAIL - 1;
   const geo = new THREE.BufferGeometry();
-  geo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(STREAKS * 6), 3));
-  const colors = new Float32Array(STREAKS * 6);
-  const head = new THREE.Color(0x2b6cb0), tail = SKY;
+  geo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(STREAKS * SEG * 6), 3));
+  const colors = new Float32Array(STREAKS * SEG * 6);
+  const head = new THREE.Color(0x2b6cb0), tail = SKY, shade = new THREE.Color();
   for (let i = 0; i < STREAKS; i++) {
-    colors.set([tail.r, tail.g, tail.b, head.r, head.g, head.b], i * 6);
+    for (let k = 0; k < SEG; k++) {
+      shade.copy(head).lerp(tail, k / SEG);
+      colors.set([shade.r, shade.g, shade.b], (i * SEG + k) * 6);
+      shade.copy(head).lerp(tail, (k + 1) / SEG);
+      colors.set([shade.r, shade.g, shade.b], (i * SEG + k) * 6 + 3);
+    }
   }
   geo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
   const lines = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ vertexColors: true }));
@@ -148,37 +193,73 @@ function buildWind() {
   const Rd = R * 1.05;
   const xz = new Float32Array(STREAKS * 2);
   const y = new Float32Array(STREAKS);
+  const side = new Float32Array(STREAKS); // which way each streak turns when it meets a wall head-on
+  const hist = new Float32Array(STREAKS * TRAIL * 3);
   for (let i = 0; i < STREAKS; i++) {
     const r = Rd * Math.sqrt(Math.random()), a = Math.random() * Math.PI * 2;
     xz[i * 2] = Math.cos(a) * r;
     xz[i * 2 + 1] = Math.sin(a) * r;
     y[i] = 3 + Math.random() * 45;
+    side[i] = Math.random() < 0.5 ? -1 : 1;
+    resetTrail(hist, i, xz[i * 2], y[i], xz[i * 2 + 1]);
   }
-  windState.streaks = { geo, xz, y, Rd };
+  windState.streaks = { geo, xz, y, side, hist, Rd };
+  if (!flow) updateFlow(); // a mass placed before the wind data arrived
+}
+
+function resetTrail(hist, i, x, y, z) {
+  for (let k = 0; k < TRAIL; k++) hist.set([x, y, z], (i * TRAIL + k) * 3);
 }
 
 onFrame((dt) => {
   const w = windState;
   if (!w?.streaks || !layers.wind?.visible) return;
-  const { geo, xz, y, Rd } = w.streaks;
+  const { geo, xz, y, side, hist, Rd } = w.streaks;
   const [dx, dz] = downwind(w.stats.from);
   const v = w.stats.mean * 4; // scene m/s: exaggerated so drift is visible
-  const len = 8 + w.stats.mean * 4;
+  const segLen = (8 + w.stats.mean * 4) / (TRAIL - 1);
   const p = geo.attributes.position.array;
   const baseA = Math.atan2(-dz, -dx); // upwind direction
 
   for (let i = 0; i < STREAKS; i++) {
-    let x = xz[i * 2] + dx * v * dt;
-    let z = xz[i * 2 + 1] + dz * v * dt;
-    if (x * x + z * z > Rd * Rd) {
+    let x = xz[i * 2], z = xz[i * 2 + 1], h = y[i];
+    if (flow) flow.steer(wind, x, z, h, dx, dz, side[i]);
+    else Object.assign(wind, { vx: dx, vz: dz, vy: 0, k: 1 });
+    const step = v * wind.k * dt;
+    x += wind.vx * step;
+    z += wind.vz * step;
+    h += wind.vy * step;
+    let buried = false;
+    if (flow) {
+      probe.x = x; probe.y = h; probe.z = z;
+      buried = !flow.resolve(probe);
+      x = probe.x; z = probe.z; h = probe.y;
+    }
+    let spawned = false;
+    if (buried || x * x + z * z > Rd * Rd || h > SPAWN_MAX_Y) {
       const a = baseA + (Math.random() - 0.5) * Math.PI;
       x = Math.cos(a) * Rd;
       z = Math.sin(a) * Rd;
-      y[i] = 3 + Math.random() * 45;
+      h = 3 + Math.random() * 45;
+      spawned = true;
     }
     xz[i * 2] = x;
     xz[i * 2 + 1] = z;
-    p.set([x - dx * len, y[i], z - dz * len, x, y[i], z], i * 6);
+    y[i] = h;
+
+    // Trail: the head is live; a point is dropped every segLen of travel.
+    const b = i * TRAIL * 3;
+    if (spawned) resetTrail(hist, i, x, h, z);
+    else {
+      hist[b] = x; hist[b + 1] = h; hist[b + 2] = z;
+      if (Math.hypot(x - hist[b + 3], h - hist[b + 4], z - hist[b + 5]) >= segLen) {
+        hist.copyWithin(b + 6, b + 3, b + 3 * (TRAIL - 1));
+        hist[b + 3] = x; hist[b + 4] = h; hist[b + 5] = z;
+      }
+    }
+    for (let k = 0; k < TRAIL - 1; k++) {
+      p.set(hist.subarray(b + k * 3, b + k * 3 + 6), (i * (TRAIL - 1) + k) * 6);
+    }
   }
   geo.attributes.position.needsUpdate = true;
 });
@@ -193,6 +274,7 @@ $("wind-season").addEventListener("change", refreshWind);
 
 on("site:built", () => {
   windState = null;
+  flow = massScan = null; // the previous site's buildings
   $("wind-readout").textContent = "";
   layers.wind = new THREE.Group();
   layers.wind.visible = false;
@@ -200,7 +282,20 @@ on("site:built", () => {
   syncWindPanel();
 });
 
-on("site:cleared", () => (windState = null));
+on("site:cleared", () => {
+  windState = null;
+  flow = massScan = null;
+  clearTimeout(flowTimer);
+});
+
+// The mass moved, scaled or went away: the wind bends around its new shape once it has settled.
+on("mass:changed", ({ mass }) => {
+  clearTimeout(flowTimer);
+  if (!mass) {
+    massScan = null;
+    rebuildFlow(); // the buildings stay
+  } else flowTimer = setTimeout(updateFlow, FLOW_DELAY);
+});
 
 on("layer:toggled", ({ name }) => name === "wind" && syncWindPanel());
 

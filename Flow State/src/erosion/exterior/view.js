@@ -79,9 +79,22 @@ const carveUniforms = {
   uCarveBox: { value: new THREE.Vector4(0, 0, 1, 1) }, // the map's corner (x, z) and size
 };
 
+// The wind erosion's map holds, for each cell of the mass's footprint, how tall the mass is left after the wind has rounded it
+// (in metres), or -1 where the wind has not touched it. The mass's own surface is discarded above that height. A wall is
+// tested a little way inside the solid (against the way the camera looks at it), so that it follows the column it belongs to.
+const windUniforms = {
+  uWindHeight: { value: null }, // set below, once EMPTY_WIND exists
+  uWindBox: { value: new THREE.Vector4(0, 0, 1, 1) }, // the map's corner (x, z) and size
+};
+const EMPTY_WIND = new THREE.DataTexture(new Float32Array([-1]), 1, 1, THREE.RedFormat, THREE.FloatType);
+EMPTY_WIND.needsUpdate = true;
+windUniforms.uWindHeight.value = EMPTY_WIND;
+
 const CARVE_GLSL = /* glsl */ `
 uniform sampler2D uCarveHeight;
 uniform vec4 uCarveBox;
+uniform sampler2D uWindHeight;
+uniform vec4 uWindBox;
 varying vec3 vCarvePos;
 bool carved(vec3 p) {
   vec2 uv = (p.xz - uCarveBox.xy) / uCarveBox.zw;
@@ -89,20 +102,37 @@ bool carved(vec3 p) {
   float h = texture2D(uCarveHeight, uv).r * ${(255 / HEIGHT_UNIT).toFixed(1)};
   return h > 0.0 && p.y < h;
 }
+bool windRounded(vec3 p) {
+  vec2 uv = (p.xz - uWindBox.xy) / uWindBox.zw;
+  if (uv.x < 0.0 || uv.y < 0.0 || uv.x > 1.0 || uv.y > 1.0) return false;
+  float h = texture2D(uWindHeight, uv).r;
+  return h >= 0.0 && (h < 0.02 || p.y > h + 0.03);
+}
+vec3 facing() {
+  vec3 c = cross(dFdx(vCarvePos), dFdy(vCarvePos));
+  float l = length(c);
+  return l > 1e-9 ? c / l : vec3(0.0);
+}
 `;
 
+// `wind`: "mesh" (a surface: tested just inside), "line" (the mass's edge lines: tested where they are) or none (the walls we
+// build ourselves, which the wind never discards).
 const patched = new WeakSet();
-function patch(material, key) {
+function patch(material, key, wind = null) {
   if (patched.has(material)) return;
   patched.add(material);
+  const test = wind === "mesh" ? "if (windRounded(vCarvePos - wn * 0.06)) discard;" : wind === "line" ? "if (windRounded(vCarvePos)) discard;" : "";
   material.onBeforeCompile = (shader) => {
-    Object.assign(shader.uniforms, carveUniforms);
+    Object.assign(shader.uniforms, carveUniforms, windUniforms);
     shader.vertexShader = shader.vertexShader
       .replace("#include <common>", "#include <common>\nvarying vec3 vCarvePos;")
       .replace("#include <begin_vertex>", "#include <begin_vertex>\nvCarvePos = (modelMatrix * vec4(transformed, 1.0)).xyz;");
     shader.fragmentShader = shader.fragmentShader
       .replace("#include <common>", `#include <common>\n${CARVE_GLSL}`)
-      .replace("#include <clipping_planes_fragment>", "#include <clipping_planes_fragment>\nif (carved(vCarvePos)) discard;");
+      .replace(
+        "#include <clipping_planes_fragment>",
+        `#include <clipping_planes_fragment>\nvec3 wn = ${wind === "mesh" ? "facing()" : "vec3(0.0)"};\nif (carved(vCarvePos)) discard;\n${test}`
+      );
   };
   material.customProgramCacheKey = () => key;
   material.needsUpdate = true;
@@ -112,8 +142,8 @@ function patch(material, key) {
 function patchMass(root) {
   root.traverse((o) => {
     const materials = [o.material].flat().filter(Boolean);
-    if (o.isMesh) materials.forEach((m) => patch(m, "carve-mass"));
-    else if (o.isLineSegments) materials.forEach((m) => patch(m, "carve-mass-edge"));
+    if (o.isMesh) materials.forEach((m) => patch(m, "carve-mass", "mesh"));
+    else if (o.isLineSegments) materials.forEach((m) => patch(m, "carve-mass-edge", "line"));
   });
 }
 
@@ -250,6 +280,118 @@ export function createCarveView() {
       if (i1 < 0) return;
       const geo = wallGeometry();
       if (geo.attributes.position.count) group.add(new THREE.Mesh(geo, wallMaterial));
+    },
+  };
+}
+
+/* ---------- mass rounded by the wind ---------- */
+
+// The wind erosion (windErode.js) keeps a height map of the rounded mass. Wherever that is lower than the mass was, the mass's
+// own surface is discarded above it (see windUniforms) and the surface the wind has shaped is built here: a top for every
+// changed column, and a wall wherever neighbouring columns differ in height, minus the stretches that the mass's own walls
+// still cover. The new surface starts the colour of the white model and turns blue the more the wind has worn it.
+const WORN_FROM = new THREE.Color(0xffd9c9), WORN_TO = new THREE.Color(0x6f9fd8);
+const SLOPE_LIMIT = 1.5; // steepest slope (rise over run) used to shade the tops
+const SAME = 0.02; // metres
+
+export function createWindView() {
+  const skinMaterial = new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide });
+  patch(skinMaterial, "carve-skin"); // traffic's slices still cut through it
+  let group = null, texture = null, data = null;
+  const colour = new THREE.Color();
+
+  const clear = () => {
+    windUniforms.uWindHeight.value = EMPTY_WIND;
+    group?.traverse((o) => o.geometry?.dispose());
+    group?.parent?.remove(group);
+    texture?.dispose();
+    group = texture = data = null;
+  };
+
+  function skinGeometry(er) {
+    const { nx, nz, cx, cz, x0, z0, h0, heights, wear } = er;
+    const inside = (i, j) => i >= 0 && j >= 0 && i < nx && j < nz;
+    const now = (i, j) => (inside(i, j) ? heights[j * nx + i] : 0); // the rounded mass
+    const was = (i, j) => (inside(i, j) ? h0[j * nx + i] : 0); // the mass as placed
+    const pos = [], nrm = [], col = [];
+    const quad = (a, b, c, d, normal, tint) => {
+      for (const v of [a, b, c, a, c, d]) {
+        pos.push(v[0], v[1], v[2]);
+        nrm.push(normal[0], normal[1], normal[2]);
+        col.push(tint.r, tint.g, tint.b);
+      }
+    };
+    const slope = (a, b, run) => Math.max(-SLOPE_LIMIT, Math.min(SLOPE_LIMIT, (a - b) / (2 * run)));
+
+    for (let j = 0; j < nz; j++) {
+      for (let i = 0; i < nx; i++) {
+        const k = j * nx + i;
+        if (heights[k] >= h0[k] - SAME) continue;
+        const hA = heights[k];
+        const tint = colour.copy(WORN_FROM).lerp(WORN_TO, Math.pow(Math.min(1, wear[k]), 0.7));
+        const xa = x0 + i * cx, xb = xa + cx, za = z0 + j * cz, zb = za + cz;
+
+        if (hA > SAME) {
+          const sx = slope(now(i - 1, j), now(i + 1, j), cx), sz = slope(now(i, j - 1), now(i, j + 1), cz);
+          const len = Math.hypot(sx, 1, sz);
+          quad([xa, hA, za], [xb, hA, za], [xb, hA, zb], [xa, hA, zb], [sx / len, 1 / len, sz / len], tint);
+        }
+
+        for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const ni = i + di, nj = j + dj, kN = nj * nx + ni;
+          if (inside(ni, nj) && heights[kN] < h0[kN] - SAME && kN < k) continue; // both changed: the other column builds this wall
+          const hN = now(ni, nj), o0A = h0[k], o0N = was(ni, nj);
+          const lo = Math.min(hA, hN), hi = Math.max(hA, hN);
+          if (hi - lo < SAME) continue;
+          // The mass's own wall here (if the two columns started at different heights) is kept up to the current height of
+          // the column it stands on; only the rest of the step needs building.
+          let pieces = [[lo, hi]];
+          if (Math.abs(o0A - o0N) > SAME) {
+            const floor = Math.min(o0A, o0N), roof = o0A > o0N ? hA : hN;
+            if (roof > floor) pieces = [[lo, Math.min(hi, floor)], [Math.max(lo, roof), hi]];
+          }
+          const toward = hA > hN ? [di, dj] : [-di, -dj]; // the wall faces the lower column
+          const ex = di ? (di > 0 ? xb : xa) : null, ez = dj ? (dj > 0 ? zb : za) : null;
+          for (const [from, to] of pieces) {
+            if (to - from < SAME) continue;
+            if (ex !== null) quad([ex, from, za], [ex, from, zb], [ex, to, zb], [ex, to, za], [toward[0], 0, 0], tint);
+            else quad([xa, from, ez], [xb, from, ez], [xb, to, ez], [xa, to, ez], [0, 0, toward[1]], tint);
+          }
+        }
+      }
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+    geo.setAttribute("normal", new THREE.Float32BufferAttribute(nrm, 3));
+    geo.setAttribute("color", new THREE.Float32BufferAttribute(col, 3));
+    return geo;
+  }
+
+  return {
+    clear,
+    // Start showing the wind erosion `er` of the mass `root`, adding the surface it shapes to `parent`.
+    setErosion(er, parent, root) {
+      clear();
+      patchMass(root);
+      data = new Float32Array(er.nx * er.nz).fill(-1);
+      texture = new THREE.DataTexture(data, er.nx, er.nz, THREE.RedFormat, THREE.FloatType);
+      texture.minFilter = texture.magFilter = THREE.NearestFilter;
+      texture.needsUpdate = true;
+      windUniforms.uWindHeight.value = texture;
+      windUniforms.uWindBox.value.set(er.x0, er.z0, er.nx * er.cx, er.nz * er.cz);
+      group = new THREE.Group();
+      parent.add(group);
+    },
+    // Show the mass as the wind has rounded it so far.
+    update(er) {
+      if (!group) return;
+      for (let k = 0; k < data.length; k++) data[k] = er.heights[k] < er.h0[k] - SAME ? er.heights[k] : -1;
+      texture.needsUpdate = true;
+      group.traverse((o) => o.geometry?.dispose());
+      group.clear();
+      if (!er.changed()) return;
+      const geo = skinGeometry(er);
+      if (geo.attributes.position.count) group.add(new THREE.Mesh(geo, skinMaterial));
     },
   };
 }

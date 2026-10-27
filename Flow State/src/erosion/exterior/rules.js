@@ -10,8 +10,10 @@
 //
 // Built so far: flow erosion. People and cars touching the mass wear thin passages into it, following their routes
 // and widening with every pass (see erosion.js). The mass's own shape does not influence it.
+// Wind erosion: the prevailing wind slowly rounds the mass's convex edges, windward ones first (see windErode.js).
 import { activeErosionCuts } from "./erosion.js";
+import { activeWindCuts } from "./windErode.js";
 
 export function provideCuts(ctx) {
-  return activeErosionCuts();
+  return [...activeErosionCuts(), ...activeWindCuts()];
 }

@@ -5,11 +5,12 @@
 import * as THREE from "three";
 
 const MAX_CELLS = 40; // per axis, keeps the height map to a few thousand rays
-const SUB = 2; // height samples per cell, per axis
+const DEFAULT_SUB = 2; // height samples per cell, per axis
 const MIN_CELL = 2.5; // metres
 
 // info: getMassInfo() from mass/model3dm.js. Returns null if the mass has no mesh geometry.
-export function scanMass(info) {
+// `maxCells`, `minCell` and `sub` override the resolution above (the wind erosion scans finer).
+export function scanMass(info, { maxCells = MAX_CELLS, minCell = MIN_CELL, sub: SUB = DEFAULT_SUB } = {}) {
   const root = info.object;
   root.updateMatrixWorld(true);
   const meshes = [];
@@ -27,7 +28,7 @@ export function scanMass(info) {
   if (!meshes.length || !isFinite(minX)) return null;
 
   const Lu = Math.max(maxX - minX, 1), Lv = Math.max(maxZ - minZ, 1);
-  const cell = Math.max(MIN_CELL, Math.max(Lu, Lv) / MAX_CELLS);
+  const cell = Math.max(minCell, Math.max(Lu, Lv) / maxCells);
   const nU = Math.max(1, Math.round(Lu / cell)), nV = Math.max(1, Math.round(Lv / cell));
   const cu = Lu / nU, cv = Lv / nV;
   // Lattice coordinates (u, v) are metres east and south of the mass's north-west corner: x = minX + u, z = minZ + v.

@@ -10,8 +10,10 @@ import { provideCuts } from "./rules.js";
 import { createTraffic } from "./traffic.js";
 import { scanMass } from "./massScan.js";
 import { createErosion, setActiveErosion } from "./erosion.js";
-import { renderPreview, createTrafficView, createCarveView } from "./view.js";
-import { mountPanel, settings, syncControls, updateReadout } from "./panel.js";
+import { createWindErosion, setActiveWindErosion } from "./windErode.js";
+import { renderPreview, createTrafficView, createCarveView, createWindView } from "./view.js";
+import { mountPanel, settings, syncControls, updateReadout, setWindNote } from "./panel.js";
+import { getWind, requestWind, setWindObstacle } from "../../site/wind.js";
 
 // Rough check for the places a preset or a user is most likely to pick that drive on the left.
 const LEFT_HAND = [
@@ -24,11 +26,20 @@ const MAX_SUBSTEP = 0.2; // seconds: keeps car-following stable when playback is
 const WARM_UP = 90; // seconds simulated before the site first appears
 const RESCAN_DELAY = 350; // ms after the mass stops moving before it is analysed again
 const CARVE_INTERVAL = 0.6; // seconds between updates of the carved shape
+const WIND_INTERVAL = 0.6; // seconds between updates of the wind-rounded shape
+const FLOW_DELAY = 1500; // ms after the rounding last changed before the wind streaks bend around the new shape
 
 let sim = null;
 let view = null;
 let erosion = null;
 let carve = null;
+let windErosion = null; // the wind rounding of the placed mass, once it has been worked out
+let windView = null;
+let windBuilding = false; // the rounding is being worked out
+let windClock = 0; // simulated seconds of wind not yet applied
+let windTick = 0;
+let flowTimer = 0;
+let massVersion = 0; // changes whenever the mass does, so that a slow rounding for an old mass is dropped
 let rescanTimer = 0;
 let carveClock = 0;
 let healClock = 0; // simulated seconds since the erosion last healed
@@ -80,13 +91,71 @@ function rebuild() {
 // The mass moved, scaled or went away: its carving no longer fits, so start again from the new mass.
 function stopCarving() {
   clearTimeout(rescanTimer);
-  const had = !!erosion;
+  const had = !!erosion || !!windErosion?.changed();
   erosion = null;
   massArea = null;
   sim?.setMass(null);
   setActiveErosion(null);
   carve?.clear();
+  stopWind();
   if (had) notifyCutsChanged();
+}
+
+function stopWind() {
+  massVersion++;
+  clearTimeout(flowTimer);
+  windErosion = null;
+  windBuilding = false;
+  windClock = windTick = 0;
+  setActiveWindErosion(null);
+  windView?.clear();
+}
+
+// The wind erosion is worked out the first time it is wanted for a mass (it takes a moment).
+function buildWind() {
+  const info = getMassInfo();
+  if (windErosion || windBuilding || !erosion || !info || !layers.model) return; // `erosion` exists once the mass has settled
+  windBuilding = true;
+  const version = massVersion;
+  setWindNote("Working out how the wind can round this mass…");
+  createWindErosion(info)
+    .then((er) => {
+      if (version !== massVersion) return;
+      windBuilding = false;
+      if (!er) return;
+      windErosion = er;
+      setActiveWindErosion(er);
+      windView.setErosion(er, layers.model, info.object);
+    })
+    .catch((e) => {
+      if (version === massVersion) windBuilding = false;
+      console.error("Wind erosion failed:", e);
+    });
+}
+
+function windFrame(dt) {
+  if (!settings.erodeWind) return setWindNote("");
+  if (!settings.playing) return;
+  if (!getMassInfo()) return setWindNote("Place a .3dm mass for the wind to round.");
+  const rose = getWind();
+  if (!rose) {
+    requestWind(); // needs the wind data, whether or not the wind layer is switched on
+    return setWindNote("Loading wind data…");
+  }
+  buildWind();
+  if (!windErosion) return;
+  setWindNote("");
+  windClock += dt * settings.speed;
+  windTick += dt;
+  if (windTick < WIND_INTERVAL) return;
+  windErosion.expose(rose, windClock, settings.erode / 2);
+  windClock = windTick = 0;
+  if (windErosion.recompute()) {
+    windView.update(windErosion);
+    notifyCutsChanged();
+    clearTimeout(flowTimer);
+    flowTimer = setTimeout(() => windErosion && setWindObstacle(windErosion.asScan()), FLOW_DELAY); // the streaks follow the rounded shape
+  }
 }
 
 function startCarving() {
@@ -117,14 +186,19 @@ function carveFrame(dt, simSeconds) {
 
 export function mountExterior() {
   carve = createCarveView();
+  windView = createWindView();
   registerCutProvider("exterior", provideCuts);
   mountPanel($("exterior-panel"), {
     reset: () => { sim?.reset(); sim?.warmUp(WARM_UP, rates()); },
     clearErosion: () => {
-      if (erosion?.clear()) {
-        carve.update(erosion);
-        notifyCutsChanged();
+      const strands = erosion?.clear();
+      const rounding = windErosion?.clear();
+      if (strands) carve.update(erosion);
+      if (rounding) {
+        windView.update(windErosion);
+        setWindObstacle(windErosion.asScan());
       }
+      if (strands || rounding) notifyCutsChanged();
     },
   });
   on("cuts:changed", () => renderPreview(collectCuts().filter((c) => c.source === "exterior")));
@@ -148,10 +222,12 @@ export function mountExterior() {
     clearTimeout(rescanTimer);
     setActiveErosion(null);
     carve.clear();
+    stopWind();
     updateReadout(null);
     });
 
   onFrame((dt) => {
+    windFrame(dt);
     if (!sim) return;
     if (settings.playing && layers.traffic?.visible) {
       const total = dt * settings.speed, n = Math.max(1, Math.ceil(total / MAX_SUBSTEP));

@@ -4,7 +4,7 @@
 import { registerPersist } from "../../core/persist.js";
 
 // Read each frame by index.js. `speed` is simulated seconds per real second.
-export const settings = { playing: true, speed: 4, people: 1, cars: 1, size: 2, leftHand: false, erode: 2, heal: 1, erodePeople: false, erodeCars: false };
+export const settings = { playing: true, speed: 4, people: 1, cars: 1, size: 2, leftHand: false, erode: 2, heal: 1, erodePeople: false, erodeCars: false, erodeWind: false };
 
 const $ = (id) => document.getElementById(id);
 let onReset = () => {};
@@ -42,7 +42,8 @@ export function mountPanel(el, hooks = {}) {
     <label><input type="checkbox" id="erode-people"> People</label>
     <label><input type="checkbox" id="erode-cars"> Cars</label>
     <label title="Not built yet"><input type="checkbox" disabled> Sun (not built yet)</label>
-    <label title="Not built yet"><input type="checkbox" disabled> Wind (not built yet)</label>
+    <label title="The prevailing wind slowly rounds the mass's edges, windward ones first. It never cuts into the mass."><input type="checkbox" id="erode-wind"> Wind (rounds the edges)</label>
+    <p id="wind-erode-note" class="hint" style="margin:0 0 6px"></p>
     <label>Erosion speed <output id="traffic-erode-out"></output>
       <input type="range" id="traffic-erode" min="0.5" max="8" step="0.5">
     </label>
@@ -50,7 +51,7 @@ export function mountPanel(el, hooks = {}) {
       <input type="range" id="traffic-heal" min="0" max="4" step="0.25">
     </label>
     <button type="button" class="tool" id="traffic-clear-erosion" style="width:100%;margin-bottom:8px">Clear erosion</button>
-    <p class="hint" style="margin-top:0">Import a mass: where people and cars touch it they slice hair-thin strands along their routes. Each pass through a channel makes it 1% wider and its purple darker.</p>`;
+    <p class="hint" style="margin-top:0">Import a mass: where people and cars touch it they slice hair-thin strands along their routes. Each pass through a channel makes it 1% wider and its purple darker. The wind rounds convex edges and corners (windward first); the more it wears a surface the bluer it gets.</p>`;
 
   $("traffic-play").addEventListener("click", () => { settings.playing = !settings.playing; syncControls(); });
   $("traffic-reset").addEventListener("click", () => onReset());
@@ -62,6 +63,7 @@ export function mountPanel(el, hooks = {}) {
   $("traffic-left").addEventListener("change", (e) => (settings.leftHand = e.target.checked));
   $("erode-people").addEventListener("change", (e) => (settings.erodePeople = e.target.checked));
   $("erode-cars").addEventListener("change", (e) => (settings.erodeCars = e.target.checked));
+  $("erode-wind").addEventListener("change", (e) => (settings.erodeWind = e.target.checked));
   syncControls();
 }
 
@@ -77,6 +79,13 @@ export function syncControls() {
   $("traffic-left").checked = settings.leftHand;
   $("erode-people").checked = settings.erodePeople;
   $("erode-cars").checked = settings.erodeCars;
+  $("erode-wind").checked = settings.erodeWind;
+}
+
+// A line under the Wind checkbox saying what the wind erosion is waiting for ("" when it is simply working).
+export function setWindNote(text) {
+  const el = $("wind-erode-note");
+  if (el && el.textContent !== text) el.textContent = text;
 }
 
 export function updateReadout(sim) {
