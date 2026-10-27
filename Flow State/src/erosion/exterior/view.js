@@ -110,23 +110,19 @@ vec2 windColumn(vec2 xz) {
   if (uv.x < 0.0 || uv.y < 0.0 || uv.x > 1.0 || uv.y > 1.0) return vec2(-1.0, 0.0);
   return texture2D(uWindHeight, uv).rg;
 }
-// A surface belongs to the taller of the two columns either side of it (a wall stands on the solid side), whichever way it
-// is seen from. It goes where that column has been rounded below it.
+// The columns whose surface the form view replaces are marked (>= 0). A piece of the mass's own surface goes if it lies in one,
+// or touches one: a wall can lie up to half a cell from the edge of the cell it stands on, so a full cell either side of it is
+// looked at (all round, for lines, which have no normal). The view builds its replacement one column further out than this,
+// so nothing is left over and nothing is left open.
 bool windRounded(vec3 p, vec3 n) {
-  // A full cell either side: a wall can lie up to half a cell from the edge of the cell it stands on. Lines (no normal) look
-  // a cell all round.
-  vec2 own = windColumn(p.xz);
+  bool cut = windColumn(p.xz).x >= 0.0;
   if (dot(n, n) > 0.0) {
-    vec2 a = windColumn((p - n * uWindCell).xz), b = windColumn((p + n * uWindCell).xz);
-    own = a.y >= b.y ? a : b;
+    cut = cut || windColumn((p - n * uWindCell).xz).x >= 0.0 || windColumn((p + n * uWindCell).xz).x >= 0.0;
   } else {
-    vec2 c;
-    c = windColumn(p.xz + vec2(uWindCell, 0.0)); if (c.y > own.y) own = c;
-    c = windColumn(p.xz - vec2(uWindCell, 0.0)); if (c.y > own.y) own = c;
-    c = windColumn(p.xz + vec2(0.0, uWindCell)); if (c.y > own.y) own = c;
-    c = windColumn(p.xz - vec2(0.0, uWindCell)); if (c.y > own.y) own = c;
+    cut = cut || windColumn(p.xz + vec2(uWindCell, 0.0)).x >= 0.0 || windColumn(p.xz - vec2(uWindCell, 0.0)).x >= 0.0
+              || windColumn(p.xz + vec2(0.0, uWindCell)).x >= 0.0 || windColumn(p.xz - vec2(0.0, uWindCell)).x >= 0.0;
   }
-  return own.x >= 0.0 && (own.x < 0.02 || p.y > own.x + 0.03);
+  return cut;
 }
 vec3 facing() {
   vec3 c = cross(dFdx(vCarvePos), dFdy(vCarvePos));
@@ -306,18 +302,36 @@ export function createCarveView() {
 
 /* ---------- the form: grown by the sun, rounded by the wind ---------- */
 
-// The form (form.js) is a height map of the mass as it is now. Where a column is lower than the mass was placed, the mass's own
-// surface is discarded above it (see windUniforms); where it is higher, the mass's own mesh stays and what grew is added. In
-// both cases the new surface is built here: a top for every changed column, and a wall wherever neighbouring columns differ
-// in height, minus the stretches that the mass's own walls still cover. What grew starts pale yellow and turns orange the
-// warmer it got; what was rounded off starts the colour of the white model and turns blue the more the wind wore it.
+// The form (form.js) is a height map of the mass as it is now. Where it differs from the mass as placed, the mass's own surface
+// is discarded (a ring of columns beyond the changed ones too) and replaced by one continuous smooth surface built here: a
+// vertex at every column, joined into triangles, shaded smoothly, with the steps between columns evened out wherever the
+// height changes gradually (a real wall is left sharp). What grew starts pale yellow and turns orange the warmer it got; what
+// was rounded off starts the colour of the white model and turns blue the more the wind wore it.
 const WARM_FROM = new THREE.Color(0xffe9a8), WARM_TO = new THREE.Color(0xe8672a);
 const WORN_FROM = new THREE.Color(0xffd9c9), WORN_TO = new THREE.Color(0x6f9fd8);
-const SLOPE_LIMIT = 1.5; // steepest slope (rise over run) used to shade the tops
 const SAME = 0.02; // metres
+const SKIN_FLOOR = 0.05; // metres: triangles lower than this are not built (the site's ground is there)
+const EVEN_OUT = 2; // passes of evening out; steps up to twice a cell's width in height are treated as a slope, not a wall
+
+// A copy of `mask` with every set cell's 8 neighbours set too.
+function grow(mask, nx, nz) {
+  const out = Uint8Array.from(mask);
+  for (let j = 0; j < nz; j++) {
+    for (let i = 0; i < nx; i++) {
+      if (!mask[j * nx + i]) continue;
+      for (let dj = -1; dj <= 1; dj++) {
+        for (let di = -1; di <= 1; di++) {
+          const a = i + di, b = j + dj;
+          if (a >= 0 && b >= 0 && a < nx && b < nz) out[b * nx + a] = 1;
+        }
+      }
+    }
+  }
+  return out;
+}
 
 export function createFormView() {
-  const skinMaterial = new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide });
+  const skinMaterial = new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 });
   patch(skinMaterial, "carve-skin"); // traffic's slices still cut through it
   let group = null, texture = null, data = null;
   const colour = new THREE.Color();
@@ -330,71 +344,86 @@ export function createFormView() {
     group = texture = data = null;
   };
 
-  function skinGeometry(form) {
-    const { nx, nz, cx, cz, x0, z0, h0, heights, heat, wear } = form;
-    const inside = (i, j) => i >= 0 && j >= 0 && i < nx && j < nz;
-    const now = (i, j) => (inside(i, j) ? heights[j * nx + i] : 0); // the form
-    const was = (i, j) => (inside(i, j) ? h0[j * nx + i] : 0); // the mass as placed
-    const changed = (k) => Math.abs(heights[k] - h0[k]) > SAME;
-    const pos = [], nrm = [], col = [];
-    const quad = (a, b, c, d, normal, tint) => {
-      for (const v of [a, b, c, a, c, d]) {
-        pos.push(v[0], v[1], v[2]);
-        nrm.push(normal[0], normal[1], normal[2]);
-        col.push(tint.r, tint.g, tint.b);
+  // The surface over the columns in `region`, which includes the changed ones (`changed`) and a margin round them.
+  function skinGeometry(form, region, changed) {
+    const { nx, nz, cx, cz, x0, z0, heights, h0, heat, wear } = form;
+    // Even out the changed columns: each takes the mean of its neighbours that are close to its own height.
+    let h = Float32Array.from(heights);
+    const band = EVEN_OUT * Math.max(cx, cz);
+    for (let pass = 0; pass < EVEN_OUT; pass++) {
+      const next = Float32Array.from(h);
+      for (let j = 0; j < nz; j++) {
+        for (let i = 0; i < nx; i++) {
+          const k = j * nx + i;
+          if (!changed[k]) continue;
+          let sum = 2 * h[k], weight = 2;
+          for (let dj = -1; dj <= 1; dj++) {
+            for (let di = -1; di <= 1; di++) {
+              const a = i + di, b = j + dj;
+              if ((!di && !dj) || a < 0 || b < 0 || a >= nx || b >= nz) continue;
+              const n = h[b * nx + a];
+              if (Math.abs(n - h[k]) < band) { sum += n; weight++; }
+            }
+          }
+          next[k] = sum / weight;
+        }
       }
-    };
-    const slope = (a, b, run) => Math.max(-SLOPE_LIMIT, Math.min(SLOPE_LIMIT, (a - b) / (2 * run)));
+      h = next;
+    }
 
+    const index = new Int32Array(nx * nz).fill(-1);
+    const pos = [], col = [];
     for (let j = 0; j < nz; j++) {
       for (let i = 0; i < nx; i++) {
         const k = j * nx + i;
-        if (!changed(k)) continue;
-        const hA = heights[k];
-        const tint = heights[k] > h0[k]
-          ? colour.copy(WARM_FROM).lerp(WARM_TO, Math.pow(Math.min(1, heat[k]), 0.8))
-          : colour.copy(WORN_FROM).lerp(WORN_TO, Math.pow(Math.min(1, wear[k]), 0.7));
-        const xa = x0 + i * cx, xb = xa + cx, za = z0 + j * cz, zb = za + cz;
-
-        if (hA > SAME) {
-          const sx = slope(now(i - 1, j), now(i + 1, j), cx), sz = slope(now(i, j - 1), now(i, j + 1), cz);
-          const len = Math.hypot(sx, 1, sz);
-          quad([xa, hA, za], [xb, hA, za], [xb, hA, zb], [xa, hA, zb], [sx / len, 1 / len, sz / len], tint);
-        }
-
-        for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-          const ni = i + di, nj = j + dj, kN = nj * nx + ni;
-          if (inside(ni, nj) && changed(kN) && kN < k) continue; // both changed: the other column builds this wall
-          const hN = now(ni, nj), o0A = h0[k], o0N = was(ni, nj);
-          const lo = Math.min(hA, hN), hi = Math.max(hA, hN);
-          if (hi - lo < SAME) continue;
-          // The mass's own wall here (if the two columns started at different heights) stands on the taller one, from the lower
-          // one's original top up to the original top of the taller, but no higher than the taller column is now. Only the
-          // rest of the step needs building.
-          let pieces = [[lo, hi]];
-          if (Math.abs(o0A - o0N) > SAME) {
-            const floor = Math.min(o0A, o0N), ceil = Math.max(o0A, o0N), owner = o0A > o0N ? hA : hN;
-            const kept = Math.min(ceil, owner);
-            if (kept > floor) pieces = [[lo, Math.min(hi, floor)], [Math.max(lo, kept), hi]];
-          }
-          const toward = hA > hN ? [di, dj] : [-di, -dj]; // the wall faces the lower column
-          for (const [from, to] of pieces) {
-            if (to - from < SAME) continue;
-            if (di) {
-              const ex = di > 0 ? xb : xa;
-              quad([ex, from, za], [ex, from, zb], [ex, to, zb], [ex, to, za], [toward[0], 0, 0], tint);
-            } else {
-              const ez = dj > 0 ? zb : za;
-              quad([xa, from, ez], [xb, from, ez], [xb, to, ez], [xa, to, ez], [0, 0, toward[1]], tint);
-            }
-          }
-        }
+        if (!region[k]) continue;
+        index[k] = pos.length / 3;
+        pos.push(x0 + (i + 0.5) * cx, h[k], z0 + (j + 0.5) * cz);
+        const tint = !changed[k]
+          ? colour.copy(WORN_FROM)
+          : heights[k] > h0[k]
+            ? colour.copy(WARM_FROM).lerp(WARM_TO, Math.pow(Math.min(1, heat[k]), 0.8))
+            : colour.copy(WORN_FROM).lerp(WORN_TO, Math.pow(Math.min(1, wear[k]), 0.7));
+        col.push(tint.r, tint.g, tint.b);
       }
     }
+    const tri = [];
+    const add = (a, b, c) => {
+      if (Math.max(pos[a * 3 + 1], pos[b * 3 + 1], pos[c * 3 + 1]) > SKIN_FLOOR) tri.push(a, b, c);
+    };
+    for (let j = 0; j < nz - 1; j++) {
+      for (let i = 0; i < nx - 1; i++) {
+        const a = index[j * nx + i], b = index[j * nx + i + 1], c = index[(j + 1) * nx + i], d = index[(j + 1) * nx + i + 1];
+        if (a < 0 || b < 0 || c < 0 || d < 0) continue;
+        add(a, c, b);
+        add(b, c, d);
+      }
+    }
+    // Close the surface into a solid: wherever the built region ends (an edge with a quad on one side only) a wall drops from
+    // the edge down to the ground, so there is never a way to look in underneath.
+    const built = (i, j) => i >= 0 && j >= 0 && i < nx - 1 && j < nz - 1 && index[j * nx + i] >= 0 && index[j * nx + i + 1] >= 0 && index[(j + 1) * nx + i] >= 0 && index[(j + 1) * nx + i + 1] >= 0;
+    const wall = (a, b) => {
+      const ya = pos[a * 3 + 1], yb = pos[b * 3 + 1];
+      if (Math.max(ya, yb) <= SKIN_FLOOR) return;
+      const at = pos.length / 3;
+      for (const [v, y] of [[a, ya], [b, yb], [b, 0], [a, 0]]) {
+        pos.push(pos[v * 3], y, pos[v * 3 + 2]);
+        col.push(col[v * 3], col[v * 3 + 1], col[v * 3 + 2]);
+      }
+      tri.push(at, at + 1, at + 2, at, at + 2, at + 3);
+    };
+    for (let j = 0; j < nz; j++) {
+      for (let i = 0; i < nx; i++) {
+        if (i < nx - 1 && index[j * nx + i] >= 0 && index[j * nx + i + 1] >= 0 && built(i, j - 1) !== built(i, j)) wall(index[j * nx + i], index[j * nx + i + 1]);
+        if (j < nz - 1 && index[j * nx + i] >= 0 && index[(j + 1) * nx + i] >= 0 && built(i - 1, j) !== built(i, j)) wall(index[j * nx + i], index[(j + 1) * nx + i]);
+      }
+    }
+
     const geo = new THREE.BufferGeometry();
     geo.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
-    geo.setAttribute("normal", new THREE.Float32BufferAttribute(nrm, 3));
     geo.setAttribute("color", new THREE.Float32BufferAttribute(col, 3));
+    geo.setIndex(tri);
+    geo.computeVertexNormals();
     return geo;
   }
 
@@ -421,17 +450,24 @@ export function createFormView() {
     // Show the form as it is now.
     update(form) {
       if (!group) return;
-      // The mass's own surface is only discarded above columns that were lowered.
-      for (let k = 0; k < form.h0.length; k++) {
-        data[k * 2] = form.heights[k] < form.h0[k] - SAME ? form.heights[k] : -1; // -1: nothing to cut away here
-        data[k * 2 + 1] = form.h0[k];
+      const { nx, nz, h0, heights } = form;
+      const changed = new Uint8Array(h0.length);
+      let any = false;
+      for (let k = 0; k < h0.length; k++) {
+        if (Math.abs(heights[k] - h0[k]) > SAME) { changed[k] = 1; any = true; }
+      }
+      const cut = grow(changed, nx, nz); // the mass's own surface goes here: the new surface replaces it
+      const region = grow(cut, nx, nz); // and the new surface reaches one column further, to meet what is left
+      for (let k = 0; k < h0.length; k++) {
+        data[k * 2] = cut[k] ? 0 : -1; // 0: everything of the mass's own surface here is discarded
+        data[k * 2 + 1] = h0[k];
       }
       texture.needsUpdate = true;
       group.traverse((o) => o.geometry?.dispose());
       group.clear();
-      if (!form.changed()) return;
-      const geo = skinGeometry(form);
-      if (geo.attributes.position.count) group.add(new THREE.Mesh(geo, skinMaterial));
+      if (!any) return;
+      const geo = skinGeometry(form, region, changed);
+      if (geo.index.count) group.add(new THREE.Mesh(geo, skinMaterial));
     },
   };
 }

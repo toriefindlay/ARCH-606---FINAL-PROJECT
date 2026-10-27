@@ -13,9 +13,16 @@ const SAME = 0.02; // metres
 export function createForm(info) {
   const scan = scanMass(info, { maxCells: MAX_CELLS, minCell: Math.max(MIN_CELL, info.bounds.max.y / MAX_HEIGHT_CELLS), sub: 1 });
   if (!scan) return null;
-  const { nU: nx, nV: nz, cu, cv, hf, u0, v0 } = scan;
-  const top = hf.reduce((m, h) => Math.max(m, h), 0);
+  const top = scan.hf.reduce((m, h) => Math.max(m, h), 0);
   if (top <= 0) return null;
+  const { cu, cv } = scan;
+  // The grid reaches past the mass, so that the sun has room to grow it outwards (as far as sunGrow.js lets a surface grow).
+  const room = Math.min(10, Math.max(2, 0.2 * Math.min(scan.nU * cu, scan.nV * cv))) + 1; // metres
+  const px = Math.ceil(room / cu), pz = Math.ceil(room / cv);
+  const nx = scan.nU + 2 * px, nz = scan.nV + 2 * pz;
+  const u0 = scan.u0 - px * cu, v0 = scan.v0 - pz * cv;
+  const hf = new Float32Array(nx * nz);
+  for (let j = 0; j < scan.nV; j++) hf.set(scan.hf.subarray(j * scan.nU, (j + 1) * scan.nU), (j + pz) * nx + px);
   const cells = nx * nz;
   const form = {
     nx, nz, cx: cu, cz: cv, x0: u0, z0: v0, // cell (i, j) spans x0 + i * cx .. and z0 + j * cz ..
