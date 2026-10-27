@@ -79,45 +79,57 @@
       <p id="save-status" class="hint"></p>
     </div>
     <div class="stats" id="stats"></div>
-    <fieldset id="model-panel">
-      <legend>Model</legend>
+    <details id="model-panel" class="section tone-model" open>
+      <summary>Model</summary>
       <button type="button" id="model-import" class="tool">Import .3dm</button>
       <input type="file" id="model-file" accept=".3dm" hidden>
-      <p class="hint">Or drop a .3dm file on the scene. It lands on the pin; drag a corner handle to scale.</p>
+      <p class="hint">Or drop a .3dm file on the scene. It lands on the pin. Tick Manipulate to move, turn and scale it. Press Delete to remove it.</p>
       <p id="model-info" class="stats hidden"></p>
-      <div id="model-actions" class="tools hidden">
-        <button type="button" class="tool" id="model-reset">Reset size</button>
-        <button type="button" class="tool" id="model-remove">Remove</button>
+      <div id="model-actions" class="hidden">
+        <label><input type="checkbox" id="model-manipulate"> Manipulate</label>
+        <div class="tools">
+          <button type="button" class="tool" id="model-reset">Reset size</button>
+          <button type="button" class="tool" id="model-remove" title="Delete the imported mass (Delete key)">Delete mass</button>
+        </div>
       </div>
-    </fieldset>
-    <fieldset>
-      <legend>Exterior erosion</legend>
+    </details>
+    <details class="section tone-exterior" open>
+      <summary>Exterior erosion</summary>
       <div id="exterior-panel"></div>
-    </fieldset>
-    <fieldset>
-      <legend>Interior erosion</legend>
+    </details>
+    <details class="section tone-interior" open>
+      <summary>Interior erosion</summary>
       <div id="interior-panel"></div>
-    </fieldset>
-    <fieldset id="draw-tools">
-      <legend>Draw</legend>
+    </details>
+    <details id="draw-tools" class="section tone-draw" open>
+      <summary>Draw</summary>
       <div class="tools">
         <button type="button" class="tool" data-draw="road">+ Road</button>
         <button type="button" class="tool" data-draw="path">+ Path</button>
       </div>
       <p id="draw-help" class="hint">Pick a tool, then click the ground to place points. Double-click or Enter to finish, Backspace to undo a point, Esc to cancel.</p>
       <ul id="drawn-list"></ul>
-    </fieldset>
-    <fieldset id="sun-panel" class="hidden">
-      <legend>Sun</legend>
+    </details>
+    <details id="sun-panel" class="section tone-sun hidden" open>
+      <summary>Sun</summary>
       <label>Date <input type="date" id="sun-date"></label>
       <label>Solar time <output id="sun-time-out">12:00</output>
         <input type="range" id="sun-time" min="0" max="24" step="0.25" value="12">
       </label>
       <button type="button" id="sun-play" class="tool">▶ Play day</button>
+      <div class="tools" title="At ×1 one simulated hour passes each second. The date rolls on at midnight, from the date chosen above.">
+        <button type="button" id="sun-year" class="tool">▶ Run through the year</button>
+        <select id="sun-year-speed" aria-label="Year simulation speed">
+          <option value="3">×3</option>
+          <option value="5" selected>×5</option>
+          <option value="10">×10</option>
+          <option value="15">×15</option>
+        </select>
+      </div>
       <p id="sun-readout" class="stats"></p>
-    </fieldset>
-    <fieldset id="wind-panel" class="hidden">
-      <legend>Wind</legend>
+    </details>
+    <details id="wind-panel" class="section tone-wind hidden" open>
+      <summary>Wind</summary>
       <label>Period
         <select id="wind-season">
           <option value="all">Whole year</option>
@@ -128,18 +140,19 @@
         </select>
       </label>
       <p id="wind-readout" class="stats"></p>
-    </fieldset>
-    <fieldset>
-      <legend>Layers</legend>
+    </details>
+    <details class="section tone-layers" open>
+      <summary>Layers</summary>
       <label><input type="checkbox" data-layer="sun"> Sun path &amp; shadows</label>
       <label><input type="checkbox" data-layer="wind"> Wind</label>
+      <label><input type="checkbox" data-layer="traffic"> Traffic</label>
       <label><input type="checkbox" data-layer="model" checked> Model</label>
       <label><input type="checkbox" data-layer="drawn" checked> Drawn</label>
       <label><input type="checkbox" data-layer="roads" checked> Roads</label>
       <label><input type="checkbox" data-layer="paths" checked> Pedestrian paths</label>
       <label><input type="checkbox" data-layer="green" checked> Green &amp; water</label>
       <label><input type="checkbox" data-layer="buildings" checked> Buildings</label>
-    </fieldset>
+    </details>
     <label class="toggle"><input type="checkbox" id="orbit"> Slow orbit</label>
     <p class="credit">Map data &copy; OpenStreetMap contributors</p>
   </aside>

@@ -17,7 +17,7 @@ camera.position.set(400, 350, 400);
 
 export const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
-controls.maxPolarAngle = Math.PI / 2 - 0.02;
+controls.maxPolarAngle = Math.PI - 0.02; // past the horizon: the camera can go under the ground
 controls.autoRotateSpeed = 0.6;
 
 export const hemiLight = new THREE.HemisphereLight(0xffffff, 0xb9b4a6, 1.4);
