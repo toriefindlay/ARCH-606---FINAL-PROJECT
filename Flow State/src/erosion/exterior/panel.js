@@ -4,7 +4,7 @@
 import { registerPersist } from "../../core/persist.js";
 
 // Read each frame by index.js. `speed` is simulated seconds per real second.
-export const settings = { playing: true, speed: 4, people: 1, cars: 1, size: 2, leftHand: false, erode: 2, heal: 1, erodePeople: false, erodeCars: false, erodeWind: false };
+export const settings = { playing: true, speed: 4, people: 1, cars: 1, size: 2, leftHand: false, erode: 2, heal: 1, erodePeople: false, erodeCars: false, erodeWind: false, erodeSun: false };
 
 const $ = (id) => document.getElementById(id);
 let onReset = () => {};
@@ -38,10 +38,11 @@ export function mountPanel(el, hooks = {}) {
     </label>
     <label><input type="checkbox" id="traffic-left"> Left-hand traffic</label>
     <p id="traffic-readout" class="stats"></p>
-    <p class="hint" style="margin-bottom:6px">Erode the mass with (none by default). Traffic must be switched on under Layers.</p>
+    <p class="hint" style="margin-bottom:6px">Work on the mass with one of these at a time (none by default); each carries on from the shape the others left. Traffic must be switched on under Layers.</p>
     <label><input type="checkbox" id="erode-people"> People</label>
     <label><input type="checkbox" id="erode-cars"> Cars</label>
-    <label title="Not built yet"><input type="checkbox" disabled> Sun (not built yet)</label>
+    <label title="The mass grows towards the sun: the longer the sun hits a roof or wall, the more it grows. Runs while the Sun panel plays a day or the year."><input type="checkbox" id="erode-sun"> Sun (grows towards the sun)</label>
+    <p id="sun-erode-note" class="hint" style="margin:0 0 6px"></p>
     <label title="The prevailing wind slowly rounds the mass's edges, windward ones first. It never cuts into the mass."><input type="checkbox" id="erode-wind"> Wind (rounds the edges)</label>
     <p id="wind-erode-note" class="hint" style="margin:0 0 6px"></p>
     <label>Erosion speed <output id="traffic-erode-out"></output>
@@ -61,9 +62,17 @@ export function mountPanel(el, hooks = {}) {
     $(`traffic-${key}`).addEventListener("input", (e) => { settings[key] = Number(e.target.value); syncControls(); });
   }
   $("traffic-left").addEventListener("change", (e) => (settings.leftHand = e.target.checked));
-  $("erode-people").addEventListener("change", (e) => (settings.erodePeople = e.target.checked));
-  $("erode-cars").addEventListener("change", (e) => (settings.erodeCars = e.target.checked));
-  $("erode-wind").addEventListener("change", (e) => (settings.erodeWind = e.target.checked));
+  // One kind of erosion works at a time, all on the same form: switching one on switches the others off. People and cars
+  // count as one (the traffic) and may run together.
+  const exclusive = (key, group) => (e) => {
+    settings[key] = e.target.checked;
+    if (e.target.checked) for (const other of ["erodePeople", "erodeCars", "erodeSun", "erodeWind"]) if (!group.includes(other)) settings[other] = false;
+    syncControls();
+  };
+  $("erode-people").addEventListener("change", exclusive("erodePeople", ["erodePeople", "erodeCars"]));
+  $("erode-cars").addEventListener("change", exclusive("erodeCars", ["erodePeople", "erodeCars"]));
+  $("erode-wind").addEventListener("change", exclusive("erodeWind", ["erodeWind"]));
+  $("erode-sun").addEventListener("change", exclusive("erodeSun", ["erodeSun"]));
   syncControls();
 }
 
@@ -80,6 +89,13 @@ export function syncControls() {
   $("erode-people").checked = settings.erodePeople;
   $("erode-cars").checked = settings.erodeCars;
   $("erode-wind").checked = settings.erodeWind;
+  $("erode-sun").checked = settings.erodeSun;
+}
+
+// A line under the Sun checkbox saying what the sun growth is waiting for ("" when it is simply working).
+export function setSunNote(text) {
+  const el = $("sun-erode-note");
+  if (el && el.textContent !== text) el.textContent = text;
 }
 
 // A line under the Wind checkbox saying what the wind erosion is waiting for ("" when it is simply working).

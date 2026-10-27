@@ -78,6 +78,18 @@ function rasterBuildings(radius, buildings) {
   return { nU: n, nV: n, cu: cell, cv: cell, u0: x0, v0: z0, hf, hw: n, hh: n, sub: 1 };
 }
 
+// The height of the site's buildings at a world (x, z), 0 where there are none: (x, z) => metres.
+export function cityHeights(radius, buildings) {
+  if (!buildings?.length) return () => 0;
+  let city = cityRasters.get(buildings);
+  if (!city) cityRasters.set(buildings, (city = rasterBuildings(radius, buildings)));
+  const { u0, v0, cu, cv, nU, nV, hf } = city;
+  return (x, z) => {
+    const i = Math.floor((x - u0) / cu), j = Math.floor((z - v0) / cv);
+    return i < 0 || j < 0 || i >= nU || j >= nV ? 0 : hf[j * nU + i];
+  };
+}
+
 // The wind around everything on the site: its buildings (features.buildings) and the placed mass.
 // mass: a height map in scanMass()'s shape, or null. Returns null if there is nothing to flow around.
 export function createSiteFlow({ radius, buildings, mass }) {

@@ -1,4 +1,4 @@
-// VIEW (exterior erosion): draws a preview of the exterior cuts in the scene.
+﻿// VIEW (exterior erosion): draws a preview of the exterior cuts in the scene.
 // Create a group under layers.* on "site:built" and redraw it on "cuts:changed".
 import * as THREE from "three";
 import { MAX_PEOPLE, MAX_CARS } from "./traffic.js";
@@ -80,13 +80,14 @@ const carveUniforms = {
 };
 
 // The wind erosion's map holds, for each cell of the mass's footprint, how tall the mass is left after the wind has rounded it
-// (in metres), or -1 where the wind has not touched it. The mass's own surface is discarded above that height. A wall is
-// tested a little way inside the solid (against the way the camera looks at it), so that it follows the column it belongs to.
+// (in metres, or -1 where the wind has not touched it) and how tall it was placed. The mass's own surface is discarded above
+// the rounded height of the column it belongs to (the taller of the two either side of a wall).
 const windUniforms = {
   uWindHeight: { value: null }, // set below, once EMPTY_WIND exists
   uWindBox: { value: new THREE.Vector4(0, 0, 1, 1) }, // the map's corner (x, z) and size
+  uWindCell: { value: 1 }, // metres: one cell of the map
 };
-const EMPTY_WIND = new THREE.DataTexture(new Float32Array([-1]), 1, 1, THREE.RedFormat, THREE.FloatType);
+const EMPTY_WIND = new THREE.DataTexture(new Float32Array([-1, 0]), 1, 1, THREE.RGFormat, THREE.FloatType);
 EMPTY_WIND.needsUpdate = true;
 windUniforms.uWindHeight.value = EMPTY_WIND;
 
@@ -95,6 +96,7 @@ uniform sampler2D uCarveHeight;
 uniform vec4 uCarveBox;
 uniform sampler2D uWindHeight;
 uniform vec4 uWindBox;
+uniform float uWindCell;
 varying vec3 vCarvePos;
 bool carved(vec3 p) {
   vec2 uv = (p.xz - uCarveBox.xy) / uCarveBox.zw;
@@ -102,11 +104,29 @@ bool carved(vec3 p) {
   float h = texture2D(uCarveHeight, uv).r * ${(255 / HEIGHT_UNIT).toFixed(1)};
   return h > 0.0 && p.y < h;
 }
-bool windRounded(vec3 p) {
-  vec2 uv = (p.xz - uWindBox.xy) / uWindBox.zw;
-  if (uv.x < 0.0 || uv.y < 0.0 || uv.x > 1.0 || uv.y > 1.0) return false;
-  float h = texture2D(uWindHeight, uv).r;
-  return h >= 0.0 && (h < 0.02 || p.y > h + 0.03);
+// (rounded height or -1, original height) of the column at an (x, z); an empty column off the map.
+vec2 windColumn(vec2 xz) {
+  vec2 uv = (xz - uWindBox.xy) / uWindBox.zw;
+  if (uv.x < 0.0 || uv.y < 0.0 || uv.x > 1.0 || uv.y > 1.0) return vec2(-1.0, 0.0);
+  return texture2D(uWindHeight, uv).rg;
+}
+// A surface belongs to the taller of the two columns either side of it (a wall stands on the solid side), whichever way it
+// is seen from. It goes where that column has been rounded below it.
+bool windRounded(vec3 p, vec3 n) {
+  // A full cell either side: a wall can lie up to half a cell from the edge of the cell it stands on. Lines (no normal) look
+  // a cell all round.
+  vec2 own = windColumn(p.xz);
+  if (dot(n, n) > 0.0) {
+    vec2 a = windColumn((p - n * uWindCell).xz), b = windColumn((p + n * uWindCell).xz);
+    own = a.y >= b.y ? a : b;
+  } else {
+    vec2 c;
+    c = windColumn(p.xz + vec2(uWindCell, 0.0)); if (c.y > own.y) own = c;
+    c = windColumn(p.xz - vec2(uWindCell, 0.0)); if (c.y > own.y) own = c;
+    c = windColumn(p.xz + vec2(0.0, uWindCell)); if (c.y > own.y) own = c;
+    c = windColumn(p.xz - vec2(0.0, uWindCell)); if (c.y > own.y) own = c;
+  }
+  return own.x >= 0.0 && (own.x < 0.02 || p.y > own.x + 0.03);
 }
 vec3 facing() {
   vec3 c = cross(dFdx(vCarvePos), dFdy(vCarvePos));
@@ -121,7 +141,7 @@ const patched = new WeakSet();
 function patch(material, key, wind = null) {
   if (patched.has(material)) return;
   patched.add(material);
-  const test = wind === "mesh" ? "if (windRounded(vCarvePos - wn * 0.06)) discard;" : wind === "line" ? "if (windRounded(vCarvePos)) discard;" : "";
+  const test = wind ? "if (windRounded(vCarvePos, wn)) discard;" : "";
   material.onBeforeCompile = (shader) => {
     Object.assign(shader.uniforms, carveUniforms, windUniforms);
     shader.vertexShader = shader.vertexShader
@@ -284,17 +304,19 @@ export function createCarveView() {
   };
 }
 
-/* ---------- mass rounded by the wind ---------- */
+/* ---------- the form: grown by the sun, rounded by the wind ---------- */
 
-// The wind erosion (windErode.js) keeps a height map of the rounded mass. Wherever that is lower than the mass was, the mass's
-// own surface is discarded above it (see windUniforms) and the surface the wind has shaped is built here: a top for every
-// changed column, and a wall wherever neighbouring columns differ in height, minus the stretches that the mass's own walls
-// still cover. The new surface starts the colour of the white model and turns blue the more the wind has worn it.
+// The form (form.js) is a height map of the mass as it is now. Where a column is lower than the mass was placed, the mass's own
+// surface is discarded above it (see windUniforms); where it is higher, the mass's own mesh stays and what grew is added. In
+// both cases the new surface is built here: a top for every changed column, and a wall wherever neighbouring columns differ
+// in height, minus the stretches that the mass's own walls still cover. What grew starts pale yellow and turns orange the
+// warmer it got; what was rounded off starts the colour of the white model and turns blue the more the wind wore it.
+const WARM_FROM = new THREE.Color(0xffe9a8), WARM_TO = new THREE.Color(0xe8672a);
 const WORN_FROM = new THREE.Color(0xffd9c9), WORN_TO = new THREE.Color(0x6f9fd8);
 const SLOPE_LIMIT = 1.5; // steepest slope (rise over run) used to shade the tops
 const SAME = 0.02; // metres
 
-export function createWindView() {
+export function createFormView() {
   const skinMaterial = new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide });
   patch(skinMaterial, "carve-skin"); // traffic's slices still cut through it
   let group = null, texture = null, data = null;
@@ -308,11 +330,12 @@ export function createWindView() {
     group = texture = data = null;
   };
 
-  function skinGeometry(er) {
-    const { nx, nz, cx, cz, x0, z0, h0, heights, wear } = er;
+  function skinGeometry(form) {
+    const { nx, nz, cx, cz, x0, z0, h0, heights, heat, wear } = form;
     const inside = (i, j) => i >= 0 && j >= 0 && i < nx && j < nz;
-    const now = (i, j) => (inside(i, j) ? heights[j * nx + i] : 0); // the rounded mass
+    const now = (i, j) => (inside(i, j) ? heights[j * nx + i] : 0); // the form
     const was = (i, j) => (inside(i, j) ? h0[j * nx + i] : 0); // the mass as placed
+    const changed = (k) => Math.abs(heights[k] - h0[k]) > SAME;
     const pos = [], nrm = [], col = [];
     const quad = (a, b, c, d, normal, tint) => {
       for (const v of [a, b, c, a, c, d]) {
@@ -326,9 +349,11 @@ export function createWindView() {
     for (let j = 0; j < nz; j++) {
       for (let i = 0; i < nx; i++) {
         const k = j * nx + i;
-        if (heights[k] >= h0[k] - SAME) continue;
+        if (!changed(k)) continue;
         const hA = heights[k];
-        const tint = colour.copy(WORN_FROM).lerp(WORN_TO, Math.pow(Math.min(1, wear[k]), 0.7));
+        const tint = heights[k] > h0[k]
+          ? colour.copy(WARM_FROM).lerp(WARM_TO, Math.pow(Math.min(1, heat[k]), 0.8))
+          : colour.copy(WORN_FROM).lerp(WORN_TO, Math.pow(Math.min(1, wear[k]), 0.7));
         const xa = x0 + i * cx, xb = xa + cx, za = z0 + j * cz, zb = za + cz;
 
         if (hA > SAME) {
@@ -339,23 +364,29 @@ export function createWindView() {
 
         for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
           const ni = i + di, nj = j + dj, kN = nj * nx + ni;
-          if (inside(ni, nj) && heights[kN] < h0[kN] - SAME && kN < k) continue; // both changed: the other column builds this wall
+          if (inside(ni, nj) && changed(kN) && kN < k) continue; // both changed: the other column builds this wall
           const hN = now(ni, nj), o0A = h0[k], o0N = was(ni, nj);
           const lo = Math.min(hA, hN), hi = Math.max(hA, hN);
           if (hi - lo < SAME) continue;
-          // The mass's own wall here (if the two columns started at different heights) is kept up to the current height of
-          // the column it stands on; only the rest of the step needs building.
+          // The mass's own wall here (if the two columns started at different heights) stands on the taller one, from the lower
+          // one's original top up to the original top of the taller, but no higher than the taller column is now. Only the
+          // rest of the step needs building.
           let pieces = [[lo, hi]];
           if (Math.abs(o0A - o0N) > SAME) {
-            const floor = Math.min(o0A, o0N), roof = o0A > o0N ? hA : hN;
-            if (roof > floor) pieces = [[lo, Math.min(hi, floor)], [Math.max(lo, roof), hi]];
+            const floor = Math.min(o0A, o0N), ceil = Math.max(o0A, o0N), owner = o0A > o0N ? hA : hN;
+            const kept = Math.min(ceil, owner);
+            if (kept > floor) pieces = [[lo, Math.min(hi, floor)], [Math.max(lo, kept), hi]];
           }
           const toward = hA > hN ? [di, dj] : [-di, -dj]; // the wall faces the lower column
-          const ex = di ? (di > 0 ? xb : xa) : null, ez = dj ? (dj > 0 ? zb : za) : null;
           for (const [from, to] of pieces) {
             if (to - from < SAME) continue;
-            if (ex !== null) quad([ex, from, za], [ex, from, zb], [ex, to, zb], [ex, to, za], [toward[0], 0, 0], tint);
-            else quad([xa, from, ez], [xb, from, ez], [xb, to, ez], [xa, to, ez], [0, 0, toward[1]], tint);
+            if (di) {
+              const ex = di > 0 ? xb : xa;
+              quad([ex, from, za], [ex, from, zb], [ex, to, zb], [ex, to, za], [toward[0], 0, 0], tint);
+            } else {
+              const ez = dj > 0 ? zb : za;
+              quad([xa, from, ez], [xb, from, ez], [xb, to, ez], [xa, to, ez], [0, 0, toward[1]], tint);
+            }
           }
         }
       }
@@ -369,28 +400,37 @@ export function createWindView() {
 
   return {
     clear,
-    // Start showing the wind erosion `er` of the mass `root`, adding the surface it shapes to `parent`.
-    setErosion(er, parent, root) {
+    // Start showing the form `form` of the mass `root`, adding the surface it shapes to `parent`.
+    setForm(form, parent, root) {
       clear();
       patchMass(root);
-      data = new Float32Array(er.nx * er.nz).fill(-1);
-      texture = new THREE.DataTexture(data, er.nx, er.nz, THREE.RedFormat, THREE.FloatType);
+      data = new Float32Array(form.nx * form.nz * 2);
+      for (let k = 0; k < form.h0.length; k++) {
+        data[k * 2] = -1; // nothing cut away yet (0 would mean "everything above the ground")
+        data[k * 2 + 1] = form.h0[k];
+      }
+      texture = new THREE.DataTexture(data, form.nx, form.nz, THREE.RGFormat, THREE.FloatType);
       texture.minFilter = texture.magFilter = THREE.NearestFilter;
       texture.needsUpdate = true;
       windUniforms.uWindHeight.value = texture;
-      windUniforms.uWindBox.value.set(er.x0, er.z0, er.nx * er.cx, er.nz * er.cz);
+      windUniforms.uWindBox.value.set(form.x0, form.z0, form.nx * form.cx, form.nz * form.cz);
+      windUniforms.uWindCell.value = Math.max(form.cx, form.cz);
       group = new THREE.Group();
       parent.add(group);
     },
-    // Show the mass as the wind has rounded it so far.
-    update(er) {
+    // Show the form as it is now.
+    update(form) {
       if (!group) return;
-      for (let k = 0; k < data.length; k++) data[k] = er.heights[k] < er.h0[k] - SAME ? er.heights[k] : -1;
+      // The mass's own surface is only discarded above columns that were lowered.
+      for (let k = 0; k < form.h0.length; k++) {
+        data[k * 2] = form.heights[k] < form.h0[k] - SAME ? form.heights[k] : -1; // -1: nothing to cut away here
+        data[k * 2 + 1] = form.h0[k];
+      }
       texture.needsUpdate = true;
       group.traverse((o) => o.geometry?.dispose());
       group.clear();
-      if (!er.changed()) return;
-      const geo = skinGeometry(er);
+      if (!form.changed()) return;
+      const geo = skinGeometry(form);
       if (geo.attributes.position.count) group.add(new THREE.Mesh(geo, skinMaterial));
     },
   };

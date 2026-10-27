@@ -11,9 +11,11 @@
 // Built so far: flow erosion. People and cars touching the mass wear thin passages into it, following their routes
 // and widening with every pass (see erosion.js). The mass's own shape does not influence it.
 // Wind erosion: the prevailing wind slowly rounds the mass's convex edges, windward ones first (see windErode.js).
+// Sun growth: the mass grows towards the sun, most where it is warmest (see sunGrow.js). Sun, wind and traffic all work on the
+// same form (see form.js), one at a time, each continuing from the shape the others left.
 import { activeErosionCuts } from "./erosion.js";
-import { activeWindCuts } from "./windErode.js";
+import { activeFormCuts } from "./windErode.js";
 
 export function provideCuts(ctx) {
-  return [...activeErosionCuts(), ...activeWindCuts()];
+  return [...activeErosionCuts(), ...activeFormCuts()];
 }

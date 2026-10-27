@@ -1,4 +1,4 @@
-// MODEL (exterior erosion): the wind rounds the mass's convex edges.
+// MODEL (exterior erosion): the wind rounds the form's convex edges (see form.js).
 // No scene or DOM code. The wind never cuts into the mass: it only smooths its outermost layer.
 //
 // The rounded mass is a morphological opening of the original: every point that a ball of radius r can reach from inside the
@@ -12,19 +12,15 @@
 import * as THREE from "three";
 import { createCut } from "../contract.js";
 import { downwind } from "../../site/wind.js";
-import { scanMass } from "./massScan.js";
 
 const LEVELS = 8; // openings between "none" and the largest radius
-const MAX_CELLS = 90; // per side: keeps the voxel grid to about a million voxels
-const MIN_CELL = 0.5; // metres
-const MAX_HEIGHT_CELLS = 70; // the grid is at most this many cells tall, so a tall mass gets coarser cells
 const FULL_TIME = 300; // simulated seconds of full-strength wind (one rose unit) for the rounding to reach its largest radius
 const REF_SPEED = 5; // m/s: the speed at which the wind counts as one rose unit
 const MIN_DROP = 0.3; // metres: a neighbour this much lower makes a cell part of the surface the wind touches
 const INF = 1e20;
 
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
-const tick = () => new Promise((r) => setTimeout(r, 0)); // lets the page breathe between the heavy steps
+export const tick = () => new Promise((r) => setTimeout(r, 0)); // lets the page breathe between the heavy steps
 
 // 8 neighbours: [di, dj] on the grid, and the same step as a unit vector in world (x east, z south).
 const DIRS = [[1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1], [0, -1], [1, -1]].map(([di, dj]) => {
@@ -59,7 +55,7 @@ function line1d(f, d, n, v, z) {
 }
 
 // In place: `grid` holds 0 at the sites and a huge number elsewhere; afterwards the squared distance (in cells) to the nearest site.
-function distance3d(grid, nx, nz, ny) {
+export function distance3d(grid, nx, nz, ny) {
   const m = Math.max(nx, nz, ny);
   const f = new Float64Array(m), d = new Float64Array(m), v = new Int32Array(m), z = new Float64Array(m + 1);
   const pass = (n, stride, count, start) => {
@@ -77,13 +73,12 @@ function distance3d(grid, nx, nz, ny) {
 
 /* ---------- the model ---------- */
 
-// info: getMassInfo(). Resolves to null if the mass has no geometry.
-export async function createWindErosion(info) {
-  const scan = scanMass(info, { maxCells: MAX_CELLS, minCell: Math.max(MIN_CELL, info.bounds.max.y / MAX_HEIGHT_CELLS), sub: 1 });
-  if (!scan) return null;
-  const { nU: nx, nV: nz, cu, cv, hf: h0 } = scan;
+// form: the shared form (form.js). The wind rounds the shape it has now, whatever the sun or the traffic made of it.
+export async function createWindErosion(form) {
+  const { nx, nz, cx: cu, cz: cv } = form;
+  const h0 = Float32Array.from(form.heights); // the shape this wind starts from
   const cy = (cu + cv) / 2; // isotropic cells for the openings
-  const top = h0.reduce((m, h) => Math.max(m, h), 0);
+  const top = form.top = Math.max(form.top, h0.reduce((m, h) => Math.max(m, h), 0));
   if (top <= 0) return null;
   const rMax = clamp(0.25 * Math.min(nx * cu, nz * cv), 2, 15); // metres: the largest rounding radius
   const rVox = rMax / cy;
@@ -152,7 +147,7 @@ export async function createWindErosion(info) {
     }
   }
 
-  const er = { scan, version: 0, rMax, cx: cu, cz: cv, nx, nz, x0: scan.u0, z0: scan.v0, h0, heights: Float32Array.from(h0), wear: new Float32Array(cells) };
+  const er = { rMax };
   const wearEdge = new Float32Array(cells); // 0..1: how worn each surface cell is
   let dirty = false;
   let changedCells = 0;
@@ -206,39 +201,23 @@ export async function createWindErosion(info) {
     let field = spread(spread(wearEdge, reachCells, true, "max"), reachCells, false, "max");
     for (let pass = 0; pass < 2; pass++) field = spread(spread(field, soft, true, "mean"), soft, false, "mean");
     changedCells = 0;
+    let widest = 0;
     for (let col = 0; col < cells; col++) {
       if (h0[col] <= 0) continue;
+      widest = Math.max(widest, field[col]);
       const at = clamp(field[col], 0, 1) * LEVELS, n = Math.min(LEVELS - 1, Math.floor(at)), t = at - n;
       const h = levels[n][col] + (levels[n + 1][col] - levels[n][col]) * t;
-      er.heights[col] = Math.min(er.heights[col], h); // wear only grows
-      er.wear[col] = Math.max(er.wear[col], field[col]);
-      if (er.heights[col] < h0[col] - 0.02) changedCells++;
+      form.heights[col] = Math.min(form.heights[col], h); // wear only grows
+      form.wear[col] = Math.max(form.wear[col], field[col]);
+      if (form.heights[col] < h0[col] - 0.02) changedCells++;
     }
-    er.version++;
+    er.radius = clamp(widest, 0, 1) * rMax; // metres: the widest rounding so far
+    form.version++;
     return true;
   };
 
+  er.radius = 0;
   er.changed = () => changedCells > 0;
-
-  // The rounded mass as a height map in scanMass()'s shape, for the wind streaks to flow around.
-  er.asScan = () => ({ nU: nx, nV: nz, cu, cv, u0: scan.u0, v0: scan.v0, hf: er.heights, hw: nx, hh: nz, sub: 1 });
-
-  er.clear = () => {
-    const had = changedCells > 0 || wearEdge.some((w) => w > 0);
-    wearEdge.fill(0);
-    er.heights.set(h0);
-    er.wear.fill(0);
-    changedCells = 0;
-    dirty = false;
-    if (had) er.version++;
-    return had;
-  };
-
-  // The height of the rounded mass at a world point (nearest cell), 0 off the mass.
-  er.heightAt = (x, z) => {
-    const i = Math.floor((x - er.x0) / cu), j = Math.floor((z - er.z0) / cv);
-    return i < 0 || j < 0 || i >= nx || j >= nz ? 0 : er.heights[j * nx + i];
-  };
   return er;
 }
 
@@ -247,37 +226,36 @@ export async function createWindErosion(info) {
 let active = null;
 let cached = { version: -1, cuts: [] };
 
-export function setActiveWindErosion(er) {
-  active = er;
+export function setActiveForm(form) {
+  active = form;
   cached = { version: -1, cuts: [] };
 }
 
-// Signed-distance cut (negative inside the removed volume): everything above the rounded mass, over the columns the wind changed.
-export function activeWindCuts() {
+// Signed-distance cut (negative inside the removed volume): everything above the form, over the columns that are lower than the
+// mass was placed. (What the sun added is not a cut: cuts only remove.)
+export function activeFormCuts() {
   if (!active) return [];
   if (cached.version === active.version) return cached.cuts;
-  let cut = null;
-  if (active.changed()) {
-    const { nx, nz, h0, heights, cx, cz, x0, z0 } = active;
-    const bounds = new THREE.Box3();
-    let top = 0;
-    for (let j = 0; j < nz; j++) {
-      for (let i = 0; i < nx; i++) {
-        const k = j * nx + i;
-        if (heights[k] >= h0[k] - 0.02) continue;
-        bounds.expandByPoint(new THREE.Vector3(x0 + i * cx, 0, z0 + j * cz));
-        bounds.expandByPoint(new THREE.Vector3(x0 + (i + 1) * cx, h0[k], z0 + (j + 1) * cz));
-        top = Math.max(top, h0[k]);
-      }
+  const { nx, nz, h0, heights, cx, cz, x0, z0 } = active;
+  const bounds = new THREE.Box3();
+  for (let j = 0; j < nz; j++) {
+    for (let i = 0; i < nx; i++) {
+      const k = j * nx + i;
+      if (heights[k] >= h0[k] - 0.02) continue;
+      bounds.expandByPoint(new THREE.Vector3(x0 + i * cx, 0, z0 + j * cz));
+      bounds.expandByPoint(new THREE.Vector3(x0 + (i + 1) * cx, h0[k], z0 + (j + 1) * cz));
     }
-    // Only the changed columns remove anything; elsewhere the mass is left as it was.
+  }
+  let cut = null;
+  if (!bounds.isEmpty()) {
+    // Only the lowered columns remove anything; elsewhere the mass is left as it was.
     const sdf = (x, y, z) => {
       const i = Math.floor((x - x0) / cx), j = Math.floor((z - z0) / cz);
       if (i < 0 || j < 0 || i >= nx || j >= nz) return 1;
       const k = j * nx + i;
       return heights[k] >= h0[k] - 0.02 ? 1 : heights[k] - y;
     };
-    cut = createCut({ id: "ext-wind-rounding", source: "exterior", label: "Wind rounding of edges", bounds, sdf });
+    cut = createCut({ id: "ext-form-rounding", source: "exterior", label: "Wind rounding of edges", bounds, sdf });
   }
   cached = { version: active.version, cuts: cut ? [cut] : [] };
   return cached.cuts;

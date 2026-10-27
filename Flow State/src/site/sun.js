@@ -2,7 +2,7 @@ import * as THREE from "three";
 import { sunLight, hemiLight, onFrame } from "../view/scene.js";
 import { makeLabel, clearChildren } from "../view/labels.js";
 import { state, layers } from "../core/state.js";
-import { on } from "../core/events.js";
+import { on, emit } from "../core/events.js";
 import { $ } from "../core/dom.js";
 import { registerPersist } from "../core/persist.js";
 
@@ -14,6 +14,10 @@ export const compass = (deg) => COMPASS[Math.round((((deg % 360) + 360) % 360) /
 
 let sunObjs = null; // { path, marker, ray }
 let sunPlaying = false;
+let yearRunning = false; // the continuous simulation: time of day and date both advance
+let hourNow = parseFloat($("sun-time").value); // local solar time shown; the slider alone is too coarse to run on
+let pathBuiltAt = 0, pathStale = false; // the sun-path arcs are rebuilt as the date moves, but not on every frame
+const PATH_REBUILD_MS = 200;
 const todayISO = new Date().toISOString().slice(0, 10);
 $("sun-date").value = todayISO;
 
@@ -85,7 +89,7 @@ function updateSun() {
   const { site } = state;
   if (!site || !sunObjs) return;
   const enabled = layers.sun.visible;
-  const hour = parseFloat($("sun-time").value);
+  const hour = hourNow;
   const doy = sunDoy();
   const s = sunPosition(site.lat, doy, hour);
 
@@ -121,33 +125,87 @@ function updateSun() {
 function syncSunPanel() {
   const visible = !!layers.sun?.visible;
   $("sun-panel").classList.toggle("hidden", !visible);
-  if (!visible) sunPlaying = false;
+  if (!visible) {
+    sunPlaying = false;
+    setYearRunning(false);
+  }
   updateSun();
 }
 
-onFrame((dt) => {
-  if (!sunPlaying || !layers.sun?.visible) return;
+// Starts or stops the day sweep (stopping the year run, which would fight it over the time of day).
+function setPlaying(on) {
+  sunPlaying = on;
+  $("sun-play").textContent = on ? "❚❚ Pause" : "▶ Play day";
+  if (on) setYearRunning(false);
+}
+
+function setYearRunning(on) {
+  yearRunning = on;
+  $("sun-year").textContent = on ? "❚❚ Pause year" : "▶ Run through the year";
+  if (on) {
+    sunPlaying = false;
+    $("sun-play").textContent = "▶ Play day";
+  } else if (pathStale) {
+    buildSunPath(); // catch the arcs up with the date the run stopped on
+    pathStale = false;
+  }
+}
+
+// Moves the date input on by one day, wrapping from the end of the year to 1 January.
+function nextDay() {
+  const [y, m, d] = ($("sun-date").value || todayISO).split("-").map(Number);
+  const next = new Date(Date.UTC(y, m - 1, d + 1));
+  $("sun-date").value = (next.getUTCFullYear() === y ? next : new Date(Date.UTC(y, 0, 1))).toISOString().slice(0, 10);
+}
+
+onFrame((dt, now) => {
+  if (!layers.sun?.visible || !state.site) return;
+  if (yearRunning) {
+    // ×1 is one simulated hour per second; the date rolls on at midnight.
+    const hours = dt * parseFloat($("sun-year-speed").value);
+    hourNow += hours;
+    let days = 0;
+    while (hourNow >= 24) {
+      hourNow -= 24;
+      nextDay();
+      days++;
+    }
+    if (days) pathStale = true;
+    if (pathStale && now - pathBuiltAt > PATH_REBUILD_MS) {
+      buildSunPath();
+      pathStale = false;
+      pathBuiltAt = now;
+    }
+    $("sun-time").value = hourNow;
+    updateSun();
+    emit("sun:advanced", { vec: sunPosition(state.site.lat, sunDoy(), hourNow).vec, hours });
+    return;
+  }
+  if (!sunPlaying) return;
   const t = sunTimes(state.site.lat, sunDoy());
   const [from, to] = t.polar ? [0, 24] : [t.rise, t.set];
-  let h = parseFloat($("sun-time").value) + (dt * (to - from)) / 10; // sweep the daylight in ~10 s
-  if (h > to || h < from) h = from;
-  $("sun-time").value = h;
+  const hours = (dt * (to - from)) / 10; // sweep the daylight in ~10 s
+  hourNow += hours;
+  if (hourNow > to || hourNow < from) hourNow = from;
+  $("sun-time").value = hourNow;
   updateSun();
+  emit("sun:advanced", { vec: sunPosition(state.site.lat, sunDoy(), hourNow).vec, hours });
 });
 
-$("sun-time").addEventListener("input", updateSun);
+$("sun-time").addEventListener("input", () => {
+  hourNow = parseFloat($("sun-time").value);
+  updateSun();
+});
 $("sun-date").addEventListener("change", () => {
   buildSunPath();
   updateSun();
 });
-$("sun-play").addEventListener("click", () => {
-  sunPlaying = !sunPlaying;
-  $("sun-play").textContent = sunPlaying ? "❚❚ Pause" : "▶ Play day";
-});
+$("sun-play").addEventListener("click", () => setPlaying(!sunPlaying));
+$("sun-year").addEventListener("click", () => setYearRunning(!yearRunning));
 
 on("site:built", ({ site }) => {
-  sunPlaying = false;
-  $("sun-play").textContent = "▶ Play day";
+  setPlaying(false);
+  setYearRunning(false);
 
   layers.sun = new THREE.Group();
   layers.sun.visible = false;
@@ -172,6 +230,7 @@ on("site:built", ({ site }) => {
 
 on("site:cleared", () => {
   sunPlaying = false;
+  yearRunning = false;
   sunObjs = null;
 });
 
@@ -183,6 +242,7 @@ registerPersist("sun", {
     if (!s.date) return;
     $("sun-date").value = s.date;
     $("sun-time").value = s.time;
+    hourNow = s.time;
     buildSunPath();
     updateSun();
   },

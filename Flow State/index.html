@@ -117,6 +117,15 @@
         <input type="range" id="sun-time" min="0" max="24" step="0.25" value="12">
       </label>
       <button type="button" id="sun-play" class="tool">▶ Play day</button>
+      <div class="tools" title="At ×1 one simulated hour passes each second. The date rolls on at midnight, from the date chosen above.">
+        <button type="button" id="sun-year" class="tool">▶ Run through the year</button>
+        <select id="sun-year-speed" aria-label="Year simulation speed">
+          <option value="3">×3</option>
+          <option value="5" selected>×5</option>
+          <option value="10">×10</option>
+          <option value="15">×15</option>
+        </select>
+      </div>
       <p id="sun-readout" class="stats"></p>
     </details>
     <details id="wind-panel" class="section tone-wind hidden" open>
