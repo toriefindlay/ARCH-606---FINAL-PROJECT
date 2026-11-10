@@ -1,0 +1,63 @@
+﻿<!doctype html><html><head><meta charset="utf-8">
+<script type="importmap">{"imports":{"three":"https://unpkg.com/three@0.160.0/build/three.module.js","three/addons/":"https://unpkg.com/three@0.160.0/examples/jsm/"}}</script>
+<style>body{margin:0;background:#ddd}canvas{display:block}#log{position:fixed;left:4px;top:4px;font:11px monospace;background:#fffc;padding:2px;white-space:pre}</style></head>
+<body><div id="log"></div>
+<script type="module">
+import * as THREE from "three";
+import { createTunnels } from "./src/erosion/exterior/tunnels.js";
+import { createFormView, createTunnelView } from "./src/erosion/exterior/view.js";
+import { createForm } from "./src/erosion/exterior/form.js";
+const log = (t) => (document.getElementById("log").textContent += t + "\n");
+window.addEventListener("error", (e) => log("ERR " + e.message));
+try {
+  const q = new URLSearchParams(location.search);
+  const from = Number(q.get("from") ?? 158) * Math.PI / 180;
+  const dir = [-Math.sin(from), Math.cos(from)];
+
+  const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+  renderer.setSize(innerWidth, innerHeight);
+  document.body.appendChild(renderer.domElement);
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0xe8e8e8);
+  scene.add(new THREE.AmbientLight(0xffffff, 0.8));
+  const sun = new THREE.DirectionalLight(0xffffff, 1.2); sun.position.set(40, 80, 30); scene.add(sun);
+  scene.add(new THREE.Mesh(new THREE.PlaneGeometry(400, 400).rotateX(-Math.PI / 2), new THREE.MeshLambertMaterial({ color: 0xf5eedd })));
+
+  // As the app places a mass: a model group, scaled by 2.15 and moved off the pin, under the layers.model group.
+  const layersModel = new THREE.Group(); scene.add(layersModel);
+  const placement = new THREE.Group();
+  const mat = new THREE.MeshLambertMaterial({ color: 0xd9a89a });
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(24.3, 20.6, 18.9).translate(0, 10.3, 0), mat);
+  mesh.add(new THREE.LineSegments(new THREE.EdgesGeometry(mesh.geometry, 30), new THREE.LineBasicMaterial({ color: 0x555555 })));
+  placement.add(mesh);
+  placement.scale.setScalar(2.15);
+  placement.position.set(Number(q.get("px") ?? 7), 0, Number(q.get("pz") ?? -5));
+  placement.rotation.y = Number(q.get("rot") ?? 0) * Math.PI / 180;
+  layersModel.add(placement);
+  placement.updateMatrixWorld(true);
+  const info = { name: "t", object: placement, bounds: new THREE.Box3().setFromObject(placement), scale: 2.15 };
+
+  const form = createForm(info);
+  log("form " + form.nx + "x" + form.nz + " cell " + form.cx.toFixed(2) + " top " + form.top.toFixed(1));
+  const formView = createFormView(); formView.setForm(form, layersModel, placement); // patches the mass's materials, as the app does
+  const tunnels = createTunnels(form);
+  const view = createTunnelView();
+  log("voxels " + tunnels.vox.nx + "x" + tunnels.vox.nz + "x" + tunnels.vox.ny + " c=" + tunnels.vox.c.toFixed(2));
+  tunnels.seedPilot(dir);
+  // like the app: show the tunnels after every step
+  for (let r = 0; r < 80; r++) {
+    if (tunnels.stale(dir)) await tunnels.solve(dir);
+    else if (!tunnels.erode(2, 0.1) && !tunnels.gaining) break;
+    if (tunnels.carved) view.update(layersModel, tunnels);
+  }
+  log("carved " + tunnels.carved + " (" + (100 * tunnels.share).toFixed(1) + "%)");
+
+  const cam = new THREE.PerspectiveCamera(40, innerWidth / innerHeight, 1, 1000);
+  const ang = Number(q.get("az") ?? 35) * Math.PI / 180, elev = Number(q.get("el") ?? 28) * Math.PI / 180, dist = 170;
+  cam.position.set(Math.sin(ang) * Math.cos(elev) * dist, Math.sin(elev) * dist + 10, Math.cos(ang) * Math.cos(elev) * dist);
+  cam.lookAt(7, 15, -5);
+  renderer.render(scene, cam);
+  const gl = renderer.getContext();
+  log("gl2=" + (gl instanceof WebGL2RenderingContext) + " err=" + gl.getError());
+} catch (e) { log("FAILED " + (e.stack || e)); }
+</script></body></html>

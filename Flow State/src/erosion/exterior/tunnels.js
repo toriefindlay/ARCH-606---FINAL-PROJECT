@@ -23,6 +23,7 @@ const PILOT_HEIGHT = 0.3; // fraction of the mass's height: where the pilot chan
 
 // form: the shared form (form.js), as it is now. cityHeight: (x, z) => metres, the site's buildings (windFlow.js cityHeights).
 // Returns null if the form has no mass.
+let serial = 0;
 export function createTunnels(form, { cityHeight = null } = {}) {
   const vox = createVoxelMass(form, { cityHeight });
   if (!vox) return null;
@@ -42,6 +43,7 @@ export function createTunnels(form, { cityHeight = null } = {}) {
   const isTunnel = (k) => placed[k] === MASS && cells[k] === AIR; // air that the mass once held
 
   const tunnels = {
+    id: ++serial, // tells one set of tunnels from another (voxel versions restart with each)
     vox,
     builtOn: form.version, // the form version the voxels were built from: if the form changes, the tunnels are built afresh
     get flow() { return flow; },

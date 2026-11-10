@@ -20,11 +20,38 @@ const EMPTY_WIND = new THREE.DataTexture(new Float32Array([-1, 0]), 1, 1, THREE.
 EMPTY_WIND.needsUpdate = true;
 windUniforms.uWindHeight.value = EMPTY_WIND;
 
+// The wind tunnels (tunnels.js): a 3D map with one byte per voxel, 255 where the voxel is a tunnel. The mass's own surface is
+// discarded wherever it lies in one; the tunnel's walls are built by createTunnelView.
+const EMPTY_TUNNEL = new THREE.Data3DTexture(new Uint8Array([0]), 1, 1, 1);
+EMPTY_TUNNEL.format = THREE.RedFormat;
+EMPTY_TUNNEL.type = THREE.UnsignedByteType;
+EMPTY_TUNNEL.unpackAlignment = 1;
+EMPTY_TUNNEL.needsUpdate = true;
+const tunnelUniforms = {
+  uTunnelTex: { value: EMPTY_TUNNEL },
+  uTunnelOrigin: { value: new THREE.Vector3() }, // the box's corner (x, z) in world metres (y = 0 is the ground)
+  uTunnelBox: { value: new THREE.Vector4(1, 1, 1, 1) }, // the box's size in x, y, z and the size of one voxel
+};
+
 const WIND_GLSL = /* glsl */ `
 uniform sampler2D uWindHeight;
 uniform vec4 uWindBox;
 uniform float uWindCell;
+uniform highp sampler3D uTunnelTex;
+uniform vec3 uTunnelOrigin;
+uniform vec4 uTunnelBox;
 varying vec3 vWindPos;
+bool tunnelAt(vec3 p) {
+  vec3 uvw = vec3((p.x - uTunnelOrigin.x) / uTunnelBox.x, (p.z - uTunnelOrigin.z) / uTunnelBox.z, p.y / uTunnelBox.y);
+  if (uvw.x < 0.0 || uvw.y < 0.0 || uvw.z < 0.0 || uvw.x > 1.0 || uvw.y > 1.0 || uvw.z > 1.0) return false;
+  return texture(uTunnelTex, uvw).r > 0.5;
+}
+// A piece of the mass's surface goes if it lies in a tunnel voxel, or just inside one (a surface sits on the edge of the voxel
+// that it opens into; lines have no normal and are only tested where they are).
+bool tunnelCut(vec3 p, vec3 n) {
+  if (tunnelAt(p)) return true;
+  return dot(n, n) > 0.0 && tunnelAt(p - n * 0.5 * uTunnelBox.w);
+}
 // (rounded height or -1, original height) of the column at an (x, z); an empty column off the map.
 vec2 windColumn(vec2 xz) {
   vec2 uv = (xz - uWindBox.xy) / uWindBox.zw;
@@ -58,7 +85,7 @@ function patch(material, key, kind) {
   if (patched.has(material)) return;
   patched.add(material);
   material.onBeforeCompile = (shader) => {
-    Object.assign(shader.uniforms, windUniforms);
+    Object.assign(shader.uniforms, windUniforms, tunnelUniforms);
     shader.vertexShader = shader.vertexShader
       .replace("#include <common>", "#include <common>\nvarying vec3 vWindPos;")
       .replace("#include <begin_vertex>", "#include <begin_vertex>\nvWindPos = (modelMatrix * vec4(transformed, 1.0)).xyz;");
@@ -66,7 +93,7 @@ function patch(material, key, kind) {
       .replace("#include <common>", `#include <common>\n${WIND_GLSL}`)
       .replace(
         "#include <clipping_planes_fragment>",
-        `#include <clipping_planes_fragment>\nvec3 wn = ${kind === "mesh" ? "facing()" : "vec3(0.0)"};\nif (windRounded(vWindPos, wn)) discard;`
+        `#include <clipping_planes_fragment>\nvec3 wn = ${kind === "mesh" ? "facing()" : "vec3(0.0)"};\nif (windRounded(vWindPos, wn) || tunnelCut(vWindPos, wn)) discard;`
       );
   };
   material.customProgramCacheKey = () => key;
@@ -249,6 +276,100 @@ export function createFormView() {
       if (!any) return;
       const geo = skinGeometry(form, region, changed);
       if (geo.index.count) group.add(new THREE.Mesh(geo, skinMaterial));
+    },
+  };
+}
+
+/* ---------- the wind tunnels ---------- */
+
+// The mass's own surface is discarded inside the tunnels (see tunnelCut above) and the walls, floor and ceiling of every tunnel
+// are built here: a square face wherever a tunnel voxel meets a voxel of the mass that is left. They are coloured by the air
+// speed beside them, as the airflow slice is: blue where the air is slower than the open wind, grey where it is as fast, red
+// where it is faster.
+const TUNNEL_SLOW = new THREE.Color(0x2a5cc0), TUNNEL_SAME = new THREE.Color(0xe6e6e6), TUNNEL_FAST = new THREE.Color(0xd9331f);
+const TUNNEL_RANGE = 2; // the speed ratio at which the ramp ends
+
+export function createTunnelView() {
+  const wallMaterial = new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide });
+  let group = null, texture = null, data = null, shownVersion = -1, shownFlow = null, shownTunnels = null;
+  const colour = new THREE.Color();
+
+  const clear = () => {
+    tunnelUniforms.uTunnelTex.value = EMPTY_TUNNEL;
+    group?.traverse((o) => o.geometry?.dispose());
+    group?.parent?.remove(group);
+    texture?.dispose();
+    group = texture = data = shownTunnels = shownFlow = null;
+    shownVersion = -1;
+  };
+
+  const speedColour = (ratio) => {
+    const t = Math.max(0, Math.min(1, ratio / TUNNEL_RANGE));
+    return t < 0.5 ? colour.copy(TUNNEL_SLOW).lerp(TUNNEL_SAME, t * 2) : colour.copy(TUNNEL_SAME).lerp(TUNNEL_FAST, (t - 0.5) * 2);
+  };
+
+  return {
+    clear,
+    // Shows the tunnels of `tunnels` (tunnels.js) under `parent`. Cheap to call every frame: it only rebuilds when they change.
+    update(parent, tunnels) {
+      if (!parent) return clear();
+      const { vox, flow } = tunnels;
+      if (shownTunnels === tunnels && shownVersion === vox.version && shownFlow === flow && group.parent === parent) return;
+      const { nx, nz, ny, c, x0, z0, cells } = vox;
+      const nxz = nx * nz;
+      if (shownTunnels !== tunnels || group.parent !== parent) {
+        clear();
+        data = new Uint8Array(cells.length);
+        texture = new THREE.Data3DTexture(data, nx, nz, ny);
+        texture.format = THREE.RedFormat;
+        texture.type = THREE.UnsignedByteType;
+        texture.minFilter = texture.magFilter = THREE.NearestFilter;
+        texture.unpackAlignment = 1;
+        group = new THREE.Group();
+        parent.add(group);
+        shownTunnels = tunnels;
+        tunnelUniforms.uTunnelOrigin.value.set(x0, 0, z0);
+        tunnelUniforms.uTunnelBox.value.set(nx * c, ny * c, nz * c, c);
+      }
+      const pos = [], nrm = [], col = [];
+      const faces = [ // [neighbour offset, normal pointing into the tunnel, the face's four corners relative to the voxel's corner]
+        [1, [-1, 0, 0], [[1, 0, 0], [1, 1, 0], [1, 1, 1], [1, 0, 1]]],
+        [-1, [1, 0, 0], [[0, 0, 0], [0, 0, 1], [0, 1, 1], [0, 1, 0]]],
+        [nx, [0, 0, -1], [[0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]]],
+        [-nx, [0, 0, 1], [[0, 0, 0], [0, 1, 0], [1, 1, 0], [1, 0, 0]]],
+        [nxz, [0, -1, 0], [[0, 1, 0], [0, 1, 1], [1, 1, 1], [1, 1, 0]]],
+        [-nxz, [0, 1, 0], [[0, 0, 0], [1, 0, 0], [1, 0, 1], [0, 0, 1]]],
+      ];
+      for (let k = 0; k < cells.length; k++) {
+        const tunnel = tunnels.carvedAt(k);
+        data[k] = tunnel ? 255 : 0;
+        if (!tunnel) continue;
+        const l = Math.floor(k / nxz), j = Math.floor((k - l * nxz) / nx), i = k - l * nxz - j * nx;
+        const tint = speedColour(flow?.open[k] ? flow.speed[k] : 1);
+        for (const [offset, normal, corners] of faces) {
+          const q = k + offset;
+          if (q < 0 || q >= cells.length || cells[q] !== 1) continue; // only where the mass is left (voxelFlow.js MASS)
+          const v = corners.map(([a, b, d]) => [x0 + (i + a) * c, (l + b) * c, z0 + (j + d) * c]);
+          for (const p of [v[0], v[1], v[2], v[0], v[2], v[3]]) {
+            pos.push(p[0], p[1], p[2]);
+            nrm.push(normal[0], normal[1], normal[2]);
+            col.push(tint.r, tint.g, tint.b);
+          }
+        }
+      }
+      texture.needsUpdate = true;
+      tunnelUniforms.uTunnelTex.value = texture;
+      group.traverse((o) => o.geometry?.dispose());
+      group.clear();
+      if (pos.length) {
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+        geo.setAttribute("normal", new THREE.Float32BufferAttribute(nrm, 3));
+        geo.setAttribute("color", new THREE.Float32BufferAttribute(col, 3));
+        group.add(new THREE.Mesh(geo, wallMaterial));
+      }
+      shownVersion = vox.version;
+      shownFlow = flow;
     },
   };
 }

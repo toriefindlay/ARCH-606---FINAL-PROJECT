@@ -11,9 +11,10 @@ import { createSunGrowth } from "./sunGrow.js";
 import { createVoxelMass, solveFlow } from "./voxelFlow.js";
 import { createFlowView } from "./flowView.js";
 import { createTunnels } from "./tunnels.js";
-import { renderPreview, createFormView } from "./view.js";
+import { setActiveTunnels } from "./tunnelCut.js";
+import { renderPreview, createFormView, createTunnelView } from "./view.js";
 import { mountPanel, settings, syncControls, setWindNote, setSunNote, setFlowNote, setTunnelNote } from "./panel.js";
-import { getWind, requestWind, setWindObstacle, downwind } from "../../site/wind.js";
+import { getWind, getWarmWind, requestWind, setWindObstacle, downwind } from "../../site/wind.js";
 import { cityHeights } from "../../site/windFlow.js";
 
 const RESCAN_DELAY = 350; // ms after the mass stops moving before it is analysed again
@@ -25,6 +26,8 @@ const SUN_IDLE = 1500; // ms without the sun moving before the panel says what t
 
 let form = null; // the one shape the sun and the wind work on (see form.js)
 let formView = null;
+let tunnelView = null; // the tunnels' walls, and the hole they leave in the mass's own surface
+let tunnelShown = ""; // which tunnels, and which state of them, the view and the cuts were last given
 let tunnelBusy = false; // a step of the tunnels (a solve) is running
 let tunnelSettled = ""; // what the tunnels last settled for (see tunnelFrame)
 let tunnelStats = null; // air speed in the tunnels in the last solution
@@ -99,6 +102,8 @@ function stopForm() {
   flowVox = flowResult = null;
   flowKey = "";
   tunnels = null;
+  tunnelStats = null;
+  tunnelSettled = "";
 }
 
 // The wind tunnels' voxel mass is built from the form the first time it is wanted and then kept, so tunnels stay carved
@@ -116,7 +121,9 @@ function ensureTunnels() {
 function tunnelFrame() {
   if (!settings.erodeTunnels) return setTunnelNote("");
   if (!form || !getMassInfo()) return setTunnelNote("Place a .3dm mass to cut wind tunnels through.");
-  const rose = getWind();
+  // The tunnels are for cooling, so they face the wind of the warm part of the year (see getWarmWind), not whichever period the
+  // Wind panel shows. (The ordinary prevailing wind is used if the data has no temperatures.)
+  const warm = getWarmWind(), rose = warm ?? getWind();
   if (!rose) {
     requestWind();
     return setTunnelNote("Loading wind data…");
@@ -124,18 +131,33 @@ function tunnelFrame() {
   const t = ensureTunnels();
   if (!t) return setTunnelNote("");
   const dir = downwind(rose.from), limit = settings.tunnelVolume / 100;
+  const wind = warm ? `warm-season wind from ${rose.from.toFixed(0)}° (hours above ${warm.base.toFixed(0)} °C, averaging ${warm.meanTemp.toFixed(0)} °C)` : `prevailing wind from ${rose.from.toFixed(0)}°`;
   const settled = tunnelSettled === `${t.vox.version}|${limit}|${settings.erode}` && !t.stale(dir);
   const share = `${(100 * t.share).toFixed(1)}% of the mass carved (limit ${settings.tunnelVolume}%)`;
   const speed = tunnelStats && tunnelStats.mean > 0 ? `, the air in the tunnels averages ${tunnelStats.mean.toFixed(2)}× the open wind` : "";
   setTunnelNote(
-    !t.seeded ? "Opening the first channel…"
+    (!t.seeded ? "Opening the first channel…"
       : tunnelBusy ? `Solving the airflow… ${share}.`
         : settled ? `Settled: ${share}${speed}.`
           : !settings.playing ? `Paused: ${share}${speed}.`
-            : `Wearing the tunnels: ${share}${speed}.`
+            : `Wearing the tunnels: ${share}${speed}.`) + ` Facing the ${wind}.`
   );
   if (tunnelBusy || settled || !settings.playing) return;
   tunnelStep(t, dir, limit);
+}
+
+// Keeps what is drawn, and the cut offered to the pipeline, in step with the tunnels: shown whenever there are tunnels that fit the
+// form (also while another mode is on), and cleared when they are gone.
+function tunnelShowFrame() {
+  const t = tunnels && form && tunnels.builtOn === form.version && tunnels.carved ? tunnels : null;
+  const key = t ? `${t.id}|${t.vox.version}` : "";
+  if (key !== tunnelShown) {
+    tunnelShown = key;
+    setActiveTunnels(t);
+    notifyCutsChanged();
+  }
+  if (t) tunnelView.update(layers.model, t);
+  else tunnelView.clear();
 }
 
 async function tunnelStep(t, dir, limit) {
@@ -290,7 +312,7 @@ function flowFrame() {
     flowKey = "";
     const t = tunnels;
     if (t?.flow) flowView.update(layers.model, t.vox, t.flow, settings.flowHeight);
-    return setFlowNote(t?.flow ? `Showing the airflow through the tunnels (wind from ${rose.from.toFixed(0)}°).` : "");
+    return setFlowNote(t?.flow ? "Showing the airflow through the tunnels (see the tunnel note for the wind it faces)." : "");
   }
   const key = `${massVersion}|${form.version}|${rose.from}`;
   if (key !== flowKey && !flowBusy) solveAirflow(key, rose);
@@ -309,6 +331,7 @@ function startForm() {
 export function mountExterior() {
   formView = createFormView();
   flowView = createFlowView();
+  tunnelView = createTunnelView();
   registerCutProvider("exterior", provideCuts);
   mountPanel($("exterior-panel"), {
     clearErosion: () => {
@@ -346,6 +369,7 @@ export function mountExterior() {
     windFrame(dt);
     sunFrame(dt);
     tunnelFrame();
+    tunnelShowFrame();
     flowFrame();
   });
 }
