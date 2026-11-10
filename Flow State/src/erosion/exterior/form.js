@@ -1,7 +1,7 @@
-// MODEL (exterior erosion): the one shape that the sun, the wind and the pedestrians all work on.
-// No scene or DOM code. It is a height map of the placed mass (see massScan.js). The sun adds to it (sunGrow.js), the wind
-// rounds it (windErode.js) and the traffic carves it (erosion.js); each starts from whatever shape the others left, so the
-// mass is always one form. Only one of them works at a time (see the panel).
+// MODEL (exterior erosion): the one shape that the sun and the wind both work on.
+// No scene or DOM code. It is a height map of the placed mass (see massScan.js). The sun adds to it (sunGrow.js) and the wind
+// rounds it (windErode.js); each starts from whatever shape the other left, so the mass is always one form. Only one of them
+// works at a time (see the panel). voxelFlow.js builds the 3D version of it that the wind tunnels will be carved from.
 import { scanMass } from "./massScan.js";
 
 const MAX_CELLS = 90; // per side
@@ -39,7 +39,7 @@ export function createForm(info) {
   form.lowered = () => form.heights.some((h, k) => h < hf[k] - SAME);
   form.changed = () => form.grown() || form.lowered();
 
-  // The shape as a height map in scanMass()'s shape, for the wind streaks to flow around and the traffic to walk into.
+  // The shape as a height map in scanMass()'s shape, for the wind streaks to flow around.
   form.asScan = () => ({ nU: nx, nV: nz, cu, cv, u0, v0, hf: form.heights, hw: nx, hh: nz, sub: 1 });
 
   // The height of the form at a world (x, z) (nearest column), 0 off it.

@@ -101,15 +101,6 @@
       <summary>Interior erosion</summary>
       <div id="interior-panel"></div>
     </details>
-    <details id="draw-tools" class="section tone-draw" open>
-      <summary>Draw</summary>
-      <div class="tools">
-        <button type="button" class="tool" data-draw="road">+ Road</button>
-        <button type="button" class="tool" data-draw="path">+ Path</button>
-      </div>
-      <p id="draw-help" class="hint">Pick a tool, then click the ground to place points. Double-click or Enter to finish, Backspace to undo a point, Esc to cancel.</p>
-      <ul id="drawn-list"></ul>
-    </details>
     <details id="sun-panel" class="section tone-sun hidden" open>
       <summary>Sun</summary>
       <label>Date <input type="date" id="sun-date"></label>
@@ -145,9 +136,7 @@
       <summary>Layers</summary>
       <label><input type="checkbox" data-layer="sun"> Sun path &amp; shadows</label>
       <label><input type="checkbox" data-layer="wind"> Wind</label>
-      <label><input type="checkbox" data-layer="traffic"> Traffic</label>
       <label><input type="checkbox" data-layer="model" checked> Model</label>
-      <label><input type="checkbox" data-layer="drawn" checked> Drawn</label>
       <label><input type="checkbox" data-layer="roads" checked> Roads</label>
       <label><input type="checkbox" data-layer="paths" checked> Pedestrian paths</label>
       <label><input type="checkbox" data-layer="green" checked> Green &amp; water</label>

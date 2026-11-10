@@ -73,7 +73,7 @@ export function distance3d(grid, nx, nz, ny) {
 
 /* ---------- the model ---------- */
 
-// form: the shared form (form.js). The wind rounds the shape it has now, whatever the sun or the traffic made of it.
+// form: the shared form (form.js). The wind rounds the shape it has now, whatever the sun made of it.
 export async function createWindErosion(form) {
   const { nx, nz, cx: cu, cz: cv } = form;
   const h0 = Float32Array.from(form.heights); // the shape this wind starts from

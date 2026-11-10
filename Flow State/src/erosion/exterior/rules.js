@@ -4,18 +4,13 @@
 // ctx = { mass, site, features, wind }: see erosion/combine.js.
 // Return an array of cuts built with createCut() and the primitives in erosion/sdf.js.
 //
-// Ideas the site data supports: open the form toward entrances and pedestrian paths, notch it
-// away from neighbouring buildings, step it back for sun (see site/sun.js), channel or shelter
-// from the prevailing wind (ctx.wind.from).
-//
-// Built so far: flow erosion. People and cars touching the mass wear thin passages into it, following their routes
-// and widening with every pass (see erosion.js). The mass's own shape does not influence it.
+// Built so far:
 // Wind erosion: the prevailing wind slowly rounds the mass's convex edges, windward ones first (see windErode.js).
-// Sun growth: the mass grows towards the sun, most where it is warmest (see sunGrow.js). Sun, wind and traffic all work on the
-// same form (see form.js), one at a time, each continuing from the shape the others left.
-import { activeErosionCuts } from "./erosion.js";
+// Sun growth: the mass grows towards the sun, most where it is warmest (see sunGrow.js). Both work on the same form
+// (see form.js), one at a time, each continuing from the shape the other left.
+// Airflow test: voxelFlow.js solves the air speed round and through the mass (the base for the wind tunnels).
 import { activeFormCuts } from "./windErode.js";
 
 export function provideCuts(ctx) {
-  return [...activeErosionCuts(), ...activeFormCuts()];
+  return activeFormCuts();
 }

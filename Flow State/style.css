@@ -1,4 +1,4 @@
-:root {
+﻿:root {
   --bg: #eceae4;
   --ink: #1d1d1b;
   --muted: #6d6b64;
@@ -177,7 +177,6 @@ button.primary:hover { background: var(--accent); }
 .tone-model { --tone: #d4542b; }
 .tone-exterior { --tone: #0f766e; }
 .tone-interior { --tone: #7a4f8f; }
-.tone-draw { --tone: #5d5a50; }
 .tone-sun { --tone: #b08a1e; }
 .tone-wind { --tone: #4f86a6; }
 .tone-layers { --tone: #6f8a4a; }
@@ -271,14 +270,6 @@ form, .loader { margin: auto; }
 }
 #hud button.tool:hover { border-color: var(--ink); }
 #hud button.tool.on { color: #fff; background: var(--ink); border-color: var(--ink); }
-#hud button.tool.on[data-draw="path"] { background: var(--accent); border-color: var(--accent); }
-#draw-help { margin: 0 0 8px; line-height: 1.4; }
-#drawn-list { list-style: none; margin: 0; padding: 0; }
-#drawn-list li { display: flex; justify-content: space-between; align-items: center; padding: 4px 0; border-top: 1px solid var(--line); color: var(--muted); }
-#drawn-list li i { display: inline-block; width: 8px; height: 8px; margin-right: 6px; background: var(--ink); }
-#drawn-list li.path i { background: var(--accent); }
-#hud #drawn-list button { margin: 0; padding: 0 4px; text-decoration: none; color: var(--muted); }
-body.drawing #scene { cursor: crosshair; }
 .credit { margin: 10px 0 0; font-size: 11px; color: var(--muted); }
 
 /* the panel is a stack of separate cards, not one box */

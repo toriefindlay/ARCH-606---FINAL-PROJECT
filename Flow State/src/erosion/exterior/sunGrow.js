@@ -21,7 +21,7 @@ const INF = 1e20;
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1]];
 
-// form: the shared form (form.js). The sun grows the shape it has now, whatever the wind or the traffic made of it.
+// form: the shared form (form.js). The sun grows the shape it has now, whatever the wind made of it.
 // `cityHeight(x, z)`: the height of the site's buildings (they shade the form and block its growth).
 export async function createSunGrowth(form, { cityHeight = () => 0, cityTop = 0 } = {}) {
   const { nx, nz, cx: cu, cz: cv, x0: u0, z0: v0 } = form;

@@ -1,55 +1,43 @@
-﻿import * as THREE from "three";
-import { $ } from "../../core/dom.js";
+﻿import { $ } from "../../core/dom.js";
 import { on } from "../../core/events.js";
 import { state, layers } from "../../core/state.js";
 import { onFrame } from "../../view/scene.js";
-import { getUserLines } from "../../site/draw.js";
 import { getMassInfo } from "../../mass/model3dm.js";
 import { registerCutProvider, collectCuts, notifyCutsChanged } from "../combine.js";
 import { provideCuts } from "./rules.js";
-import { createTraffic } from "./traffic.js";
-import { scanMass } from "./massScan.js";
-import { createErosion, setActiveErosion } from "./erosion.js";
 import { createForm } from "./form.js";
 import { createWindErosion, setActiveForm } from "./windErode.js";
 import { createSunGrowth } from "./sunGrow.js";
-import { renderPreview, createTrafficView, createCarveView, createFormView } from "./view.js";
-import { mountPanel, settings, syncControls, updateReadout, setWindNote, setSunNote } from "./panel.js";
-import { getWind, requestWind, setWindObstacle } from "../../site/wind.js";
+import { createVoxelMass, solveFlow } from "./voxelFlow.js";
+import { createFlowView } from "./flowView.js";
+import { createTunnels } from "./tunnels.js";
+import { renderPreview, createFormView } from "./view.js";
+import { mountPanel, settings, syncControls, setWindNote, setSunNote, setFlowNote, setTunnelNote } from "./panel.js";
+import { getWind, requestWind, setWindObstacle, downwind } from "../../site/wind.js";
 import { cityHeights } from "../../site/windFlow.js";
 
-// Rough check for the places a preset or a user is most likely to pick that drive on the left.
-const LEFT_HAND = [
-  { lat: [49, 61], lon: [-11, 2] }, // UK and Ireland
-  { lat: [24, 46], lon: [122, 146] }, // Japan
-];
-const drivesLeft = ({ lat, lon }) => LEFT_HAND.some((b) => lat >= b.lat[0] && lat <= b.lat[1] && lon >= b.lon[0] && lon <= b.lon[1]);
-
-const MAX_SUBSTEP = 0.2; // seconds: keeps car-following stable when playback is fast
-const WARM_UP = 90; // seconds simulated before the site first appears
 const RESCAN_DELAY = 350; // ms after the mass stops moving before it is analysed again
-const CARVE_INTERVAL = 0.6; // seconds between updates of the carved shape
 const WIND_INTERVAL = 0.6; // seconds between updates of the wind-rounded shape
 const FLOW_DELAY = 1500; // ms after the form last changed before the wind streaks bend around the new shape
 const SUN_INTERVAL = 0.1; // seconds between times the sun's warmth is collected
 const SUN_SHAPE_INTERVAL = 0.6; // seconds between updates of the grown shape
 const SUN_IDLE = 1500; // ms without the sun moving before the panel says what to press
 
-let sim = null;
-let view = null;
-let erosion = null;
-let carve = null;
-let form = null; // the one shape the sun, the wind and the traffic all work on (see form.js)
+let form = null; // the one shape the sun and the wind work on (see form.js)
 let formView = null;
-let trafficScan = null; // the height map the traffic touches and carves, kept in step with the form
-let trafficVersion = 0; // the form version the traffic's height map was last matched to
-let mode = "traffic"; // the kind of erosion working now: "sun" | "wind" | "traffic" (the panel allows one at a time)
+let tunnels = null; // the persistent voxel mass the wind tunnels are carved from (tunnels.js), built from the form when first wanted
+let mode = "none"; // the kind of erosion working now: "sun" | "wind" | "tunnels" | "none" (the panel allows one at a time)
 let phase = 0; // changes whenever the mode does, so that slow set-up for an earlier mode is dropped
 let windErosion = null; // the wind's rounding of the form as it was when the wind started, once worked out
 let windBuilding = false; // it is being worked out
 let windClock = 0; // simulated seconds of wind not yet applied
 let windTick = 0;
 let flowTimer = 0;
+let flowView = null; // the airflow slice (test view)
+let flowVox = null; // the voxel mass the airflow was solved on
+let flowResult = null; // the airflow
+let flowKey = ""; // what the airflow was solved for: the mass, its form and the wind direction
+let flowBusy = false;
 let massVersion = 0; // changes whenever the mass does, so that slow set-up for an old mass is dropped
 let sunGrowth = null; // the sun's growth of the form as it was when the sun started, once worked out
 let sunBuilding = false;
@@ -59,58 +47,11 @@ let sunSeen = 0; // when (ms) the Sun panel last advanced the sun
 let sunTick = 0;
 let sunShape = 0; // seconds since the grown shape was last redrawn
 let rescanTimer = 0;
-let carveClock = 0;
-let healClock = 0; // simulated seconds since the erosion last healed
-let massArea = null; // the mass's footprint, as the traffic needs it (see makeArea)
-const rates = () => ({ people: settings.people, cars: settings.cars });
 
-// The mass's footprint in site metres, for the people who walk into it: where there is mass (the height map says so),
-// and a box around it.
-function makeArea(scan) {
-  const { hf, hw, hh, cu, cv, sub, nU, nV } = scan;
-  const contains = (x, y) => {
-    const [u, v] = scan.toUV(x, -y); // site (east, north) -> world (x, z = -north) -> lattice
-    if (u < 0 || v < 0) return false;
-    const i = Math.floor(u / (cu / sub)), j = Math.floor(v / (cv / sub));
-    return i < hw && j < hh && hf[j * hw + i] > 0.5;
-  };
-  const corners = [[0, 0], [nU * cu, 0], [0, nV * cv], [nU * cu, nV * cv]].map(([u, v]) => {
-    const [x, z] = scan.toXZ(u, v);
-    return [x, -z];
-  });
-  const xs = corners.map((c) => c[0]), ys = corners.map((c) => c[1]);
-  return { contains, bounds: { minX: Math.min(...xs), maxX: Math.max(...xs), minY: Math.min(...ys), maxY: Math.max(...ys) } };
-}
-
-// Called by the traffic for every particle step: wears the mass where particles pass through it.
-const visit = (isCar, x, y, dt, particle) => {
-  if (erosion && (isCar ? settings.erodeCars : settings.erodePeople)) erosion.visit(isCar, x, y, settings.erode, particle); // a pass counts as erode passes, however long a step is
-};
-
-// Drawn lines are world coordinates (x east, z = -north); traffic uses site coordinates (x east, y north).
-// A drawn road behaves like a minor main street, a drawn path like a footway.
-function drawnLines() {
-  const lines = getUserLines();
-  const convert = (kind, osmKind) =>
-    lines.filter((l) => l.kind === kind).map((l) => ({ kind: osmKind, pts: l.pts.map((p) => ({ x: p.x, y: -p.z })) }));
-  return { roads: convert("road", "tertiary"), paths: convert("path", "footway") };
-}
-
-// (Re)builds the traffic for the current site and drawn lines. Particles restart, pre-populated.
-function rebuild() {
-  if (!state.features || !layers.traffic) return;
-  sim = createTraffic(state.features, state.site.radius, drawnLines());
-  sim.warmUp(WARM_UP, rates()); // before the mass is hooked up: the warm-up should not carve
-  sim.visit = visit;
-  sim.wear = (x, y) => (erosion ? erosion.wearAt(x, y) : 0); // people inside the mass favour worn ground
-  sim.setMass(massArea);
-}
-
-
-const currentMode = () => (settings.erodeSun ? "sun" : settings.erodeWind ? "wind" : "traffic");
+const currentMode = () => (settings.erodeSun ? "sun" : settings.erodeWind ? "wind" : settings.erodeTunnels ? "tunnels" : "none");
 
 // The sun's and the wind's set-up is worked out from the form as it is when they start, so it is dropped whenever the form
-// is changed by anything else (another mode, or clearing).
+// is changed by anything else (the other mode, or clearing).
 function resetPhases() {
   phase++;
   windErosion = sunGrowth = null;
@@ -120,28 +61,12 @@ function resetPhases() {
   setSunNote("");
 }
 
-// Keeps the traffic's height map the same as the form's, so that people and cars touch what the sun grew and miss what the
-// wind took (and the strands they carve stay below the form's roof).
-function matchTraffic() {
-  if (!form || !trafficScan || trafficVersion === form.version) return;
-  trafficVersion = form.version;
-  const { hf, hw, hh, cu, cv, sub } = trafficScan;
-  for (let j = 0; j < hh; j++) {
-    for (let i = 0; i < hw; i++) {
-      const [x, z] = trafficScan.toXZ(((i + 0.5) * cu) / sub, ((j + 0.5) * cv) / sub);
-      hf[j * hw + i] = form.heightAt(x, z);
-    }
-  }
-  if (erosion) carve.update(erosion);
-}
-
 // Switching mode: the new one carries on from the form as the last one left it.
 function syncMode() {
   const next = currentMode();
   if (next === mode) return;
   mode = next;
   resetPhases();
-  if (mode === "traffic") matchTraffic();
 }
 
 // The form changed (the sun or the wind worked on it): redraw it, tell the pipeline, and let the wind streaks follow it.
@@ -152,16 +77,10 @@ function formChanged() {
   flowTimer = setTimeout(() => form && setWindObstacle(form.asScan()), FLOW_DELAY);
 }
 
-// The mass moved, scaled or went away: its carving no longer fits, so start again from the new mass.
-function stopCarving() {
+// The mass moved, scaled or went away: its shape no longer fits, so start again from the new mass.
+function stopMass() {
   clearTimeout(rescanTimer);
-  const had = !!erosion || !!form?.changed();
-  erosion = null;
-  massArea = null;
-  trafficScan = null;
-  sim?.setMass(null);
-  setActiveErosion(null);
-  carve?.clear();
+  const had = !!form?.changed();
   stopForm();
   if (had) notifyCutsChanged();
 }
@@ -173,6 +92,31 @@ function stopForm() {
   resetPhases();
   setActiveForm(null);
   formView?.clear();
+  flowView?.clear();
+  flowVox = flowResult = null;
+  flowKey = "";
+  tunnels = null;
+}
+
+// The wind tunnels' voxel mass is built from the form the first time it is wanted and then kept, so tunnels stay carved
+// between solves and when another mode is switched on and off. It is built afresh if the sun or the wind has changed the form
+// since (the tunnels would no longer fit the shape), or if the mass moved (stopForm).
+function ensureTunnels() {
+  if (tunnels && tunnels.builtOn !== form.version) tunnels = null;
+  tunnels ??= createTunnels(form, { cityHeight: cityHeights(state.site.radius, state.features?.buildings) });
+  return tunnels;
+}
+
+function tunnelFrame() {
+  if (!settings.erodeTunnels) return setTunnelNote("");
+  if (!form || !getMassInfo()) return setTunnelNote("Place a .3dm mass to cut wind tunnels through.");
+  const t = ensureTunnels();
+  if (!t) return setTunnelNote("");
+  const { vox } = t;
+  setTunnelNote(
+    `3D mass ready: ${vox.nx}×${vox.nz}×${vox.ny} voxels of ${vox.c.toFixed(1)} m, ${t.carved} carved. ` +
+    "Turn on the airflow slice to see the wind; the solver does not cut tunnels yet."
+  );
 }
 
 // The sun growth is worked out the first time it is wanted for the form (it takes a moment).
@@ -264,56 +208,77 @@ function windFrame(dt) {
   if (windErosion.recompute()) formChanged();
 }
 
-function startCarving() {
-  const info = getMassInfo();
-  if (!info || !layers.model) return;
-  const scan = scanMass(info);
-  if (!scan) return;
-  erosion = createErosion(scan);
-  setActiveErosion(erosion);
-  massArea = makeArea(scan);
-  trafficScan = scan;
-  sim?.setMass(massArea); // from now on people who walk into the mass wander its floor
-  carve.setLattice(scan, layers.model, info.object);
-  form = createForm(info);
-  if (form) {
-    setActiveForm(form);
-    formView.setForm(form, layers.model, info.object);
-    trafficVersion = form.version;
+// Solves the airflow round the form as it is now, in the prevailing wind. The voxel mass is rebuilt from the form each time
+// (nothing carves it yet), and the slice shows the result once it is ready.
+async function solveAirflow(key, rose) {
+  flowBusy = true;
+  setFlowNote("Solving the airflow…");
+  const version = massVersion;
+  try {
+    // In the tunnels mode the airflow is solved on the persistent voxel mass, starting from the last solution; otherwise on a
+    // throwaway one built from the form.
+    const dir = downwind(rose.from);
+    const t = settings.erodeTunnels ? ensureTunnels() : null;
+    const vox = t ? t.vox : createVoxelMass(form, { cityHeight: cityHeights(state.site.radius, state.features?.buildings) });
+    const result = t ? await t.solve(dir) : vox && (await solveFlow(vox, { dir }));
+    if (version !== massVersion) return;
+    flowKey = key;
+    flowVox = vox;
+    flowResult = result;
+    if (result) {
+      setFlowNote(
+        `Wind from ${rose.from.toFixed(0)}°: the air reaches up to ${result.maxSpeed.toFixed(2)}× the open wind speed ` +
+        `(${vox.nx}×${vox.nz}×${vox.ny} voxels of ${vox.c.toFixed(1)} m, ${result.iterations} passes${result.converged ? "" : ", not fully settled"}).`
+      );
+    }
+  } catch (e) {
+    flowKey = key; // do not retry until something changes
+    console.error("Airflow failed:", e);
+    setFlowNote("The airflow could not be solved (see the console).");
+  } finally {
+    flowBusy = false;
   }
 }
 
-function carveFrame(dt, simSeconds) {
-  if (!erosion) return;
-  carveClock += dt;
-  healClock += simSeconds;
-  if (carveClock < CARVE_INTERVAL) return;
-  carveClock = 0;
-  if (settings.heal > 0) erosion.heal(healClock * settings.heal); // channels nobody uses fade
-  healClock = 0;
-  if (erosion.recompute()) {
-    carve.update(erosion);
-    notifyCutsChanged();
+function flowFrame() {
+  if (!settings.flowDebug) {
+    if (flowResult) { flowView.clear(); flowVox = flowResult = null; flowKey = ""; }
+    return setFlowNote("");
   }
+  if (!form || !getMassInfo()) return setFlowNote("Place a .3dm mass to test the airflow around it.");
+  const rose = getWind();
+  if (!rose) {
+    requestWind();
+    return setFlowNote("Loading wind data…");
+  }
+  const t = settings.erodeTunnels ? ensureTunnels() : null;
+  const key = t ? `${massVersion}|tunnels ${t.vox.version}|${rose.from}` : `${massVersion}|${form.version}|${rose.from}`;
+  if (key !== flowKey && !flowBusy) solveAirflow(key, rose);
+  if (flowResult) flowView.update(layers.model, flowVox, flowResult, settings.flowHeight);
+}
+
+function startForm() {
+  const info = getMassInfo();
+  if (!info || !layers.model) return;
+  form = createForm(info);
+  if (!form) return;
+  setActiveForm(form);
+  formView.setForm(form, layers.model, info.object);
 }
 
 export function mountExterior() {
-  carve = createCarveView();
   formView = createFormView();
+  flowView = createFlowView();
   registerCutProvider("exterior", provideCuts);
   mountPanel($("exterior-panel"), {
-    reset: () => { sim?.reset(); sim?.warmUp(WARM_UP, rates()); },
     clearErosion: () => {
-      const strands = erosion?.clear();
-      const shape = form?.clear();
-      if (strands) carve.update(erosion);
-      if (shape) {
-        resetPhases(); // the sun and the wind start again from the mass as placed
-        formView.update(form);
-        setWindObstacle(form.asScan());
-        matchTraffic();
-      }
-      if (strands || shape) notifyCutsChanged();
+      tunnels = null; // the tunnels are built afresh from the mass as placed
+      flowKey = "";
+      if (!form?.clear()) return;
+      resetPhases(); // the sun and the wind start again from the mass as placed
+      formView.update(form);
+      setWindObstacle(form.asScan());
+      notifyCutsChanged();
     },
   });
   on("sun:advanced", ({ vec, hours }) => {
@@ -324,43 +289,21 @@ export function mountExterior() {
   });
   on("cuts:changed", () => renderPreview(collectCuts().filter((c) => c.source === "exterior")));
 
-  on("site:built", ({ site }) => {
-    layers.traffic = new THREE.Group();
-    layers.traffic.visible = false; // a site opens bare: traffic, sun and wind are switched on by the user
-    state.siteGroup.add(layers.traffic);
-    view = createTrafficView(layers.traffic);
-    settings.leftHand = drivesLeft(site);
-    rebuild();
-  });
-  on("drawn:changed", rebuild);
   on("mass:changed", ({ mass }) => {
-    stopCarving();
-    if (mass) rescanTimer = setTimeout(startCarving, RESCAN_DELAY);
+    stopMass();
+    if (mass) rescanTimer = setTimeout(startForm, RESCAN_DELAY);
   });
   on("site:ready", syncControls);
   on("site:cleared", () => {
-    sim = view = erosion = massArea = trafficScan = null;
     clearTimeout(rescanTimer);
-    setActiveErosion(null);
-    carve.clear();
     stopForm();
-    updateReadout(null);
   });
 
   onFrame((dt) => {
     syncMode();
     windFrame(dt);
     sunFrame(dt);
-    if (!sim) return;
-    if (settings.playing && layers.traffic?.visible) {
-      const total = dt * settings.speed, n = Math.max(1, Math.ceil(total / MAX_SUBSTEP));
-      for (let i = 0; i < n; i++) sim.step(total / n, rates());
-      carveFrame(dt, total);
-    }
-    if (layers.traffic?.visible) {
-      sim.pose(settings.leftHand);
-      view.update(sim, settings.size);
-    }
-    updateReadout(sim);
+    tunnelFrame();
+    flowFrame();
   });
 }
