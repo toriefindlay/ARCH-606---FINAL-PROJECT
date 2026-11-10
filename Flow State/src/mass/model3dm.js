@@ -39,10 +39,23 @@ export const getMassFile = () => (model ? { name: model.name, buffer: model.buff
 
 // ---- loading
 
+const PARSE_TIMEOUT = 60000; // ms
+
+// The reader runs in a worker that downloads its code (rhino3dm) from a CDN, and if that download stalls the worker never answers
+// and never reports an error. Without a limit, opening a saved site that holds a model would wait for it for ever on the loading
+// screen. After the limit the reader is thrown away (so that the next try starts a fresh one) and the read fails with a message.
 function parse3dm(buffer) {
   rhinoLoader ??= new Rhino3dmLoader().setLibraryPath("https://cdn.jsdelivr.net/npm/rhino3dm@8.0.1/");
+  const loader = rhinoLoader;
   // The loader transfers its input to a worker, so hand it a copy and keep ours for saving.
-  return new Promise((resolve, reject) => rhinoLoader.parse(buffer.slice(0), resolve, reject));
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      if (rhinoLoader === loader) rhinoLoader = null;
+      try { loader.dispose(); } catch { /* already gone */ }
+      reject(new Error(`the Rhino reader did not answer within ${PARSE_TIMEOUT / 1000} s: check the internet connection and import the file again`));
+    }, PARSE_TIMEOUT);
+    loader.parse(buffer.slice(0), (obj) => { clearTimeout(timer); resolve(obj); }, (err) => { clearTimeout(timer); reject(err); });
+  });
 }
 
 function unitFactor(obj) {

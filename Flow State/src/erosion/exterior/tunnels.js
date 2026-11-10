@@ -32,6 +32,8 @@ export function createTunnels(form, { cityHeight = null } = {}) {
   const placed = Uint8Array.from(cells); // the mass as it was placed, to put it back
   const wear = new Float32Array(cells.length); // 0..1: how worn each mass voxel next to a tunnel is
   const massVoxels = placed.reduce((n, v) => n + (v === MASS ? 1 : 0), 0);
+  const roof = new Int16Array(nxz).fill(-1); // the layer of the top mass voxel in every column (-1 where there is none)
+  for (let k = 0; k < placed.length; k++) if (placed[k] === MASS) roof[k % nxz] = Math.floor(k / nxz);
   let carved = 0;
   let rounds = 0;
   let gaining = 0;
@@ -118,7 +120,9 @@ export function createTunnels(form, { cityHeight = null } = {}) {
       const worn = [];
       const faces = [1, -1, nx, -nx, nxz, -nxz];
       for (let k = nxz; k < cells.length; k++) { // the bottom layer stays as the floor
-        if (cells[k] !== MASS || cells[k + nxz] !== MASS) continue; // a roof layer stays too
+        if (cells[k] !== MASS) continue;
+        const column = k % nxz;
+        if ((k - column) / nxz >= roof[column]) continue; // the top layer of every column stays as the roof
         let s = 0;
         for (const f of faces) {
           const q = k + f;
