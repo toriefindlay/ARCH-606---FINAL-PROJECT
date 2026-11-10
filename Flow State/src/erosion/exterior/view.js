@@ -79,11 +79,14 @@ vec3 facing() {
 }
 `;
 
-// `kind`: "mesh" (a surface: tested just inside) or "line" (the mass's edge lines: tested where they are).
+// `kind`: "mesh" (a surface: tested just inside), "line" (the mass's edge lines: tested where they are) or "skin" (the surface the
+// form view builds where the sun or the wind changed the mass, which replaces the mass's own there: it is never discarded for the
+// wind's rounding, since it is what the rounding produced, but the wind tunnels open it like the mass's own surface).
 const patched = new WeakSet();
 function patch(material, key, kind) {
   if (patched.has(material)) return;
   patched.add(material);
+  const discard = kind === "skin" ? "tunnelCut(vWindPos, wn)" : "windRounded(vWindPos, wn) || tunnelCut(vWindPos, wn)";
   material.onBeforeCompile = (shader) => {
     Object.assign(shader.uniforms, windUniforms, tunnelUniforms);
     shader.vertexShader = shader.vertexShader
@@ -93,7 +96,7 @@ function patch(material, key, kind) {
       .replace("#include <common>", `#include <common>\n${WIND_GLSL}`)
       .replace(
         "#include <clipping_planes_fragment>",
-        `#include <clipping_planes_fragment>\nvec3 wn = ${kind === "mesh" ? "facing()" : "vec3(0.0)"};\nif (windRounded(vWindPos, wn) || tunnelCut(vWindPos, wn)) discard;`
+        `#include <clipping_planes_fragment>\nvec3 wn = ${kind === "line" ? "vec3(0.0)" : "facing()"};\nif (${discard}) discard;`
       );
   };
   material.customProgramCacheKey = () => key;
@@ -141,6 +144,7 @@ function grow(mask, nx, nz) {
 
 export function createFormView() {
   const skinMaterial = new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 });
+  patch(skinMaterial, "tunnel-skin", "skin"); // the wind tunnels open it, like the mass's own surface
   let group = null, texture = null, data = null;
   const colour = new THREE.Color();
 
