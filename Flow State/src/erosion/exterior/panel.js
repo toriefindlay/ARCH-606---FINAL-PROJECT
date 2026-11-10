@@ -4,7 +4,7 @@
 import { registerPersist } from "../../core/persist.js";
 
 // Read each frame by index.js. `speed` is simulated seconds per real second.
-export const settings = { playing: true, speed: 4, erode: 2, erodeWind: false, erodeSun: false, erodeTunnels: false, flowDebug: false, flowHeight: 2 };
+export const settings = { playing: true, speed: 4, erode: 2, erodeWind: false, erodeSun: false, erodeTunnels: false, tunnelVolume: 10, flowDebug: false, flowHeight: 2 };
 
 const $ = (id) => document.getElementById(id);
 let onClearErosion = () => {};
@@ -18,6 +18,9 @@ export function mountPanel(el, hooks = {}) {
     <label title="The prevailing wind slowly rounds the mass's edges, windward ones first. It never cuts into the mass."><input type="checkbox" id="erode-wind"> Wind (rounds the edges)</label>
     <p id="wind-erode-note" class="hint" style="margin:0 0 6px"></p>
     <label title="Wind tunnels: the solver works out where the wind can cut through the mass to cool its interior, and opens them. Keeps its own 3D version of the mass."><input type="checkbox" id="erode-tunnels"> Wind tunnels (cut through the mass)</label>
+    <label title="The most of the mass the tunnels may carve away. The wind keeps widening them until they reach this.">Tunnel volume <output id="tunnel-volume-out"></output>
+      <input type="range" id="tunnel-volume" min="2" max="30" step="1">
+    </label>
     <p id="tunnel-note" class="hint" style="margin:0 0 6px"></p>
     <div class="tools">
       <button type="button" class="tool" id="erode-play">Pause</button>
@@ -51,6 +54,7 @@ export function mountPanel(el, hooks = {}) {
     syncControls();
   };
   $("erode-tunnels").addEventListener("change", exclusive("erodeTunnels"));
+  $("tunnel-volume").addEventListener("input", (e) => { settings.tunnelVolume = Number(e.target.value); syncControls(); });
   $("erode-wind").addEventListener("change", exclusive("erodeWind"));
   $("erode-sun").addEventListener("change", exclusive("erodeSun"));
   syncControls();
@@ -66,6 +70,8 @@ export function syncControls() {
   $("erode-wind").checked = settings.erodeWind;
   $("erode-sun").checked = settings.erodeSun;
   $("erode-tunnels").checked = settings.erodeTunnels;
+  $("tunnel-volume").value = settings.tunnelVolume;
+  $("tunnel-volume-out").textContent = `${settings.tunnelVolume}%`;
   $("flow-debug").checked = settings.flowDebug;
   $("flow-height").value = settings.flowHeight;
   $("flow-height-out").textContent = `${settings.flowHeight} m`;

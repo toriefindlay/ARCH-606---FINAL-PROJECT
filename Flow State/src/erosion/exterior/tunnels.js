@@ -30,8 +30,10 @@ export function createTunnels(form, { cityHeight = null } = {}) {
   const nxz = nx * nz;
   const placed = Uint8Array.from(cells); // the mass as it was placed, to put it back
   const wear = new Float32Array(cells.length); // 0..1: how worn each mass voxel next to a tunnel is
+  const massVoxels = placed.reduce((n, v) => n + (v === MASS ? 1 : 0), 0);
   let carved = 0;
   let rounds = 0;
+  let gaining = 0;
   let seeded = false;
   let flow = null; // the last solution
   let flowVersion = -1; // the voxel version it was solved for
@@ -44,8 +46,15 @@ export function createTunnels(form, { cityHeight = null } = {}) {
     builtOn: form.version, // the form version the voxels were built from: if the form changes, the tunnels are built afresh
     get flow() { return flow; },
     get carved() { return carved; }, // voxels of the mass that are air now
+    get share() { return massVoxels ? carved / massVoxels : 0; }, // the part of the mass that is carved away (0..1)
     get rounds() { return rounds; }, // times the walls have been worn
     get seeded() { return seeded; },
+    // Voxels that gained wear in the last round of erode(). A round that opens nothing is not the end while this is above 0: the
+    // wear just has not reached the point where a voxel opens yet.
+    get gaining() { return gaining; },
+
+    // Is this voxel air that the mass once held (part of a tunnel)?
+    carvedAt: isTunnel,
 
     // Opens a voxel of the mass. Says whether it changed (context buildings and air cannot be carved).
     carve(k) {
@@ -60,7 +69,7 @@ export function createTunnels(form, { cityHeight = null } = {}) {
       cells.set(placed);
       wear.fill(0);
       vox.version++;
-      carved = rounds = 0;
+      carved = rounds = gaining = 0;
       seeded = false;
       flow = null;
       flowVersion = -1;
@@ -81,12 +90,16 @@ export function createTunnels(form, { cityHeight = null } = {}) {
       }
       if (x1 < x0) return 0; // no mass at that height
       const mx = (x0 + x1) / 2, mz = (z0 + z1) / 2, reach = Math.hypot(x1 - x0, z1 - z0) / 2 + c;
-      let opened = 0, last = -1;
+      // Walk along the line voxel by voxel. Where it passes a voxel corner it would jump diagonally, which leaves a gap the air
+      // cannot cross (voxels connect through their faces), so a step in both x and z is made as two steps.
+      let opened = 0, pi = -1, pj = -1;
       for (let t = -reach; t <= reach; t += c / 2) {
-        const k = vox.at(mx + dir[0] * t, y, mz + dir[1] * t);
-        if (k < 0 || k === last) continue;
-        last = k;
-        if (tunnels.carve(k)) opened++;
+        const i = Math.floor((mx + dir[0] * t - vox.x0) / c), j = Math.floor((mz + dir[1] * t - vox.z0) / c);
+        if (i < 0 || j < 0 || i >= nx || j >= nz || (i === pi && j === pj)) continue;
+        if (pi >= 0 && i !== pi && j !== pj && tunnels.carve(vox.index(i, pj, l))) opened++; // the x step first, then the z step
+        if (tunnels.carve(vox.index(i, j, l))) opened++;
+        pi = i;
+        pj = j;
       }
       seeded = opened > 0;
       return opened;
@@ -94,8 +107,12 @@ export function createTunnels(form, { cityHeight = null } = {}) {
 
     // One round of wearing: the air in the last solution (`flow`, which must be for the voxels as they are) wears the mass voxels
     // next to the tunnels. `rate` scales the wear (the erosion speed setting). Says how many voxels it opened.
-    erode(rate = 1) {
-      if (!flow) return 0;
+    // The wear does not stop by itself (a wider channel carries air as fast as a narrow one), so it is capped: at most
+    // `maxFraction` of the mass's voxels are carved away in all.
+    erode(rate = 1, maxFraction = 0.1) {
+      const room = Math.floor(maxFraction * massVoxels) - carved;
+      gaining = 0;
+      if (!flow || room <= 0) return 0;
       const worn = [];
       const faces = [1, -1, nx, -nx, nxz, -nxz];
       for (let k = nxz; k < cells.length; k++) { // the bottom layer stays as the floor
@@ -106,12 +123,13 @@ export function createTunnels(form, { cityHeight = null } = {}) {
           if (q >= 0 && q < cells.length && flow.open[q] && isTunnel(q) && flow.speed[q] > s) s = flow.speed[q];
         }
         if (s <= MIN_SPEED) continue;
+        gaining++;
         wear[k] += WEAR_RATE * rate * (s * s - MIN_SPEED * MIN_SPEED);
         if (wear[k] >= 1) worn.push(k);
       }
       worn.sort((a, b) => wear[b] - wear[a]);
       let opened = 0;
-      for (let t = 0; t < worn.length && t < MAX_PER_ROUND; t++) if (tunnels.carve(worn[t])) opened++;
+      for (let t = 0; t < worn.length && t < Math.min(MAX_PER_ROUND, room); t++) if (tunnels.carve(worn[t])) opened++;
       rounds++;
       return opened;
     },

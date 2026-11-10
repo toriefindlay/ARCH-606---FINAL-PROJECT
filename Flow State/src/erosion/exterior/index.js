@@ -25,6 +25,9 @@ const SUN_IDLE = 1500; // ms without the sun moving before the panel says what t
 
 let form = null; // the one shape the sun and the wind work on (see form.js)
 let formView = null;
+let tunnelBusy = false; // a step of the tunnels (a solve) is running
+let tunnelSettled = ""; // what the tunnels last settled for (see tunnelFrame)
+let tunnelStats = null; // air speed in the tunnels in the last solution
 let tunnels = null; // the persistent voxel mass the wind tunnels are carved from (tunnels.js), built from the form when first wanted
 let mode = "none"; // the kind of erosion working now: "sun" | "wind" | "tunnels" | "none" (the panel allows one at a time)
 let phase = 0; // changes whenever the mode does, so that slow set-up for an earlier mode is dropped
@@ -107,16 +110,52 @@ function ensureTunnels() {
   return tunnels;
 }
 
+// The tunnels grow one step per pass, strictly one thing at a time: solve the airflow (if the voxels or the wind changed since the
+// last solution), otherwise wear the walls and open what is worn through. The next pass then solves again. Settled = a wearing
+// that opened nothing: it is not repeated until something changes (the voxels, the volume limit or the erosion speed).
 function tunnelFrame() {
   if (!settings.erodeTunnels) return setTunnelNote("");
   if (!form || !getMassInfo()) return setTunnelNote("Place a .3dm mass to cut wind tunnels through.");
+  const rose = getWind();
+  if (!rose) {
+    requestWind();
+    return setTunnelNote("Loading wind data…");
+  }
   const t = ensureTunnels();
   if (!t) return setTunnelNote("");
-  const { vox } = t;
+  const dir = downwind(rose.from), limit = settings.tunnelVolume / 100;
+  const settled = tunnelSettled === `${t.vox.version}|${limit}|${settings.erode}` && !t.stale(dir);
+  const share = `${(100 * t.share).toFixed(1)}% of the mass carved (limit ${settings.tunnelVolume}%)`;
+  const speed = tunnelStats && tunnelStats.mean > 0 ? `, the air in the tunnels averages ${tunnelStats.mean.toFixed(2)}× the open wind` : "";
   setTunnelNote(
-    `3D mass ready: ${vox.nx}×${vox.nz}×${vox.ny} voxels of ${vox.c.toFixed(1)} m, ${t.carved} carved. ` +
-    "Turn on the airflow slice to see the wind; the solver does not cut tunnels yet."
+    !t.seeded ? "Opening the first channel…"
+      : tunnelBusy ? `Solving the airflow… ${share}.`
+        : settled ? `Settled: ${share}${speed}.`
+          : !settings.playing ? `Paused: ${share}${speed}.`
+            : `Wearing the tunnels: ${share}${speed}.`
   );
+  if (tunnelBusy || settled || !settings.playing) return;
+  tunnelStep(t, dir, limit);
+}
+
+async function tunnelStep(t, dir, limit) {
+  tunnelBusy = true;
+  const version = massVersion;
+  try {
+    if (!t.seeded) t.seedPilot(dir); // a fixed height for now: the solver will pick the place (see tunnels.js)
+    if (t.stale(dir)) {
+      await t.solve(dir);
+      if (version === massVersion && tunnels === t) tunnelStats = t.tunnelSpeed();
+    } else if (!t.erode(settings.erode, limit) && !t.gaining) { // nothing opened and no wall is wearing: nothing more will
+      tunnelSettled = `${t.vox.version}|${limit}|${settings.erode}`;
+    }
+  } catch (e) {
+    tunnelSettled = `${t.vox.version}|${limit}|${settings.erode}`; // do not retry until something changes
+    console.error("Wind tunnels failed:", e);
+    setTunnelNote("The wind tunnels could not be worked out (see the console).");
+  } finally {
+    tunnelBusy = false;
+  }
 }
 
 // The sun growth is worked out the first time it is wanted for the form (it takes a moment).
@@ -208,19 +247,15 @@ function windFrame(dt) {
   if (windErosion.recompute()) formChanged();
 }
 
-// Solves the airflow round the form as it is now, in the prevailing wind. The voxel mass is rebuilt from the form each time
-// (nothing carves it yet), and the slice shows the result once it is ready.
+// Solves the airflow round the form as it is now, in the prevailing wind, on a throwaway voxel mass built from the form, and the
+// slice shows the result once it is ready. (In the tunnels mode the tunnels solve their own, see tunnelFrame.)
 async function solveAirflow(key, rose) {
   flowBusy = true;
   setFlowNote("Solving the airflow…");
   const version = massVersion;
   try {
-    // In the tunnels mode the airflow is solved on the persistent voxel mass, starting from the last solution; otherwise on a
-    // throwaway one built from the form.
-    const dir = downwind(rose.from);
-    const t = settings.erodeTunnels ? ensureTunnels() : null;
-    const vox = t ? t.vox : createVoxelMass(form, { cityHeight: cityHeights(state.site.radius, state.features?.buildings) });
-    const result = t ? await t.solve(dir) : vox && (await solveFlow(vox, { dir }));
+    const vox = createVoxelMass(form, { cityHeight: cityHeights(state.site.radius, state.features?.buildings) });
+    const result = vox && (await solveFlow(vox, { dir: downwind(rose.from) }));
     if (version !== massVersion) return;
     flowKey = key;
     flowVox = vox;
@@ -251,8 +286,13 @@ function flowFrame() {
     requestWind();
     return setFlowNote("Loading wind data…");
   }
-  const t = settings.erodeTunnels ? ensureTunnels() : null;
-  const key = t ? `${massVersion}|tunnels ${t.vox.version}|${rose.from}` : `${massVersion}|${form.version}|${rose.from}`;
+  if (settings.erodeTunnels) { // the tunnels' own airflow, which changes as they are carved
+    flowKey = "";
+    const t = tunnels;
+    if (t?.flow) flowView.update(layers.model, t.vox, t.flow, settings.flowHeight);
+    return setFlowNote(t?.flow ? `Showing the airflow through the tunnels (wind from ${rose.from.toFixed(0)}°).` : "");
+  }
+  const key = `${massVersion}|${form.version}|${rose.from}`;
   if (key !== flowKey && !flowBusy) solveAirflow(key, rose);
   if (flowResult) flowView.update(layers.model, flowVox, flowResult, settings.flowHeight);
 }
@@ -273,6 +313,8 @@ export function mountExterior() {
   mountPanel($("exterior-panel"), {
     clearErosion: () => {
       tunnels = null; // the tunnels are built afresh from the mass as placed
+      tunnelStats = null;
+      tunnelSettled = "";
       flowKey = "";
       if (!form?.clear()) return;
       resetPhases(); // the sun and the wind start again from the mass as placed
