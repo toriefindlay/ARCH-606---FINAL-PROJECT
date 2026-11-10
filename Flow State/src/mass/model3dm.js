@@ -40,21 +40,71 @@ export const getMassFile = () => (model ? { name: model.name, buffer: model.buff
 // ---- loading
 
 const PARSE_TIMEOUT = 60000; // ms
+const READER_FILES = "vendor/rhino3dm/";
 
-// The reader runs in a worker that downloads its code (rhino3dm) from a CDN, and if that download stalls the worker never answers
-// and never reports an error. Without a limit, opening a saved site that holds a model would wait for it for ever on the loading
-// screen. After the limit the reader is thrown away (so that the next try starts a fresh one) and the read fails with a message.
+// The loader runs the reader in a worker of its own and does not listen for the worker failing, so a worker that cannot start or
+// that dies leaves the read waiting for ever. Every worker made while this module is in use is watched here: a failure is
+// reported at once, and the number started is kept for the diagnosis below.
+let workersStarted = 0;
+let onWorkerFailed = null; // set while a read is waiting
+const NativeWorker = window.Worker;
+window.Worker = class extends NativeWorker {
+  constructor(...args) {
+    super(...args);
+    workersStarted++;
+    this.addEventListener("error", (e) => onWorkerFailed?.(e.message || "it could not start"));
+  }
+};
+
+// What to tell the user (and the console) when the reader gave no answer: whether its files came, whether a worker started, and
+// whether this browser can compile WebAssembly at all (the reader is WebAssembly).
+async function diagnoseReader() {
+  const notes = [];
+  const files = performance.getEntriesByType("resource").filter((r) => /rhino3dm\.(js|wasm)/.test(r.name));
+  notes.push(
+    files.length
+      ? `files: ${files.map((f) => `${f.name.split("/").pop()} ${Math.round(f.duration)} ms${f.responseStatus && f.responseStatus !== 200 ? ` HTTP ${f.responseStatus}` : ""}`).join(", ")}`
+      : "files: never requested"
+  );
+  notes.push(`workers started: ${workersStarted}`);
+  try {
+    const t = performance.now();
+    const bytes = await (await fetch(`${READER_FILES}rhino3dm.wasm`)).arrayBuffer();
+    await Promise.race([WebAssembly.compile(bytes), new Promise((_, no) => setTimeout(() => no(new Error("took over 15 s")), 15000))]);
+    notes.push(`WebAssembly compiles on the page (${Math.round(performance.now() - t)} ms)`);
+  } catch (e) {
+    notes.push(`WebAssembly failed: ${e?.message ?? e}`);
+  }
+  return notes.join("; ");
+}
+
+// If the reader stalls it never answers and never reports an error, so there is a limit: after it the reader is thrown away (so
+// that the next try starts a fresh one) and the read fails with a message that says what was found out about why.
 function parse3dm(buffer) {
-  rhinoLoader ??= new Rhino3dmLoader().setLibraryPath("https://cdn.jsdelivr.net/npm/rhino3dm@8.0.1/");
+  rhinoLoader ??= new Rhino3dmLoader().setLibraryPath(READER_FILES); // the reader's code, kept in the project (see vendor/rhino3dm/README.md)
   const loader = rhinoLoader;
+  const discard = () => {
+    if (rhinoLoader === loader) rhinoLoader = null;
+    try { loader.dispose(); } catch { /* already gone */ }
+  };
   // The loader transfers its input to a worker, so hand it a copy and keep ours for saving.
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      if (rhinoLoader === loader) rhinoLoader = null;
-      try { loader.dispose(); } catch { /* already gone */ }
-      reject(new Error(`the Rhino reader did not answer within ${PARSE_TIMEOUT / 1000} s: check the internet connection and import the file again`));
+    const done = (settle, value) => {
+      clearTimeout(timer);
+      onWorkerFailed = null;
+      settle(value);
+    };
+    const timer = setTimeout(async () => {
+      discard();
+      const why = await diagnoseReader();
+      console.error("Rhino reader gave no answer:", why);
+      done(reject, new Error(`the Rhino reader did not answer within ${PARSE_TIMEOUT / 1000} s (${why})`));
     }, PARSE_TIMEOUT);
-    loader.parse(buffer.slice(0), (obj) => { clearTimeout(timer); resolve(obj); }, (err) => { clearTimeout(timer); reject(err); });
+    onWorkerFailed = (message) => {
+      discard();
+      done(reject, new Error(`the Rhino reader's worker failed: ${message}`));
+    };
+    loader.parse(buffer.slice(0), (obj) => done(resolve, obj), (err) => done(reject, err));
   });
 }
 
@@ -401,7 +451,15 @@ registerPersist("model", {
     model
       ? { name: model.name, scale: model.scale, pose: { x: model.placement.position.x, z: model.placement.position.z, rot: model.placement.rotation.y } }
       : null,
-  restore: async (saved, extras) => {
-    if (saved && extras.modelBuffer) await placeModel(extras.modelBuffer, saved.name ?? "model.3dm", saved.scale, saved.pose);
+  // Not awaited: reading the file can take a while (or stall), and waiting for it would keep the loading screen up until it
+  // answered, so the site opens first and the model appears when it is read (the Model panel says "Reading…" meanwhile, or why it
+  // could not be read).
+  restore: (saved, extras) => {
+    if (saved && extras.modelBuffer) {
+      placeModel(extras.modelBuffer, saved.name ?? "model.3dm", saved.scale, saved.pose).catch((e) => {
+        console.error(e);
+        setModelMsg(`Couldn't place ${saved.name ?? "the model"} (${e?.message ?? e}).`, true);
+      });
+    }
   },
 });
