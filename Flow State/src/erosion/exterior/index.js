@@ -113,8 +113,8 @@ function ensureTunnels() {
   return tunnels;
 }
 
-// The tunnels grow one step per pass, strictly one thing at a time (see nextWork): open the first channels of a pair of floors,
-// solve its airflow, or wear its walls and open what is worn through. Every pair of floors has its own wind, a different part of
+// The tunnels are worked out one step per pass, strictly one thing at a time (see nextWork): try another shape for a pair of
+// floors (cut it, solve its airflow, score the cooling) or solve an airflow again. Every pair of floors has its own wind, a different part of
 // the warm season (getWarmPeriods), so that whichever part of the year it is, one pair of floors or another has air moving through it.
 function tunnelFrame() {
   if (!settings.erodeTunnels) return setTunnelNote("");
@@ -123,42 +123,49 @@ function tunnelFrame() {
   if (!getWind()) return setTunnelNote("Loading wind data…");
   const t = ensureTunnels();
   if (!t) return setTunnelNote("");
-  setBandOptions(t.bandCount);
+  setBandOptions(t.usable);
+  if (!t.usable.length) return setTunnelNote("The mass is too low for tunnels: they need a whole storey (14 ft) of mass.");
   // The wind of each pair of floors: the warm season in as many consecutive periods as there are pairs. (The ordinary prevailing
   // wind is used if the data has no temperatures.)
-  const periods = getWarmPeriods(t.bandCount);
-  const winds = Array.from({ length: t.bandCount }, (_, b) => {
-    const p = periods.length ? periods[b % periods.length] : { ...getWind(), label: "all year" };
-    return { ...p, dir: downwind(p.from) };
+  const periods = getWarmPeriods(t.usable.length); // one period for each pair of floors that gets tunnels (thin ones are skipped)
+  const winds = []; // by band number
+  t.usable.forEach((b, n) => {
+    const p = periods.length ? periods[n % periods.length] : { ...getWind(), label: "all year" };
+    winds[b] = { ...p, dir: downwind(p.from) };
   });
-  const chosen = settings.tunnelBand < 0 ? -1 : Math.min(settings.tunnelBand, t.bandCount - 1);
-  const plan = `${chosen}|${winds.map((w) => w.from).join(",")}`;
-  if (t.plan !== plan) { // other floors or other winds: the mass is put back and the tunnels start again
+  const chosen = t.usable.includes(settings.tunnelBand) ? settings.tunnelBand : -1;
+  const limit = settings.tunnelVolume / 100, key = `${limit}`;
+  const plan = `${chosen}|${key}|${t.usable.map((b) => winds[b].from).join(",")}`;
+  if (t.plan !== plan) { // other floors, winds or volume limit: the mass is put back and the tunnels start again
     t.plan = plan;
-    t.setActive(chosen < 0 ? winds.map((_, b) => b) : [chosen]);
+    t.setActive(chosen < 0 ? t.usable : [chosen]);
     tunnelStats = null;
   }
-  const limit = settings.tunnelVolume / 100, key = `${limit}|${settings.erode}`;
   const work = t.failed === key ? null : nextWork(t, winds, key);
   const lines = t.active.map((b) => {
     const w = winds[b], s = tunnelStats?.[b], cool = s?.cooling;
     return `Floors ${2 * b + 1}–${2 * b + 2}, ${w.label} (wind from ${w.from.toFixed(0)}°${w.meanTemp ? `, ${w.meanTemp.toFixed(0)} °C` : ""}): ${(100 * t.bandShare(b)).toFixed(1)}% carved` +
+      shape(t.shapeInfo(b)) +
       (s && s.mean > 0 ? `, tunnel air ${s.mean.toFixed(2)}× the open wind` : "") +
       (cool && s.mean > 0 ? `, ${cool.coverage.map((v) => `${(100 * v).toFixed(0)}%`).join(" / ")} of the two floors within ${REACH} m of moving air (evenness ${(100 * cool.evenness).toFixed(0)}%)` : "");
   });
   const head = t.failed === key ? "Stopped (see the console)"
-    : !work ? "Settled" : tunnelBusy ? "Solving the airflow" : !settings.playing ? "Paused" : work.what === "seed" ? "Opening the first channels" : "Wearing the tunnels";
+    : !work ? "Settled" : !settings.playing ? "Paused" : "Searching for the best tunnel shapes";
   setTunnelNote(`${head} (limit ${settings.tunnelVolume}% of a pair's mass):\n${lines.join("\n")}`);
   if (tunnelBusy || !work || !settings.playing) return;
   tunnelStep(t, work, winds, limit, key);
 }
 
-// The next thing to do, one pair of floors at a time: open the first channels of every pair, then work each pair that is still
-// wearing (solve its airflow if the voxels or its wind changed, otherwise wear its walls), then solve again whatever the later
-// carving has left out of date, so that the numbers shown are for the tunnels as they are. null once there is nothing left.
+// What the note says of the shape of a pair of floors' tunnels: the numbers being tried, or the ones chosen.
+function shape({ tried, chosen, shape: p }) {
+  if (!p) return "";
+  return `, ${chosen ? "tunnels" : `trying (${tried} shapes so far)`} ${p.spacing} m apart, ${p.throat} m wide at the throat, mouth ×${p.mouth}, exit ×${p.exit}, throat ${p.pos * 100}% along, ${p.tall} voxel${p.tall > 1 ? "s" : ""} high`;
+}
+
+// The next thing to do, one pair of floors at a time: search for the shape of every pair's tunnels, then solve again whatever the
+// later carving has left out of date, so that the numbers shown are for the tunnels as they are. null once there is nothing left.
 function nextWork(t, winds, key) {
-  for (const b of t.active) if (!t.seeded(b)) return { b, what: "seed" };
-  for (const b of t.active) if (!t.isDone(b, key)) return { b, what: t.stale(b, winds[b].dir) ? "solve" : "erode" };
+  for (const b of t.active) if (!t.isDone(b, key)) return { b, what: "search" };
   for (const b of t.active) if (t.stale(b, winds[b].dir)) return { b, what: "solve" };
   return null;
 }
@@ -181,14 +188,13 @@ async function tunnelStep(t, work, winds, limit, key) {
   tunnelBusy = true;
   const version = massVersion, { b } = work, dir = winds[b].dir;
   try {
-    if (work.what === "seed") {
-      t.seedBand(b, dir); // evenly spread pilot channels in this pair of floors
-    } else if (work.what === "solve") {
+    if (work.what === "search") {
+      const settled = await t.searchStep(b, dir, limit); // another shape for this pair of floors
+      if (settled) t.markDone(b, key);
+    } else {
       await t.solve(b, dir);
-      if (version === massVersion && tunnels === t) (tunnelStats ??= {})[b] = { ...t.tunnelSpeed(b), cooling: t.cooling(b) };
-    } else if (!t.erode(b, settings.erode, limit) && !t.gaining(b)) { // nothing opened and no wall is wearing: nothing more will
-      t.markDone(b, key);
     }
+    if (version === massVersion && tunnels === t) (tunnelStats ??= {})[b] = { ...t.tunnelSpeed(b), cooling: t.cooling(b) };
   } catch (e) {
     t.failed = key; // do not retry until something changes
     console.error("Wind tunnels failed:", e);

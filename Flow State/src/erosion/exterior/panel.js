@@ -92,12 +92,13 @@ export const setWindNote = setNote("wind-erode-note");
 export const setFlowNote = setNote("flow-note");
 export const setTunnelNote = setNote("tunnel-note");
 
-// Lists the pairs of floors the mass has in the Floors choice (a pair per option), keeping the one chosen.
-export function setBandOptions(count) {
-  const el = $("tunnel-band");
-  if (!el || el.options.length === count + 1) return;
-  el.innerHTML = `<option value="-1">All floors</option>` + Array.from({ length: count }, (_, b) => `<option value="${b}">Floors ${2 * b + 1}–${2 * b + 2}</option>`).join("");
-  settings.tunnelBand = Math.min(settings.tunnelBand, count - 1);
+// Lists the pairs of floors that get tunnels in the Floors choice (`bands`: their numbers, 0 = floors 1-2), keeping the one chosen.
+export function setBandOptions(bands) {
+  const el = $("tunnel-band"), list = bands.join(",");
+  if (!el || el.dataset.bands === list) return;
+  el.dataset.bands = list;
+  el.innerHTML = `<option value="-1">All floors</option>` + bands.map((b) => `<option value="${b}">Floors ${2 * b + 1}–${2 * b + 2}</option>`).join("");
+  if (!bands.includes(settings.tunnelBand)) settings.tunnelBand = -1;
   el.value = String(settings.tunnelBand);
 }
 
@@ -108,4 +109,6 @@ registerPersist("exteriorErosion", {
     syncControls();
   },
 });
+
+
 
