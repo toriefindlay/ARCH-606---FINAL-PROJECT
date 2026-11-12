@@ -29,6 +29,7 @@ let formView = null;
 let tunnelView = null; // the tunnels' walls, and the hole they leave in the mass's own surface
 let tunnelShown = ""; // which tunnels, and which state of them, the view and the cuts were last given
 let tunnelBusy = false; // a step of the tunnels (a solve) is running
+let tunnelWorking = false; // the search for the tunnel shapes is under way: the shapes tried are not shown, only the result
 let tunnelStats = null; // per pair of floors: the air speed in its tunnels and the cooling, in its last solution
 let tunnels = null; // the persistent voxel mass the wind tunnels are carved from (tunnels.js), built from the form when first wanted
 let mode = "none"; // the kind of erosion working now: "sun" | "wind" | "tunnels" | "none" (the panel allows one at a time)
@@ -117,6 +118,7 @@ function ensureTunnels() {
 // floors (cut it, solve its airflow, score the cooling) or solve an airflow again. Every pair of floors has its own wind, a different part of
 // the warm season (getWarmPeriods), so that whichever part of the year it is, one pair of floors or another has air moving through it.
 function tunnelFrame() {
+  tunnelWorking = false;
   if (!settings.erodeTunnels) return setTunnelNote("");
   if (!form || !getMassInfo()) return setTunnelNote("Place a .3dm mass to cut wind tunnels through.");
   requestWind();
@@ -142,6 +144,7 @@ function tunnelFrame() {
     tunnelStats = null;
   }
   const work = t.failed === key ? null : nextWork(t, winds, key);
+  tunnelWorking = work?.what === "search" && settings.playing;
   const lines = t.active.map((b) => {
     const w = winds[b], s = tunnelStats?.[b], cool = s?.cooling;
     return `Floors ${2 * b + 1}–${2 * b + 2}, ${w.label} (wind from ${w.from.toFixed(0)}°${w.meanTemp ? `, ${w.meanTemp.toFixed(0)} °C` : ""}): ${(100 * t.bandShare(b)).toFixed(1)}% carved` +
@@ -173,6 +176,7 @@ function nextWork(t, winds, key) {
 // Keeps what is drawn, and the cut offered to the pipeline, in step with the tunnels: shown whenever there are tunnels that fit the
 // form (also while another mode is on), and cleared when they are gone.
 function tunnelShowFrame() {
+  if (tunnelWorking) return; // the shapes being tried flicker by: they are shown once the search has chosen
   const t = tunnels && form && tunnels.builtOn === form.version && tunnels.carved ? tunnels : null;
   const key = t ? `${t.id}|${t.vox.version}` : "";
   if (key !== tunnelShown) {
@@ -395,4 +399,5 @@ export function mountExterior() {
     flowFrame();
   });
 }
+
 

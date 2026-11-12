@@ -48,9 +48,10 @@ bool tunnelAt(vec3 p) {
   if (uvw.x < 0.0 || uvw.y < 0.0 || uvw.z < 0.0 || uvw.x > 1.0 || uvw.y > 1.0 || uvw.z > 1.0) return false;
   return texture(uTunnelTex, uvw).r > 0.2; // TUNNEL_ISO
 }
-// A piece of the mass's surface goes if it lies in a tunnel voxel, or just inside one (a surface sits on the edge of the voxel
+// A piece of the mass's surface (not a roof or an underside) goes if it lies in a tunnel voxel, or just inside one (a surface sits on the edge of the voxel
 // that it opens into; lines have no normal and are only tested where they are).
 bool tunnelCut(vec3 p, vec3 n) {
+  if (dot(n, n) > 0.0 && abs(n.y) > 0.6) return false; // roofs and undersides are never opened (the tunnels run through the walls)
   if (tunnelAt(p)) return true;
   return dot(n, n) > 0.0 && tunnelAt(p - n * 0.5 * uTunnelBox.w);
 }
@@ -457,4 +458,5 @@ export function createTunnelView() {
     },
   };
 }
+
 
