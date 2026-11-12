@@ -10,10 +10,10 @@ import { createWindErosion, setActiveForm } from "./windErode.js";
 import { createSunGrowth } from "./sunGrow.js";
 import { createVoxelMass, solveFlow } from "./voxelFlow.js";
 import { createFlowView } from "./flowView.js";
-import { createTunnels } from "./tunnels.js";
+import { createTunnels, REACH } from "./tunnels.js";
 import { setActiveTunnels } from "./tunnelCut.js";
 import { renderPreview, createFormView, createTunnelView } from "./view.js";
-import { mountPanel, settings, syncControls, setWindNote, setSunNote, setFlowNote, setTunnelNote } from "./panel.js";
+import { mountPanel, settings, syncControls, setWindNote, setSunNote, setFlowNote, setTunnelNote, setBandOptions } from "./panel.js";
 import { getWind, getWarmWind, requestWind, setWindObstacle, downwind } from "../../site/wind.js";
 import { cityHeights } from "../../site/windFlow.js";
 
@@ -130,11 +130,22 @@ function tunnelFrame() {
   }
   const t = ensureTunnels();
   if (!t) return setTunnelNote("");
+  setBandOptions(t.bands);
+  const chosen = Math.min(settings.tunnelBand, t.bands - 1);
+  if (t.band !== chosen) { // another pair of floors: the mass is put back and the tunnels start again there
+    t.setBand(chosen);
+    tunnelStats = null;
+    tunnelSettled = "";
+  }
   const dir = downwind(rose.from), limit = settings.tunnelVolume / 100;
   const wind = warm ? `warm-season wind from ${rose.from.toFixed(0)}° (hours above ${warm.base.toFixed(0)} °C, averaging ${warm.meanTemp.toFixed(0)} °C)` : `prevailing wind from ${rose.from.toFixed(0)}°`;
   const settled = tunnelSettled === `${t.vox.version}|${limit}|${settings.erode}` && !t.stale(dir);
-  const share = `${(100 * t.share).toFixed(1)}% of the mass carved (limit ${settings.tunnelVolume}%)`;
-  const speed = tunnelStats && tunnelStats.mean > 0 ? `, the air in the tunnels averages ${tunnelStats.mean.toFixed(2)}× the open wind` : "";
+  const share = `${(100 * t.share).toFixed(1)}% of floors ${2 * t.band + 1}–${2 * t.band + 2} carved (limit ${settings.tunnelVolume}%)`;
+  const cool = tunnelStats?.cooling;
+  const speed = tunnelStats && tunnelStats.mean > 0
+    ? `, the air in the tunnels averages ${tunnelStats.mean.toFixed(2)}× the open wind` +
+      (cool ? `; ${cool.coverage.map((v) => `${(100 * v).toFixed(0)}%`).join(" and ")} of the two floors lie within ${REACH} m of moving air (evenness ${(100 * cool.evenness).toFixed(0)}%)` : "")
+    : "";
   setTunnelNote(
     (!t.seeded ? "Opening the first channel…"
       : tunnelBusy ? `Solving the airflow… ${share}.`
@@ -164,10 +175,10 @@ async function tunnelStep(t, dir, limit) {
   tunnelBusy = true;
   const version = massVersion;
   try {
-    if (!t.seeded) t.seedPilot(dir); // a fixed height for now: the solver will pick the place (see tunnels.js)
+    if (!t.seeded) t.seedBand(dir); // evenly spread pilot channels in the chosen pair of floors
     if (t.stale(dir)) {
       await t.solve(dir);
-      if (version === massVersion && tunnels === t) tunnelStats = t.tunnelSpeed();
+      if (version === massVersion && tunnels === t) tunnelStats = { ...t.tunnelSpeed(), cooling: t.cooling() };
     } else if (!t.erode(settings.erode, limit) && !t.gaining) { // nothing opened and no wall is wearing: nothing more will
       tunnelSettled = `${t.vox.version}|${limit}|${settings.erode}`;
     }

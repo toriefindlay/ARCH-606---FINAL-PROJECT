@@ -4,7 +4,7 @@
 import { registerPersist } from "../../core/persist.js";
 
 // Read each frame by index.js. `speed` is simulated seconds per real second.
-export const settings = { playing: true, speed: 4, erode: 2, erodeWind: false, erodeSun: false, erodeTunnels: false, tunnelVolume: 10, flowDebug: false, flowHeight: 2 };
+export const settings = { playing: true, speed: 4, erode: 2, erodeWind: false, erodeSun: false, erodeTunnels: false, tunnelVolume: 10, tunnelBand: 0, flowDebug: false, flowHeight: 2 };
 
 const $ = (id) => document.getElementById(id);
 let onClearErosion = () => {};
@@ -18,6 +18,9 @@ export function mountPanel(el, hooks = {}) {
     <label title="The prevailing wind slowly rounds the mass's edges, windward ones first. It never cuts into the mass."><input type="checkbox" id="erode-wind"> Wind (rounds the edges)</label>
     <p id="wind-erode-note" class="hint" style="margin:0 0 6px"></p>
     <label title="Wind tunnels: the solver works out where the wind can cut through the mass to cool its interior, and opens them. Keeps its own 3D version of the mass."><input type="checkbox" id="erode-tunnels"> Wind tunnels (cut through the mass)</label>
+    <label title="The pair of storeys (14 ft each) the tunnels are cut in. They never leave it, so they span two storeys at most.">Floors
+      <select id="tunnel-band"><option value="0">Floors 1–2</option></select>
+    </label>
     <label title="The most of the mass the tunnels may carve away. The wind keeps widening them until they reach this.">Tunnel volume <output id="tunnel-volume-out"></output>
       <input type="range" id="tunnel-volume" min="2" max="30" step="1">
     </label>
@@ -55,6 +58,7 @@ export function mountPanel(el, hooks = {}) {
   };
   $("erode-tunnels").addEventListener("change", exclusive("erodeTunnels"));
   $("tunnel-volume").addEventListener("input", (e) => { settings.tunnelVolume = Number(e.target.value); syncControls(); });
+  $("tunnel-band").addEventListener("change", (e) => { settings.tunnelBand = Number(e.target.value); syncControls(); });
   $("erode-wind").addEventListener("change", exclusive("erodeWind"));
   $("erode-sun").addEventListener("change", exclusive("erodeSun"));
   syncControls();
@@ -70,6 +74,7 @@ export function syncControls() {
   $("erode-wind").checked = settings.erodeWind;
   $("erode-sun").checked = settings.erodeSun;
   $("erode-tunnels").checked = settings.erodeTunnels;
+  $("tunnel-band").value = String(settings.tunnelBand);
   $("tunnel-volume").value = settings.tunnelVolume;
   $("tunnel-volume-out").textContent = `${settings.tunnelVolume}%`;
   $("flow-debug").checked = settings.flowDebug;
@@ -86,6 +91,15 @@ export const setSunNote = setNote("sun-erode-note");
 export const setWindNote = setNote("wind-erode-note");
 export const setFlowNote = setNote("flow-note");
 export const setTunnelNote = setNote("tunnel-note");
+
+// Lists the pairs of floors the mass has in the Floors choice (a pair per option), keeping the one chosen.
+export function setBandOptions(count) {
+  const el = $("tunnel-band");
+  if (!el || el.options.length === count) return;
+  el.innerHTML = Array.from({ length: count }, (_, b) => `<option value="${b}">Floors ${2 * b + 1}–${2 * b + 2}</option>`).join("");
+  settings.tunnelBand = Math.min(settings.tunnelBand, count - 1);
+  el.value = String(settings.tunnelBand);
+}
 
 registerPersist("exteriorErosion", {
   capture: () => ({ ...settings }),

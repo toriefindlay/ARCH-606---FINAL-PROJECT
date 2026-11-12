@@ -22,7 +22,9 @@ export const AIR = 0, MASS = 1, CONTEXT = 2; // what a voxel holds
 // form: the shared form (form.js). cityHeight: (x, z) => metres, the site's buildings (windFlow.js cityHeights), or null.
 // The box reaches a good way past the mass on every side and above it, so the free stream can be held at its edge.
 // Returns null if the form has no mass.
-export function createVoxelMass(form, { cityHeight = null, maxCells = 250000 } = {}) {
+// storey: a floor-to-floor height in metres; if given, the voxel height is made a whole fraction of it (2 to 6 layers a storey) so
+// that every floor lies on a voxel layer.
+export function createVoxelMass(form, { cityHeight = null, maxCells = 250000, storey = 0 } = {}) {
   const { nx: fnx, nz: fnz, cx, cz, x0: fx0, z0: fz0, h0 } = form;
   let i0 = fnx, i1 = -1, j0 = fnz, j1 = -1;
   for (let j = 0; j < fnz; j++) {
@@ -37,7 +39,8 @@ export function createVoxelMass(form, { cityHeight = null, maxCells = 250000 } =
 
   const pad = clamp(Math.max(mx1 - mx0, mz1 - mz0, top), 12, 80); // metres of air round the mass
   const Lx = mx1 - mx0 + 2 * pad, Lz = mz1 - mz0 + 2 * pad, Ly = top + clamp(1.5 * top, 10, 60);
-  const c = clamp(Math.cbrt((Lx * Lz * Ly) / maxCells), 0.5, 4); // metres: one voxel
+  let c = clamp(Math.cbrt((Lx * Lz * Ly) / maxCells), 0.5, 4); // metres: one voxel
+  if (storey > 0) c = storey / clamp(Math.round(storey / c), 2, 6);
   const nx = Math.ceil(Lx / c), nz = Math.ceil(Lz / c), ny = Math.ceil(Ly / c);
   const x0 = (mx0 + mx1) / 2 - (nx * c) / 2, z0 = (mz0 + mz1) / 2 - (nz * c) / 2; // the box's corner; the ground is y = 0
   const nxz = nx * nz;
