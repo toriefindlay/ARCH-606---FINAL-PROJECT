@@ -1,10 +1,10 @@
-// CONTROLLER (exterior erosion): the controls in the side panel.
+﻿// CONTROLLER (exterior erosion): the controls in the side panel.
 // `el` is the empty #exterior-panel container in index.html. Call notifyCutsChanged() from
 // erosion/combine.js after any control changes the cuts, and registerPersist() to save settings.
 import { registerPersist } from "../../core/persist.js";
 
 // Read each frame by index.js. `speed` is simulated seconds per real second.
-export const settings = { playing: true, speed: 4, erode: 2, erodeWind: false, erodeSun: false, erodeTunnels: false, tunnelVolume: 20, tunnelBand: 0, flowDebug: false, flowHeight: 2 };
+export const settings = { playing: true, speed: 4, erode: 2, erodeWind: false, erodeSun: false, erodeTunnels: false, tunnelVolume: 20, tunnelBand: -1, flowDebug: false, flowHeight: 2 };
 
 const $ = (id) => document.getElementById(id);
 let onClearErosion = () => {};
@@ -18,13 +18,13 @@ export function mountPanel(el, hooks = {}) {
     <label title="The prevailing wind slowly rounds the mass's edges, windward ones first. It never cuts into the mass."><input type="checkbox" id="erode-wind"> Wind (rounds the edges)</label>
     <p id="wind-erode-note" class="hint" style="margin:0 0 6px"></p>
     <label title="Wind tunnels: the solver works out where the wind can cut through the mass to cool its interior, and opens them. Keeps its own 3D version of the mass."><input type="checkbox" id="erode-tunnels"> Wind tunnels (cut through the mass)</label>
-    <label title="The pair of storeys (14 ft each) the tunnels are cut in. They never leave it, so they span two storeys at most.">Floors
-      <select id="tunnel-band"><option value="0">Floors 1–2</option></select>
+    <label title="Every pair of storeys (14 ft each) gets tunnels of its own for a different part of the warm season, or work on just one pair. Tunnels never leave their pair, so they span two storeys at most.">Floors
+      <select id="tunnel-band"><option value="-1">All floors</option></select>
     </label>
     <label title="The most of the mass the tunnels may carve away. The wind keeps widening them until they reach this.">Tunnel volume <output id="tunnel-volume-out"></output>
       <input type="range" id="tunnel-volume" min="2" max="30" step="1">
     </label>
-    <p id="tunnel-note" class="hint" style="margin:0 0 6px"></p>
+    <p id="tunnel-note" class="hint" style="margin:0 0 6px;white-space:pre-line"></p>
     <div class="tools">
       <button type="button" class="tool" id="erode-play">Pause</button>
       <select id="erode-speed" aria-label="Simulation speed">
@@ -95,8 +95,8 @@ export const setTunnelNote = setNote("tunnel-note");
 // Lists the pairs of floors the mass has in the Floors choice (a pair per option), keeping the one chosen.
 export function setBandOptions(count) {
   const el = $("tunnel-band");
-  if (!el || el.options.length === count) return;
-  el.innerHTML = Array.from({ length: count }, (_, b) => `<option value="${b}">Floors ${2 * b + 1}–${2 * b + 2}</option>`).join("");
+  if (!el || el.options.length === count + 1) return;
+  el.innerHTML = `<option value="-1">All floors</option>` + Array.from({ length: count }, (_, b) => `<option value="${b}">Floors ${2 * b + 1}–${2 * b + 2}</option>`).join("");
   settings.tunnelBand = Math.min(settings.tunnelBand, count - 1);
   el.value = String(settings.tunnelBand);
 }
@@ -108,3 +108,4 @@ registerPersist("exteriorErosion", {
     syncControls();
   },
 });
+

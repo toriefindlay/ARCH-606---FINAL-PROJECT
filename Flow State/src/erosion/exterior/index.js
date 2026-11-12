@@ -14,7 +14,7 @@ import { createTunnels, REACH } from "./tunnels.js";
 import { setActiveTunnels } from "./tunnelCut.js";
 import { renderPreview, createFormView, createTunnelView } from "./view.js";
 import { mountPanel, settings, syncControls, setWindNote, setSunNote, setFlowNote, setTunnelNote, setBandOptions } from "./panel.js";
-import { getWind, getWarmWind, requestWind, setWindObstacle, downwind } from "../../site/wind.js";
+import { getWind, getWarmPeriods, requestWind, setWindObstacle, downwind } from "../../site/wind.js";
 import { cityHeights } from "../../site/windFlow.js";
 
 const RESCAN_DELAY = 350; // ms after the mass stops moving before it is analysed again
@@ -29,8 +29,7 @@ let formView = null;
 let tunnelView = null; // the tunnels' walls, and the hole they leave in the mass's own surface
 let tunnelShown = ""; // which tunnels, and which state of them, the view and the cuts were last given
 let tunnelBusy = false; // a step of the tunnels (a solve) is running
-let tunnelSettled = ""; // what the tunnels last settled for (see tunnelFrame)
-let tunnelStats = null; // air speed in the tunnels in the last solution
+let tunnelStats = null; // per pair of floors: the air speed in its tunnels and the cooling, in its last solution
 let tunnels = null; // the persistent voxel mass the wind tunnels are carved from (tunnels.js), built from the form when first wanted
 let mode = "none"; // the kind of erosion working now: "sun" | "wind" | "tunnels" | "none" (the panel allows one at a time)
 let phase = 0; // changes whenever the mode does, so that slow set-up for an earlier mode is dropped
@@ -103,7 +102,6 @@ function stopForm() {
   flowKey = "";
   tunnels = null;
   tunnelStats = null;
-  tunnelSettled = "";
 }
 
 // The wind tunnels' voxel mass is built from the form the first time it is wanted and then kept, so tunnels stay carved
@@ -115,46 +113,54 @@ function ensureTunnels() {
   return tunnels;
 }
 
-// The tunnels grow one step per pass, strictly one thing at a time: solve the airflow (if the voxels or the wind changed since the
-// last solution), otherwise wear the walls and open what is worn through. The next pass then solves again. Settled = a wearing
-// that opened nothing: it is not repeated until something changes (the voxels, the volume limit or the erosion speed).
+// The tunnels grow one step per pass, strictly one thing at a time (see nextWork): open the first channels of a pair of floors,
+// solve its airflow, or wear its walls and open what is worn through. Every pair of floors has its own wind, a different part of
+// the warm season (getWarmPeriods), so that whichever part of the year it is, one pair of floors or another has air moving through it.
 function tunnelFrame() {
   if (!settings.erodeTunnels) return setTunnelNote("");
   if (!form || !getMassInfo()) return setTunnelNote("Place a .3dm mass to cut wind tunnels through.");
-  // The tunnels are for cooling, so they face the wind of the warm part of the year (see getWarmWind), not whichever period the
-  // Wind panel shows. (The ordinary prevailing wind is used if the data has no temperatures.)
-  const warm = getWarmWind(), rose = warm ?? getWind();
-  if (!rose) {
-    requestWind();
-    return setTunnelNote("Loading wind data…");
-  }
+  requestWind();
+  if (!getWind()) return setTunnelNote("Loading wind data…");
   const t = ensureTunnels();
   if (!t) return setTunnelNote("");
-  setBandOptions(t.bands);
-  const chosen = Math.min(settings.tunnelBand, t.bands - 1);
-  if (t.band !== chosen) { // another pair of floors: the mass is put back and the tunnels start again there
-    t.setBand(chosen);
+  setBandOptions(t.bandCount);
+  // The wind of each pair of floors: the warm season in as many consecutive periods as there are pairs. (The ordinary prevailing
+  // wind is used if the data has no temperatures.)
+  const periods = getWarmPeriods(t.bandCount);
+  const winds = Array.from({ length: t.bandCount }, (_, b) => {
+    const p = periods.length ? periods[b % periods.length] : { ...getWind(), label: "all year" };
+    return { ...p, dir: downwind(p.from) };
+  });
+  const chosen = settings.tunnelBand < 0 ? -1 : Math.min(settings.tunnelBand, t.bandCount - 1);
+  const plan = `${chosen}|${winds.map((w) => w.from).join(",")}`;
+  if (t.plan !== plan) { // other floors or other winds: the mass is put back and the tunnels start again
+    t.plan = plan;
+    t.setActive(chosen < 0 ? winds.map((_, b) => b) : [chosen]);
     tunnelStats = null;
-    tunnelSettled = "";
   }
-  const dir = downwind(rose.from), limit = settings.tunnelVolume / 100;
-  const wind = warm ? `warm-season wind from ${rose.from.toFixed(0)}° (hours above ${warm.base.toFixed(0)} °C, averaging ${warm.meanTemp.toFixed(0)} °C)` : `prevailing wind from ${rose.from.toFixed(0)}°`;
-  const settled = tunnelSettled === `${t.vox.version}|${limit}|${settings.erode}` && !t.stale(dir);
-  const share = `${(100 * t.share).toFixed(1)}% of floors ${2 * t.band + 1}–${2 * t.band + 2} carved (limit ${settings.tunnelVolume}%)`;
-  const cool = tunnelStats?.cooling;
-  const speed = tunnelStats && tunnelStats.mean > 0
-    ? `, the air in the tunnels averages ${tunnelStats.mean.toFixed(2)}× the open wind` +
-      (cool ? `; ${cool.coverage.map((v) => `${(100 * v).toFixed(0)}%`).join(" and ")} of the two floors lie within ${REACH} m of moving air (evenness ${(100 * cool.evenness).toFixed(0)}%)` : "")
-    : "";
-  setTunnelNote(
-    (!t.seeded ? "Opening the first channel…"
-      : tunnelBusy ? `Solving the airflow… ${share}.`
-        : settled ? `Settled: ${share}${speed}.`
-          : !settings.playing ? `Paused: ${share}${speed}.`
-            : `Wearing the tunnels: ${share}${speed}.`) + ` Facing the ${wind}.`
-  );
-  if (tunnelBusy || settled || !settings.playing) return;
-  tunnelStep(t, dir, limit);
+  const limit = settings.tunnelVolume / 100, key = `${limit}|${settings.erode}`;
+  const work = t.failed === key ? null : nextWork(t, winds, key);
+  const lines = t.active.map((b) => {
+    const w = winds[b], s = tunnelStats?.[b], cool = s?.cooling;
+    return `Floors ${2 * b + 1}–${2 * b + 2}, ${w.label} (wind from ${w.from.toFixed(0)}°${w.meanTemp ? `, ${w.meanTemp.toFixed(0)} °C` : ""}): ${(100 * t.bandShare(b)).toFixed(1)}% carved` +
+      (s && s.mean > 0 ? `, tunnel air ${s.mean.toFixed(2)}× the open wind` : "") +
+      (cool && s.mean > 0 ? `, ${cool.coverage.map((v) => `${(100 * v).toFixed(0)}%`).join(" / ")} of the two floors within ${REACH} m of moving air (evenness ${(100 * cool.evenness).toFixed(0)}%)` : "");
+  });
+  const head = t.failed === key ? "Stopped (see the console)"
+    : !work ? "Settled" : tunnelBusy ? "Solving the airflow" : !settings.playing ? "Paused" : work.what === "seed" ? "Opening the first channels" : "Wearing the tunnels";
+  setTunnelNote(`${head} (limit ${settings.tunnelVolume}% of a pair's mass):\n${lines.join("\n")}`);
+  if (tunnelBusy || !work || !settings.playing) return;
+  tunnelStep(t, work, winds, limit, key);
+}
+
+// The next thing to do, one pair of floors at a time: open the first channels of every pair, then work each pair that is still
+// wearing (solve its airflow if the voxels or its wind changed, otherwise wear its walls), then solve again whatever the later
+// carving has left out of date, so that the numbers shown are for the tunnels as they are. null once there is nothing left.
+function nextWork(t, winds, key) {
+  for (const b of t.active) if (!t.seeded(b)) return { b, what: "seed" };
+  for (const b of t.active) if (!t.isDone(b, key)) return { b, what: t.stale(b, winds[b].dir) ? "solve" : "erode" };
+  for (const b of t.active) if (t.stale(b, winds[b].dir)) return { b, what: "solve" };
+  return null;
 }
 
 // Keeps what is drawn, and the cut offered to the pipeline, in step with the tunnels: shown whenever there are tunnels that fit the
@@ -171,21 +177,21 @@ function tunnelShowFrame() {
   else tunnelView.clear();
 }
 
-async function tunnelStep(t, dir, limit) {
+async function tunnelStep(t, work, winds, limit, key) {
   tunnelBusy = true;
-  const version = massVersion;
+  const version = massVersion, { b } = work, dir = winds[b].dir;
   try {
-    if (!t.seeded) t.seedBand(dir); // evenly spread pilot channels in the chosen pair of floors
-    if (t.stale(dir)) {
-      await t.solve(dir);
-      if (version === massVersion && tunnels === t) tunnelStats = { ...t.tunnelSpeed(), cooling: t.cooling() };
-    } else if (!t.erode(settings.erode, limit) && !t.gaining) { // nothing opened and no wall is wearing: nothing more will
-      tunnelSettled = `${t.vox.version}|${limit}|${settings.erode}`;
+    if (work.what === "seed") {
+      t.seedBand(b, dir); // evenly spread pilot channels in this pair of floors
+    } else if (work.what === "solve") {
+      await t.solve(b, dir);
+      if (version === massVersion && tunnels === t) (tunnelStats ??= {})[b] = { ...t.tunnelSpeed(b), cooling: t.cooling(b) };
+    } else if (!t.erode(b, settings.erode, limit) && !t.gaining(b)) { // nothing opened and no wall is wearing: nothing more will
+      t.markDone(b, key);
     }
   } catch (e) {
-    tunnelSettled = `${t.vox.version}|${limit}|${settings.erode}`; // do not retry until something changes
+    t.failed = key; // do not retry until something changes
     console.error("Wind tunnels failed:", e);
-    setTunnelNote("The wind tunnels could not be worked out (see the console).");
   } finally {
     tunnelBusy = false;
   }
@@ -348,8 +354,7 @@ export function mountExterior() {
     clearErosion: () => {
       tunnels = null; // the tunnels are built afresh from the mass as placed
       tunnelStats = null;
-      tunnelSettled = "";
-      flowKey = "";
+          flowKey = "";
       if (!form?.clear()) return;
       resetPhases(); // the sun and the wind start again from the mass as placed
       formView.update(form);
@@ -384,3 +389,4 @@ export function mountExterior() {
     flowFrame();
   });
 }
+
