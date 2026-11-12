@@ -27,6 +27,7 @@ export const STOREY = 14 * 0.3048; // metres: one storey, 14 ft
 export const BAND_STOREYS = 2; // storeys a tunnel may span at most
 export const MIN_SPEED = 0.9; // x the open wind: air slower than this does not wear the walls
 export const REACH = 3; // metres: how far from a tunnel its moving air is taken to cool the floor
+const NEAR = 0.3; // cooling (see cooling()) at which a floor voxel counts as near moving air: about 2 m from air at the open wind's speed
 const WEAR_RATE = 0.5; // wear per round at one unit of (speed^2 - MIN_SPEED^2) and erosion speed 1
 const MAX_PER_ROUND = 60; // voxels opened in one round at most, so that the airflow is solved again before the tunnel runs on
 const SPACING = 8; // metres between pilot channels in one storey
@@ -219,7 +220,7 @@ export function createTunnels(form, { cityHeight = null } = {}) {
     // How well the band's floors are cooled, read from the last solution. Every mass voxel of the band that is still solid gets
     // the strongest cooling of any tunnel air within REACH metres: that air's speed (x the open wind), fading to nothing at REACH.
     // Returns { coverage: [per storey], mean, evenness }: coverage is the part of the storey's solid voxels where that is at
-    // least half the open wind (the floor is near moving air), mean is the average cooling (capped at 1.5), and evenness is the
+    // least NEAR (the floor is near moving air), mean is the average cooling (capped at 1.5), and evenness is the
     // weaker storey's coverage over the stronger's (1 = both floors cooled alike). All 0 if there is nothing yet.
     cooling() {
       const out = { coverage: new Array(BAND_STOREYS).fill(0), mean: 0, evenness: 0 };
@@ -257,7 +258,7 @@ export function createTunnels(form, { cityHeight = null } = {}) {
           if (placed[k] !== MASS || cells[k] !== MASS) continue;
           const v = cool[(l - lo) * nxz + col];
           total[s]++;
-          if (v >= 0.5) near[s]++;
+          if (v >= NEAR) near[s]++;
           sum += Math.min(v, 1.5);
           count++;
         }

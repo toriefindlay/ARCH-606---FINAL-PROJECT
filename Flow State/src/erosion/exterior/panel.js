@@ -4,7 +4,7 @@
 import { registerPersist } from "../../core/persist.js";
 
 // Read each frame by index.js. `speed` is simulated seconds per real second.
-export const settings = { playing: true, speed: 4, erode: 2, erodeWind: false, erodeSun: false, erodeTunnels: false, tunnelVolume: 10, tunnelBand: 0, flowDebug: false, flowHeight: 2 };
+export const settings = { playing: true, speed: 4, erode: 2, erodeWind: false, erodeSun: false, erodeTunnels: false, tunnelVolume: 20, tunnelBand: 0, flowDebug: false, flowHeight: 2 };
 
 const $ = (id) => document.getElementById(id);
 let onClearErosion = () => {};
