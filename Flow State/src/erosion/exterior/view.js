@@ -50,12 +50,12 @@ bool tunnelAt(vec3 p) {
   if (s < 0.0 || s >= uBoreStorey.z) return false;
   float hz = 0.5 * uBoreStorey.y;
   float dy = p.y - ((s + 1.0) * uBoreStorey.x - hz); // from the middle of this storey's void
-  if (abs(dy) > 2.0 * hz) return false;
+  if (abs(dy) > 3.0 * hz) return false;
   vec3 uvw = vec3((p.x - uBoreBox.x) / uBoreBox.z, (p.z - uBoreBox.y) / uBoreBox.w, (s + 0.5) / uBoreStorey.z);
   if (uvw.x < 0.0 || uvw.y < 0.0 || uvw.x > 1.0 || uvw.y > 1.0) return false;
   vec2 v = texture(uBoreTex, uvw).rg; // across, height
   if (v.g < 0.02) return false;
-  float e = dy / (v.g * 2.0 * hz); // the height is stored as half of its fraction of the void
+  float e = dy / (v.g * 3.0 * hz); // the height is stored as a third of its fraction of the void
   return e * e + v.r * v.r < 1.0;
 }
 // A piece of the mass's surface (not a roof or an underside) goes if it lies in a tunnel, or just inside one (lines have no normal and are only tested where they are).
@@ -330,4 +330,5 @@ export function setXray(root, on) {
   };
   visit(root);
 }
+
 

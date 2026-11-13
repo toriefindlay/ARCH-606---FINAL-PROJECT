@@ -219,12 +219,13 @@ export function createTunnels(form, { cityHeight = null } = {}) {
     // ta to tb along the wind (the mass's windward and leeward faces, to a few cm), at the height y (the middle of the ceiling void, which
     // is 2 * half deep); edges(q) gives the same for the line q across from the axis ([in, out] or null). Independent of what is carved.
     layout(b, dir, p) {
-      const out = [];
-      for (const run of runsOf(b, dir, p)) {
+      const make = (run) => { // `shift(dq)` is the same tunnel moved dq metres across the wind (null if there is no tunnel there)
         const e = edges(run, 0);
-        if (e && e[1] - e[0] >= MIN_RUN) out.push({ ...run, ta: e[0], tb: e[1], y: yc[run.mid], half: dz[run.mid] / 2, edges: (q) => edges(run, q), inside: (t, q) => massAt(run.mid, run.dir[0] * t - run.dir[1] * (run.o + q), run.dir[1] * t + run.dir[0] * (run.o + q)) });
-      }
-      return out;
+        if (!e || e[1] - e[0] < MIN_RUN) return null;
+        return { ...run, ta: e[0], tb: e[1], y: yc[run.mid], half: dz[run.mid] / 2, edges: (q) => edges(run, q), shift: (dq) => make({ ...run, o: run.o + dq }),
+          inside: (t, q) => massAt(run.mid, run.dir[0] * t - run.dir[1] * (run.o + q), run.dir[1] * t + run.dir[0] * (run.o + q)) };
+      };
+      return runsOf(b, dir, p).map(make).filter(Boolean);
     },
 
     // Is this voxel air that the mass once held (part of a tunnel)?

@@ -14,8 +14,10 @@ import { tunnelWidth, STOREY, ZONE } from "./tunnels.js";
 
 const RING = 28; // points round a tube's cross-section
 const STEP = 0.7; // metres between the stations of a tube (they bunch up at the two ends, see spread)
-const LIP = 0.4; // metres: how much wider and deeper than the tube its opening in the wall is at the wall, rounded off into the tube
-const LIP_LEN = 1; // metres: how far in from the wall the rounding goes
+const LIP = 0.6; // metres: how much wider and deeper than the tube its opening in the wall is at the wall, rounded off into the tube
+const LIP_LEN = 1.4; // metres: how far in from the wall the rounding goes
+const CLEAR = 1; // metres a tunnel keeps from the corners and sides of the mass
+const NARROW = [1, 0.8, 0.6, 0.45]; // how much narrower than its shape a tunnel is made, in turn, to keep that clearance
 const NOSE = 4; // metres: how long the rounded tip of the bore is at most
 const DELAY = 0.4; // the part of the erosion over which the tunnels start one after another
 const SEGMENT = 6; // metres: a tube is drawn into the map in pieces this long
@@ -38,10 +40,28 @@ function bore(tube, shape, f) {
     const r = bored - (t - ta); // how far behind the tip of the bore this point is (negative: not reached yet)
     if (r <= 0) return { w: 0, h: 0, s: 0 };
     const x = Math.min(1, r / nose), scale = Math.sqrt(x * (2 - x)); // a round tip
-    const w = (tunnelWidth(shape, clamp01((t - ta) / L)) / 2) * scale;
+    const w = ((tunnelWidth(shape, clamp01((t - ta) / L)) * tube.narrow) / 2) * scale;
     return { w, h: Math.min(1, w / half), s: scale }; // as deep as it is wide until it is as deep as the void
   };
 }
+
+// Does the tunnel (an item of tunnels.layout) made `narrow` times as wide keep CLEAR metres from the corners and sides of the mass? Beside it
+// (its opening included) there must be mass all along; and at each of the two faces the wall must carry on straight for CLEAR metres
+// beyond the opening on both sides (a face may be at an angle to the wind, so it is compared with the line through the opening's own two edges).
+const clears = (item, shape, narrow) => {
+  const L = item.tb - item.ta, w = (u) => (tunnelWidth(shape, u) * narrow) / 2 + LIP;
+  for (let t = item.ta + 3; t <= item.tb - 3; t += 1) {
+    const q = w(clamp01((t - item.ta) / L)) + CLEAR;
+    if (t - item.ta < 0.8 * q + 1 || item.tb - t < 0.8 * q + 1) continue; // near a face the beside-points may lie past it (checked below)
+    if (!item.inside(t, q) || !item.inside(t, -q)) { if (window.__d) console.log("side", narrow, t.toFixed(1), item.ta.toFixed(1), item.tb.toFixed(1), q.toFixed(1)); return false; }
+  }
+  for (const [u, i] of [[0, 0], [1, 1]]) {
+    const wq = w(u), q = wq + CLEAR, a = item.edges(wq), b = item.edges(-wq), c1 = item.edges(q), c2 = item.edges(-q);
+    if (!a || !b || !c1 || !c2) { if (window.__d) console.log("null", narrow, i, !!a, !!b, !!c1, !!c2); return false; }
+    for (const [e, at] of [[c1, q], [c2, -q]]) if (Math.abs(e[i] - (b[i] + ((a[i] - b[i]) * (at + wq)) / (2 * wq))) > 1.2) { if (window.__d) console.log("slope", narrow, i, e[i].toFixed(1), a[i].toFixed(1), b[i].toFixed(1)); return false; } // (the height map's faces are not exact: a corner shows as much more than this)
+  }
+  return true;
+};
 
 export function createBoreView(uniforms, empty) {
   let group = null, mesh = null, texture = null, data = null, dims = "";
@@ -63,21 +83,34 @@ export function createBoreView(uniforms, empty) {
     const key = `${b}|${dir[0]},${dir[1]}|${JSON.stringify(shape)}`;
     let tubes = layouts.get(key);
     if (!tubes) {
-      tubes = tunnels.layout(b, dir, shape).map((run, i) => {
-        const wide = Math.max(shape.mouth, shape.exit, 1) * shape.throat / 2;
+      tubes = tunnels.layout(b, dir, shape).map((first, i) => {
+        // A tunnel keeps CLEAR metres from the corners and sides of the mass: where it does not, it is moved over, then made narrower
+        // (and left out if there is no way).
+        let pick = null;
+        for (const narrow of NARROW) {
+          for (const dq of [0, 0.75, -0.75, 1.5, -1.5, 2.25, -2.25]) {
+            if (Math.abs(dq) > 0.35 * shape.spacing) continue;
+            const item = dq ? first.shift(dq) : first;
+            if (item && clears(item, shape, narrow)) { pick = { run: item, narrow }; break; }
+          }
+          if (pick) break;
+        }
+        if (!pick) return null;
+        const { run, narrow } = pick, half = (u) => (tunnelWidth(shape, u) * narrow) / 2;
+        const wide = Math.max(shape.mouth, shape.exit, 1) * (shape.throat * narrow) / 2;
         const lines = Array.from({ length: RING }, (_, k) => { // where the mass starts and ends along each line of the tube's wall
           const cos = Math.cos((2 * Math.PI * k) / RING);
-          const a = run.edges(cos * (tunnelWidth(shape, 0) / 2 + LIP)), z = run.edges(cos * (tunnelWidth(shape, 1) / 2 + LIP));
+          const a = run.edges(cos * (half(0) + LIP)), z = run.edges(cos * (half(1) + LIP));
           return [a ? a[0] : run.ta, z ? z[1] : run.tb];
         });
-        // A tube with a stretch of wall outside the mass (near a side or a corner of it) would jut out of it: it is left out.
+        // A tube with a stretch of wall outside the mass would jut out of it: it is left out.
         const L = run.tb - run.ta;
         const gap = lines.some(([a, z], k) => {
           const cos = Math.cos((2 * Math.PI * k) / RING);
-          for (let t = a + 0.3; t < z - 0.3; t += 0.75) if (!run.inside(t, cos * (tunnelWidth(shape, clamp01((t - run.ta) / L)) / 2) * 1.02)) return true;
+          for (let t = a + 0.3; t < z - 0.3; t += 0.75) if (!run.inside(t, cos * half(clamp01((t - run.ta) / L)) * 1.02)) return true;
           return false;
         });
-        return gap ? null : { ...run, lines, wide, delay: delayOf(b, i), shape };
+        return gap ? null : { ...run, lines, wide, narrow, delay: delayOf(b, i), shape };
       }).filter(Boolean);
       layouts.set(key, tubes);
     }
@@ -155,8 +188,8 @@ export function createBoreView(uniforms, empty) {
             if (w <= 0) continue;
             const we = w + LIP * s, q = x * p0 + z * p1 - tube.o, n = Math.abs(q) / we; // the opening in the wall is the tube widened by its rounded lip
             if (n >= 1) continue;
-            const at = ((storey * td + j) * tw + i) * 2, value = Math.round(n * 255), deep = Math.min(2, (h * tube.half + LIP * s) / tube.half);
-            if (value < data[at]) { data[at] = value; data[at + 1] = Math.max(1, Math.round((deep / 2) * 255)); } // the height is stored as half of its fraction of the void
+            const at = ((storey * td + j) * tw + i) * 2, value = Math.round(n * 255), deep = Math.min(3, (h * tube.half + LIP * s) / tube.half);
+            if (value < data[at]) { data[at] = value; data[at + 1] = Math.max(1, Math.round((deep / 3) * 255)); } // the height is stored as a third of its fraction of the void
           }
         }
       }
@@ -206,4 +239,5 @@ export function createBoreView(uniforms, empty) {
     },
   };
 }
+
 
