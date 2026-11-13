@@ -12,7 +12,7 @@ import { createVoxelMass, solveFlow } from "./voxelFlow.js";
 import { createFlowView } from "./flowView.js";
 import { createTunnels, REACH, ZONE } from "./tunnels.js";
 import { setActiveTunnels } from "./tunnelCut.js";
-import { renderPreview, createFormView, createTunnelView } from "./view.js";
+import { renderPreview, createFormView, createTunnelView, setXray } from "./view.js";
 import { mountPanel, settings, syncControls, setWindNote, setSunNote, setFlowNote, setTunnelNote, setBandOptions } from "./panel.js";
 import { getWind, getWarmPeriods, requestWind, setWindObstacle, downwind } from "../../site/wind.js";
 import { cityHeights } from "../../site/windFlow.js";
@@ -30,6 +30,7 @@ let tunnelView = null; // the tunnels' walls, and the hole they leave in the mas
 let tunnelShown = ""; // which tunnels, and which state of them, the view and the cuts were last given
 let tunnelBusy = false; // a step of the tunnels (a solve) is running
 let tunnelWorking = false; // the search for the tunnel shapes is under way: the shapes tried are not shown, only the result
+let tunnelWinds = []; // the wind of every pair of floors (by band number), as last worked out by tunnelFrame
 let tunnelStats = null; // per pair of floors: the air speed in its tunnels and the cooling, in its last solution
 let tunnels = null; // the persistent voxel mass the wind tunnels are carved from (tunnels.js), built from the form when first wanted
 let mode = "none"; // the kind of erosion working now: "sun" | "wind" | "tunnels" | "none" (the panel allows one at a time)
@@ -135,6 +136,7 @@ function tunnelFrame() {
     const p = periods.length ? periods[n % periods.length] : { ...getWind(), label: "all year" };
     winds[b] = { ...p, dir: downwind(p.from) };
   });
+  tunnelWinds = winds;
   const chosen = t.usable.includes(settings.tunnelBand) ? settings.tunnelBand : -1;
   const limit = settings.tunnelVolume / 100, key = `${limit}`;
   const plan = `${chosen}|${key}|${t.usable.map((b) => winds[b].from).join(",")}`;
@@ -176,17 +178,50 @@ function nextWork(t, winds, key) {
 
 // Keeps what is drawn, and the cut offered to the pipeline, in step with the tunnels: shown whenever there are tunnels that fit the
 // form (also while another mode is on), and cleared when they are gone.
-function tunnelShowFrame(force = false) {
-  if (tunnelWorking && !force) return; // the shapes being tried flicker by: they are shown when a search has an answer (see tunnelStep)
-  const t = tunnels && form && tunnels.builtOn === form.version && tunnels.carved ? tunnels : null;
-  const key = t ? `${t.id}|${t.vox.version}` : "";
-  if (key !== tunnelShown) {
-    tunnelShown = key;
-    setActiveTunnels(t);
-    notifyCutsChanged();
+function tunnelShowFrame(dt = 0, force = false) {
+  const t = tunnels && form && tunnels.builtOn === form.version ? tunnels : null;
+  if (!t) boreState = {};
+  else advanceBores(t, dt);
+  if (!tunnelWorking || force) { // the shapes being tried flicker by: the cut offered to the pipeline follows when a search has an answer (see tunnelStep)
+    const cut = t && t.carved ? t : null;
+    const key = cut ? `${cut.id}|${cut.vox.version}` : "";
+    if (key !== tunnelShown) {
+      tunnelShown = key;
+      setActiveTunnels(cut);
+      notifyCutsChanged();
+    }
   }
-  if (t) tunnelView.update(layers.model, t);
+  if (t) tunnelView.update(layers.model, t, Object.values(boreState));
   else tunnelView.clear();
+}
+
+// What is drawn of the tunnels is eroded out of the mass over time (tunnelBore.js), not shown as the search tries them: for every pair of
+// floors the shape on show and how far its erosion has got. A shape is shown once the search has a first answer for it; later answers
+// replace it only when the search is settled, and then the old tunnels fill in again (quickly) before the new ones are eroded.
+const HEAL = 1.5; // per second: how fast tunnels that are being replaced fill in
+let boreState = {}; // by band number: { b, dir, shape, key, prog, token }
+function advanceBores(t, dt) {
+  const winds = tunnelWinds;
+  for (const b of Object.keys(boreState)) if (!t.active.includes(Number(b))) boreState[b].want = null;
+  for (const b of t.active) {
+    const info = t.shapeInfo(b), s = (boreState[b] ??= { b, dir: null, shape: null, key: "", prog: 0, token: null, want: null });
+    const stale = s.token !== info.token;
+    const dir = winds[b]?.dir ?? s.dir;
+    s.want = !dir ? null : info.chosen ? info.shape : info.rough ? (stale || !s.shape ? info.shape : s.shape) : null;
+    s.wantDir = dir;
+    s.wantToken = info.token;
+  }
+  for (const s of Object.values(boreState)) {
+    const wantKey = s.want ? `${JSON.stringify(s.want)}|${s.wantDir}` : "";
+    if (s.shape && wantKey !== s.key) { // the tunnels are to change: fill in what is there first
+      if (settings.playing || !wantKey) s.prog = Math.max(0, s.prog - dt * HEAL);
+      if (s.prog > 0) continue;
+      s.shape = null;
+    }
+    if (!s.shape && s.want) { s.shape = s.want; s.dir = s.wantDir; s.key = wantKey; s.token = s.wantToken; s.prog = 0; }
+    else if (s.shape) s.token = s.wantToken;
+    if (s.shape && settings.playing) s.prog = Math.min(1, s.prog + (dt * settings.erode) / 60); // erosion speed 2x: half a minute, 8x: under 8 s
+  }
 }
 
 async function tunnelStep(t, work, winds, limit, key) {
@@ -196,7 +231,7 @@ async function tunnelStep(t, work, winds, limit, key) {
     if (work.what === "search") {
       const result = await t.searchStep(b, dir, limit); // another shape for this pair of floors
       if (result === "settled") t.markDone(b, key);
-      if (result && tunnels === t) tunnelShowFrame(true); // a quick answer, or the final one: show it (the voxels are as it left them)
+      if (result && tunnels === t) tunnelShowFrame(0, true); // a quick answer, or the final one: the cut follows it (the voxels are as it left them)
     } else {
       await t.solve(b, dir);
     }
@@ -397,7 +432,8 @@ export function mountExterior() {
     windFrame(dt);
     sunFrame(dt);
     tunnelFrame();
-    tunnelShowFrame();
+    tunnelShowFrame(dt);
+    setXray(layers.model, settings.xray);
     flowFrame();
   });
 }

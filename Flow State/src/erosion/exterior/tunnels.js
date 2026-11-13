@@ -109,9 +109,11 @@ export function createTunnels(form, { cityHeight = null } = {}) {
     vox.version++;
   };
 
-  // Cuts the tunnels of shape p in band b (after clearing it), along the wind dir = [ux, uz]. Says how many voxels it opened.
-  const shapeBand = (b, dir, p) => {
-    clearBand(b);
+  // The tunnels of shape p in band b along the wind dir = [ux, uz], as runs through the mass: { mid, s, o, t0, t1 } with mid the layer of the
+  // ceiling void they lie in, s the storey of the band, o how far across the wind and t0..t1 from the windward face to the leeward one
+  // (along the wind). Positions are world metres in the frame of dir: x = d0 t - d1 q, z = d1 t + d0 q. Found on the voxels, so the ends
+  // are only as exact as a voxel; see `layout` for the drawn ones.
+  const runsOf = (b, dir, p) => {
     const [d0, d1] = dir, p0 = -d1, p1 = d0; // along the wind, and across it
     const [lo, hi] = layers(b);
     let amin = Infinity, amax = -Infinity, qmin = Infinity, qmax = -Infinity;
@@ -123,10 +125,10 @@ export function createTunnels(form, { cityHeight = null } = {}) {
         amin = Math.min(amin, a); amax = Math.max(amax, a); qmin = Math.min(qmin, q); qmax = Math.max(qmax, q);
       }
     }
-    if (amax < amin) return 0;
+    const out = [];
+    if (amax < amin) return out;
     const n = Math.max(1, Math.round((qmax - qmin + c) / p.spacing)), step = (qmax - qmin + c) / n;
     const at = (t, q) => [Math.floor((d0 * t + p0 * q - vox.x0) / c), Math.floor((d1 * t + p1 * q - vox.z0) / c)];
-    let opened = 0;
     for (let s = 0; s < BAND_STOREYS; s++) {
       const mid = lo + s * perStorey + perStorey - 1; // the storey's ceiling void: the one layer its tunnels are cut in, and where the runs through the mass are found
       if (mid >= hi) break;
@@ -141,20 +143,43 @@ export function createTunnels(form, { cityHeight = null } = {}) {
           if (inside && start === null) start = t;
           if (!inside && start !== null) { runs.push([start, t - c / 2]); start = null; }
         }
-        for (const [t0, t1] of runs) {
-          if (t1 - t0 < MIN_RUN) continue;
-          for (let t = t0; t <= t1; t += c / 2) {
-            const w = Math.max(tunnelWidth(p, (t - t0) / (t1 - t0)), c) / 2; // the half width here; never under a voxel
-            for (let q = -w; q <= w + 1e-6; q += c / 2) {
-              const [i, j] = at(t, o + q);
-              if (i < 0 || j < 0 || i >= nx || j >= nz) continue;
-              if (carve(vox.index(i, j, mid))) opened++;
-            }
-          }
+        for (const [t0, t1] of runs) if (t1 - t0 >= MIN_RUN) out.push({ mid, s, o, t0, t1, dir });
+      }
+    }
+    return out;
+  };
+
+  // Cuts the tunnels of shape p in band b (after clearing it), along the wind dir = [ux, uz]. Says how many voxels it opened.
+  const shapeBand = (b, dir, p) => {
+    clearBand(b);
+    const [d0, d1] = dir, p0 = -d1, p1 = d0;
+    let opened = 0;
+    for (const { mid, o, t0, t1 } of runsOf(b, dir, p)) {
+      for (let t = t0; t <= t1; t += c / 2) {
+        const w = Math.max(tunnelWidth(p, (t - t0) / (t1 - t0)), c) / 2; // the half width here; never under a voxel
+        for (let q = -w; q <= w + 1e-6; q += c / 2) {
+          const i = Math.floor((d0 * t + p0 * (o + q) - vox.x0) / c), j = Math.floor((d1 * t + p1 * (o + q) - vox.z0) / c);
+          if (i < 0 || j < 0 || i >= nx || j >= nz) continue;
+          if (carve(vox.index(i, j, mid))) opened++;
         }
       }
     }
     return opened;
+  };
+
+  // Is there mass at (x, z) in the ceiling void of layer mid, with a roof still above it? (From the form's height map, which is finer than the voxels.)
+  const massAt = (mid, x, z) => form.heightAt(x, z) >= vox.ye[mid + 1] + 0.3;
+  // Where the mass starts and ends along the line (t, q) of a run, found to a few centimetres: [in, out] along the wind, or null.
+  const edges = (run, q) => {
+    const [d0, d1] = run.dir, p0 = -d1, p1 = d0;
+    const inside = (t) => massAt(run.mid, d0 * t + p0 * (run.o + q), d1 * t + p1 * (run.o + q));
+    const from = run.t0 - 2 * c, to = run.t1 + 2 * c, step = 0.15;
+    let a = null, z = null;
+    for (let t = from; t <= to; t += step) if (inside(t)) { a = t; break; }
+    if (a === null) return null;
+    for (let t = to; t >= a; t -= step) if (inside(t)) { z = t; break; }
+    const bisect = (out, inn) => { for (let i = 0; i < 8; i++) { const m = (out + inn) / 2; if (inside(m)) inn = m; else out = m; } return inn; };
+    return [a > from ? bisect(a - step, a) : a, z < to ? bisect(z + step, z) : z];
   };
 
   const tunnels = {
@@ -162,6 +187,7 @@ export function createTunnels(form, { cityHeight = null } = {}) {
     vox,
     builtOn: form.version, // the form version the voxels were built from: if the form changes, the tunnels are built afresh
     bandCount, // how many pairs of floors the mass has
+    storeys: bandCount * BAND_STOREYS, // how many storeys that is
     usable, // the bands that get tunnels: the ones with a whole storey of mass in them
     get active() { return active; },
     get carved() { return sum("carved", bands.map((_, b) => b)); }, // voxels of the mass that are air now
@@ -189,6 +215,18 @@ export function createTunnels(form, { cityHeight = null } = {}) {
       return (merged = { open, speed });
     },
 
+    // The tunnels of shape p in band b for the wind dir, as they are drawn: each { dir, s, mid, o, ta, tb, y, half, edges(q) }: its axis runs from
+    // ta to tb along the wind (the mass's windward and leeward faces, to a few cm), at the height y (the middle of the ceiling void, which
+    // is 2 * half deep); edges(q) gives the same for the line q across from the axis ([in, out] or null). Independent of what is carved.
+    layout(b, dir, p) {
+      const out = [];
+      for (const run of runsOf(b, dir, p)) {
+        const e = edges(run, 0);
+        if (e && e[1] - e[0] >= MIN_RUN) out.push({ ...run, ta: e[0], tb: e[1], y: yc[run.mid], half: dz[run.mid] / 2, edges: (q) => edges(run, q), inside: (t, q) => massAt(run.mid, run.dir[0] * t - run.dir[1] * (run.o + q), run.dir[1] * t + run.dir[0] * (run.o + q)) });
+      }
+      return out;
+    },
+
     // Is this voxel air that the mass once held (part of a tunnel)?
     carvedAt: isTunnel,
 
@@ -209,7 +247,8 @@ export function createTunnels(form, { cityHeight = null } = {}) {
 
     // What the search for band b's shape is doing: { tried, rough, chosen, shape }: rough is true once a first, quick answer is in
     // (the shape is still being refined), chosen once it is settled.
-    shapeInfo: (b) => ({ tried: bands[b].search?.tried ?? 0, rough: bands[b].rough, chosen: bands[b].chosen !== null, shape: bands[b].chosen ?? bands[b].search?.best ?? null }),
+    // `token` is a new object whenever the search starts again, so that a shape found by an earlier search can be told from this one's.
+    shapeInfo: (b) => ({ tried: bands[b].search?.tried ?? 0, rough: bands[b].rough, chosen: bands[b].chosen !== null, shape: bands[b].chosen ?? bands[b].search?.best ?? null, token: bands[b].search }),
     // Has band b a first, quick answer (the end of the coarse search)?
     isRough: (b) => bands[b].rough,
 

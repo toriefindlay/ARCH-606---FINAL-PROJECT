@@ -4,7 +4,7 @@
 import { registerPersist } from "../../core/persist.js";
 
 // Read each frame by index.js. `speed` is simulated seconds per real second.
-export const settings = { playing: true, speed: 4, erode: 2, erodeWind: false, erodeSun: false, erodeTunnels: false, tunnelVolume: 20, tunnelBand: -1, flowDebug: false, flowHeight: 2 };
+export const settings = { playing: true, speed: 4, erode: 2, erodeWind: false, erodeSun: false, erodeTunnels: false, tunnelVolume: 20, tunnelBand: -1, xray: false, flowDebug: false, flowHeight: 2 };
 
 const $ = (id) => document.getElementById(id);
 let onClearErosion = () => {};
@@ -24,6 +24,7 @@ export function mountPanel(el, hooks = {}) {
     <label title="The most of the mass the tunnels may carve away. The wind keeps widening them until they reach this.">Tunnel volume <output id="tunnel-volume-out"></output>
       <input type="range" id="tunnel-volume" min="2" max="30" step="1">
     </label>
+    <label title="Draws the mass faint so that only the wind tunnels stay solid."><input type="checkbox" id="xray"> X-ray (mass faint, tunnels solid)</label>
     <p id="tunnel-note" class="hint" style="margin:0 0 6px;white-space:pre-line"></p>
     <div class="tools">
       <button type="button" class="tool" id="erode-play">Pause</button>
@@ -33,7 +34,7 @@ export function mountPanel(el, hooks = {}) {
         <option value="12">12×</option>
       </select>
     </div>
-    <label>Erosion speed <output id="erode-out"></output>
+    <label title="How fast the wind tunnels are eroded out of the mass, from a dimple in the wall to the whole way through: 2× takes half a minute, 8× under ten seconds.">Erosion speed <output id="erode-out"></output>
       <input type="range" id="erode" min="0.5" max="8" step="0.5">
     </label>
     <button type="button" class="tool" id="erode-clear" style="width:100%;margin-bottom:8px">Clear erosion</button>
@@ -58,6 +59,7 @@ export function mountPanel(el, hooks = {}) {
   };
   $("erode-tunnels").addEventListener("change", exclusive("erodeTunnels"));
   $("tunnel-volume").addEventListener("input", (e) => { settings.tunnelVolume = Number(e.target.value); syncControls(); });
+  $("xray").addEventListener("change", (e) => (settings.xray = e.target.checked));
   $("tunnel-band").addEventListener("change", (e) => { settings.tunnelBand = Number(e.target.value); syncControls(); });
   $("erode-wind").addEventListener("change", exclusive("erodeWind"));
   $("erode-sun").addEventListener("change", exclusive("erodeSun"));
@@ -75,6 +77,7 @@ export function syncControls() {
   $("erode-sun").checked = settings.erodeSun;
   $("erode-tunnels").checked = settings.erodeTunnels;
   $("tunnel-band").value = String(settings.tunnelBand);
+  $("xray").checked = settings.xray;
   $("tunnel-volume").value = settings.tunnelVolume;
   $("tunnel-volume-out").textContent = `${settings.tunnelVolume}%`;
   $("flow-debug").checked = settings.flowDebug;
