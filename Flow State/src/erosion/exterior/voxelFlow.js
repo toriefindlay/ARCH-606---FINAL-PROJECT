@@ -24,7 +24,9 @@ export const AIR = 0, MASS = 1, CONTEXT = 2; // what a voxel holds
 // Returns null if the form has no mass.
 // storey: a floor-to-floor height in metres; if given, the voxel height is made a whole fraction of it (2 to 6 layers a storey) so
 // that every floor lies on a voxel layer.
-export function createVoxelMass(form, { cityHeight = null, maxCells = 250000, storey = 0 } = {}) {
+// zone: with a storey, the depth in metres of a thin layer at the top of every storey (the ceiling void), which the voxels' layers are
+// cut to match; the rest of the storey is one to three thicker layers. Layers are then not all the same height (see vox.ye).
+export function createVoxelMass(form, { cityHeight = null, maxCells = 250000, storey = 0, zone = 0 } = {}) {
   const { nx: fnx, nz: fnz, cx, cz, x0: fx0, z0: fz0, h0 } = form;
   let i0 = fnx, i1 = -1, j0 = fnz, j1 = -1;
   for (let j = 0; j < fnz; j++) {
@@ -40,21 +42,47 @@ export function createVoxelMass(form, { cityHeight = null, maxCells = 250000, st
   const pad = clamp(Math.max(mx1 - mx0, mz1 - mz0, top), 12, 80); // metres of air round the mass
   const Lx = mx1 - mx0 + 2 * pad, Lz = mz1 - mz0 + 2 * pad, Ly = top + clamp(1.5 * top, 10, 60);
   let c = clamp(Math.cbrt((Lx * Lz * Ly) / maxCells), 0.5, 4); // metres: one voxel
-  if (storey > 0) c = storey / clamp(Math.round(storey / c), 2, 6);
-  const nx = Math.ceil(Lx / c), nz = Math.ceil(Lz / c), ny = Math.ceil(Ly / c);
+  // The heights of the layers' edges (ye[l] to ye[l+1] is layer l). Without a storey they are all c high. With one, every storey is
+  // `rest` thick layers and then the thin zone layer on top (so the zone is the last layer of each storey), as far as the mass
+  // reaches (whole pairs of storeys); above that the layers are c high again.
+  const ye = [0];
+  let perStorey = 0;
+  if (storey > 0 && zone > 0 && zone < storey) {
+    const rest = storey - zone, m = clamp(Math.round(rest / c), 1, 3);
+    perStorey = m + 1;
+    const storeys = Math.max(2, Math.ceil(top / (2 * storey)) * 2);
+    for (let s = 0; s < storeys; s++) {
+      for (let r = 0; r < m; r++) ye.push(ye[ye.length - 1] + rest / m);
+      ye.push(ye[ye.length - 1] + zone);
+    }
+  }
+  while (ye[ye.length - 1] < Ly) ye.push(ye[ye.length - 1] + c);
+  const ny = ye.length - 1;
+  const yc = new Float32Array(ny), dz = new Float32Array(ny);
+  for (let l = 0; l < ny; l++) { yc[l] = (ye[l] + ye[l + 1]) / 2; dz[l] = ye[l + 1] - ye[l]; }
+  const nx = Math.ceil(Lx / c), nz = Math.ceil(Lz / c);
   const x0 = (mx0 + mx1) / 2 - (nx * c) / 2, z0 = (mz0 + mz1) / 2 - (nz * c) / 2; // the box's corner; the ground is y = 0
   const nxz = nx * nz;
 
   const vox = {
     nx, nz, ny, c, x0, z0, top,
+    ye, yc, dz, // layer edges, centres and heights in metres
+    perStorey, // layers in one storey (0 if the layers do not follow storeys); the last is the zone layer
     cells: new Uint8Array(nxz * ny), // AIR | MASS | CONTEXT
     version: 0, // changes whenever a voxel does
     index: (i, j, l) => (l * nz + j) * nx + i,
-    centre: (i, j, l) => [x0 + (i + 0.5) * c, (l + 0.5) * c, z0 + (j + 0.5) * c],
+    centre: (i, j, l) => [x0 + (i + 0.5) * c, yc[l], z0 + (j + 0.5) * c],
+    // The layer holding a height in metres, or -1 outside the box.
+    layerAt(y) {
+      if (y < 0 || y >= ye[ny]) return -1;
+      let a = 0, b = ny - 1;
+      while (a < b) { const m = (a + b + 1) >> 1; if (ye[m] <= y) a = m; else b = m - 1; }
+      return a;
+    },
     // The voxel holding a world point, or -1 outside the box.
     at(x, y, z) {
-      const i = Math.floor((x - x0) / c), j = Math.floor((z - z0) / c), l = Math.floor(y / c);
-      return i < 0 || j < 0 || l < 0 || i >= nx || j >= nz || l >= ny ? -1 : (l * nz + j) * nx + i;
+      const i = Math.floor((x - x0) / c), j = Math.floor((z - z0) / c), l = vox.layerAt(y);
+      return i < 0 || j < 0 || l < 0 || i >= nx || j >= nz ? -1 : (l * nz + j) * nx + i;
     },
     // Switches a voxel to air (what a tunnel does) or back.
     set(k, kind) {
@@ -76,7 +104,7 @@ export function createVoxelMass(form, { cityHeight = null, maxCells = 250000, st
       }
     }
     for (let l = 0; l < ny; l++) {
-      const y = (l + 0.5) * c;
+      const y = yc[l];
       for (let col = 0; col < nxz; col++) vox.cells[l * nxz + col] = y <= massH[col] ? MASS : y <= cityH[col] ? CONTEXT : AIR;
     }
     // The faces of the box are the free stream: always air.
@@ -145,22 +173,30 @@ export async function solveFlow(vox, { dir, previous = null, maxIter = 500, omeg
   }
   const sets = free.map((a) => Int32Array.from(a));
 
-  // Successive over-relaxation: each free cell moves towards the mean of its open neighbours. A solid neighbour (or the
-  // ground below) is left out, which is what makes it a wall.
+  // Successive over-relaxation: each free cell moves towards the weighted mean of its open neighbours. A solid neighbour (or the
+  // ground below) is left out, which is what makes it a wall. The layers are not all the same height, so the weights are the
+  // flow areas over the distances: sideways a layer's height, up and down c * c over the distance between the layers' centres.
+  const { dz, yc } = vox;
+  const wSide = new Float64Array(ny), wUp = new Float64Array(ny), wDown = new Float64Array(ny);
+  for (let l = 0; l < ny; l++) {
+    wSide[l] = dz[l];
+    wUp[l] = l < ny - 1 ? (c * c) / (yc[l + 1] - yc[l]) : 0;
+    wDown[l] = l > 0 ? (c * c) / (yc[l] - yc[l - 1]) : 0;
+  }
   let iterations = 0, residual = Infinity;
   while (iterations < maxIter && residual > tol * c) {
     for (let burst = 0; burst < 20 && iterations < maxIter; burst++, iterations++) {
       residual = 0;
       for (const set of sets) {
         for (let t = 0; t < set.length; t++) {
-          const k = set[t];
+          const k = set[t], l = (k / nxz) | 0, ws = wSide[l];
           let s = 0, m = 0;
-          if (open[k - 1]) { s += phi[k - 1]; m++; }
-          if (open[k + 1]) { s += phi[k + 1]; m++; }
-          if (open[k - nx]) { s += phi[k - nx]; m++; }
-          if (open[k + nx]) { s += phi[k + nx]; m++; }
-          if (open[k + nxz]) { s += phi[k + nxz]; m++; }
-          if (k >= nxz && open[k - nxz]) { s += phi[k - nxz]; m++; }
+          if (open[k - 1]) { s += ws * phi[k - 1]; m += ws; }
+          if (open[k + 1]) { s += ws * phi[k + 1]; m += ws; }
+          if (open[k - nx]) { s += ws * phi[k - nx]; m += ws; }
+          if (open[k + nx]) { s += ws * phi[k + nx]; m += ws; }
+          if (open[k + nxz]) { s += wUp[l] * phi[k + nxz]; m += wUp[l]; }
+          if (k >= nxz && open[k - nxz]) { s += wDown[l] * phi[k - nxz]; m += wDown[l]; }
           if (!m) continue;
           const delta = s / m - phi[k];
           phi[k] += omega * delta;
@@ -185,7 +221,7 @@ export async function solveFlow(vox, { dir, previous = null, maxIter = 500, omeg
         const nb = (q, ok) => (ok && open[q] ? phi[q] : p);
         vx[k] = (nb(k + 1, i < nx - 1) - nb(k - 1, i > 0)) / (2 * c);
         vz[k] = (nb(k + nx, j < nz - 1) - nb(k - nx, j > 0)) / (2 * c);
-        vy[k] = (nb(k + nxz, l < ny - 1) - nb(k - nxz, l > 0)) / (2 * c);
+        vy[k] = (nb(k + nxz, l < ny - 1) - nb(k - nxz, l > 0)) / ((l < ny - 1 ? yc[l + 1] - yc[l] : dz[l]) + (l > 0 ? yc[l] - yc[l - 1] : dz[l]));
         speed[k] = Math.hypot(vx[k], vy[k], vz[k]);
         if (!fixed(i, j, l) && speed[k] > maxSpeed) maxSpeed = speed[k];
       }

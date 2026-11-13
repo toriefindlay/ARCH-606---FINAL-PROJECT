@@ -16,7 +16,8 @@ export function setActiveTunnels(tunnels) {
 
 // The distance from the centre of every voxel to the surface of the tunnels: negative inside them, and the surface lies half a
 // voxel from the centres next to it. Two distance transforms (to the nearest tunnel voxel from outside, to the nearest voxel that
-// is not a tunnel from inside).
+// is not a tunnel from inside). The distances count voxels as c across every way, which is not true up and down (the layers are
+// thinner there), so the value is only right in its sign and roughly right sideways.
 function distanceField(tunnels) {
   const { vox } = tunnels;
   const { nx, nz, ny, c, cells } = vox;
@@ -47,8 +48,8 @@ export function activeTunnelCuts() {
     for (let j = 0; j < vox.nz; j++) {
       for (let i = 0; i < vox.nx; i++) {
         if (!tunnels.carvedAt(vox.index(i, j, l))) continue;
-        bounds.expandByPoint(new THREE.Vector3(vox.x0 + i * vox.c, l * vox.c, vox.z0 + j * vox.c));
-        bounds.expandByPoint(new THREE.Vector3(vox.x0 + (i + 1) * vox.c, (l + 1) * vox.c, vox.z0 + (j + 1) * vox.c));
+        bounds.expandByPoint(new THREE.Vector3(vox.x0 + i * vox.c, vox.ye[l], vox.z0 + j * vox.c));
+        bounds.expandByPoint(new THREE.Vector3(vox.x0 + (i + 1) * vox.c, vox.ye[l + 1], vox.z0 + (j + 1) * vox.c));
       }
     }
   }

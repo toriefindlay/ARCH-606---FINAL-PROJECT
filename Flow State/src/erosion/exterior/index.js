@@ -10,7 +10,7 @@ import { createWindErosion, setActiveForm } from "./windErode.js";
 import { createSunGrowth } from "./sunGrow.js";
 import { createVoxelMass, solveFlow } from "./voxelFlow.js";
 import { createFlowView } from "./flowView.js";
-import { createTunnels, REACH } from "./tunnels.js";
+import { createTunnels, REACH, ZONE } from "./tunnels.js";
 import { setActiveTunnels } from "./tunnelCut.js";
 import { renderPreview, createFormView, createTunnelView } from "./view.js";
 import { mountPanel, settings, syncControls, setWindNote, setSunNote, setFlowNote, setTunnelNote, setBandOptions } from "./panel.js";
@@ -160,23 +160,24 @@ function tunnelFrame() {
 }
 
 // What the note says of the shape of a pair of floors' tunnels: the numbers being tried, or the ones chosen.
-function shape({ tried, chosen, shape: p }) {
+function shape({ tried, rough, chosen, shape: p }) {
   if (!p) return "";
-  return `, ${chosen ? "tunnels" : `trying (${tried} shapes so far)`} ${p.spacing} m apart, ${p.throat} m wide at the throat, mouth ×${p.mouth}, exit ×${p.exit}, throat ${p.pos * 100}% along, ${p.tall} voxel${p.tall > 1 ? "s" : ""} high`;
+  return `, ${chosen ? "tunnels" : rough ? `quick answer, refining (${tried} shapes so far)` : `trying quickly (${tried} shapes so far)`} ${p.spacing} m apart, ${p.throat} m wide at the throat, mouth ×${p.mouth}, exit ×${p.exit}, throat ${p.pos * 100}% along, in the ${ZONE} m ceiling void of each storey`;
 }
 
 // The next thing to do, one pair of floors at a time: search for the shape of every pair's tunnels, then solve again whatever the
 // later carving has left out of date, so that the numbers shown are for the tunnels as they are. null once there is nothing left.
 function nextWork(t, winds, key) {
-  for (const b of t.active) if (!t.isDone(b, key)) return { b, what: "search" };
+  for (const b of t.active) if (!t.isRough(b)) return { b, what: "search" }; // the quick answer for every pair of floors first
+  for (const b of t.active) if (!t.isDone(b, key)) return { b, what: "search" }; // then the fine search for each
   for (const b of t.active) if (t.stale(b, winds[b].dir)) return { b, what: "solve" };
   return null;
 }
 
 // Keeps what is drawn, and the cut offered to the pipeline, in step with the tunnels: shown whenever there are tunnels that fit the
 // form (also while another mode is on), and cleared when they are gone.
-function tunnelShowFrame() {
-  if (tunnelWorking) return; // the shapes being tried flicker by: they are shown once the search has chosen
+function tunnelShowFrame(force = false) {
+  if (tunnelWorking && !force) return; // the shapes being tried flicker by: they are shown when a search has an answer (see tunnelStep)
   const t = tunnels && form && tunnels.builtOn === form.version && tunnels.carved ? tunnels : null;
   const key = t ? `${t.id}|${t.vox.version}` : "";
   if (key !== tunnelShown) {
@@ -193,8 +194,9 @@ async function tunnelStep(t, work, winds, limit, key) {
   const version = massVersion, { b } = work, dir = winds[b].dir;
   try {
     if (work.what === "search") {
-      const settled = await t.searchStep(b, dir, limit); // another shape for this pair of floors
-      if (settled) t.markDone(b, key);
+      const result = await t.searchStep(b, dir, limit); // another shape for this pair of floors
+      if (result === "settled") t.markDone(b, key);
+      if (result && tunnels === t) tunnelShowFrame(true); // a quick answer, or the final one: show it (the voxels are as it left them)
     } else {
       await t.solve(b, dir);
     }

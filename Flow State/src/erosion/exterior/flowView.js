@@ -44,10 +44,10 @@ export function createFlowView() {
         shown = flow;
         layer = -1;
       }
-      const l = clamp(Math.floor(height / c), 0, ny - 1);
+      const l = clamp(vox.layerAt(height), 0, ny - 1);
       if (l === layer) return;
       layer = l;
-      mesh.position.y = (l + 0.5) * c;
+      mesh.position.y = vox.yc[l];
       for (let j = 0; j < nz; j++) {
         const row = nz - 1 - j; // the plane's top edge is north (-z), and a texture's first row is its bottom edge
         for (let i = 0; i < nx; i++) {

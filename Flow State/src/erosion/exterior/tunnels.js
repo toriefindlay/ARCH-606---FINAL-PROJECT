@@ -5,8 +5,9 @@
 //
 // Floors: the mass is cut into storeys of STOREY metres (14 ft), and the storeys are grouped in pairs, the BANDS (floors 1-2,
 // floors 3-4, ...). The tunnels of a band never leave it, so they span two storeys at most. One layer of voxels at the bottom of
-// every storey is left as its floor slab, and the top layer of the mass is left as the roof. A pair of floors with less than a
-// whole storey of mass in it is skipped (`usable`).
+// every storey is a few thick layers (the rooms) and, on top, one thin layer ZONE metres deep: the ceiling void. Tunnels are only
+// cut in the ceiling voids, so the rooms and the way through them are never touched. The top layer of every column is left as
+// the roof. A pair of floors with less than a whole storey of mass in it is skipped (`usable`).
 //
 // Every band has its own wind: its tunnels face the direction it is given (index.js gives each band a different part of the
 // warm season, so that one pair of floors or another is always being cooled), and its airflow is solved for that direction, with
@@ -28,21 +29,27 @@ import { createVoxelMass, solveFlow, AIR, MASS } from "./voxelFlow.js";
 
 export const STOREY = 14 * 0.3048; // metres: one storey, 14 ft
 export const BAND_STOREYS = 2; // storeys a tunnel may span at most
+export const ZONE = 0.9; // metres: the depth of the ceiling void at the top of every storey, the only place a tunnel may run
 export const REACH = 3; // metres: how far from a tunnel its moving air is taken to cool the floor
 const NEAR = 0.3; // cooling (see cooling()) at which a floor voxel counts as near moving air: about 2 m from air at the open wind's speed
 const MIN_RUN = 4; // metres: a tunnel shorter than this (a corner of the mass) is not made
 
-// The numbers the solver chooses from, and where it starts.
+// The numbers the solver chooses from.
 export const SHAPES = {
   spacing: [6, 8, 10, 12, 14], // metres between tunnels in one storey
   throat: [1.4, 2.1, 2.8, 3.6, 4.5], // metres: the width at the narrowest point (rounded up to a whole voxel at least)
   mouth: [1, 1.5, 2, 2.5], // x the throat: the width at the windward face
   exit: [1, 1.4, 1.8], // x the throat: the width at the leeward face
   pos: [0.35, 0.5, 0.65], // how far along the tunnel the throat is
-  tall: [1, 2, 3], // voxel layers high (at most the storey's, less its floor slab)
 };
-export const START = { spacing: 8, throat: 2.1, mouth: 1.5, exit: 1.4, pos: 0.5, tall: 1 };
-const MAX_PASSES = 2; // rounds of varying the numbers one at a time
+const MAX_PASSES = 3; // rounds of varying the numbers one at a time (in the fine search)
+const COARSE_SOLVE = { maxIter: 60, tol: 3e-3 }; // the loose airflow solve of the coarse search
+// The shapes of the coarse search: a small grid of spacings and throat widths, the rest at a sensible middle.
+const coarseShapes = () => {
+  const out = [];
+  for (const spacing of [6, 8, 10, 14]) for (const throat of [1.4, 2.8, 4.5]) out.push({ spacing, throat, mouth: 2, exit: 1.4, pos: 0.5 });
+  return out;
+};
 
 // The width of a tunnel at u (0 at the windward face, 1 at the leeward face) for the shape p: eased between the mouth, throat and exit.
 const ease = (x) => (1 - Math.cos(Math.PI * x)) / 2;
@@ -54,11 +61,11 @@ export function tunnelWidth(p, u) {
 // Returns null if the form has no mass.
 let serial = 0;
 export function createTunnels(form, { cityHeight = null } = {}) {
-  const vox = createVoxelMass(form, { cityHeight, maxCells: 400000, storey: STOREY });
+  const vox = createVoxelMass(form, { cityHeight, maxCells: 400000, storey: STOREY, zone: ZONE });
   if (!vox) return null;
-  const { nx, nz, ny, c, cells } = vox;
+  const { nx, nz, ny, c, cells, dz, yc } = vox;
   const nxz = nx * nz;
-  const perStorey = Math.round(STOREY / c); // voxel layers in one storey
+  const perStorey = vox.perStorey; // voxel layers in one storey; the last of them is the ceiling void (the zone)
   const perBand = perStorey * BAND_STOREYS;
   const placed = Uint8Array.from(cells); // the mass as it was placed, to put it back
   const roof = new Int16Array(nxz).fill(-1); // the layer of the top mass voxel in every column (-1 where there is none)
@@ -68,11 +75,11 @@ export function createTunnels(form, { cityHeight = null } = {}) {
   const bandOf = (k) => Math.min(bandCount - 1, Math.floor(Math.floor(k / nxz) / perBand));
 
   // What each band has: its mass voxels, how many are carved, its own airflow and the search for its shape.
-  const fresh = { carved: 0, doneKey: "", flow: null, flowVersion: -1, flowDir: null, search: null, chosen: null };
+  const fresh = { carved: 0, doneKey: "", flow: null, flowVersion: -1, flowDir: null, search: null, chosen: null, rough: false };
   const bands = Array.from({ length: bandCount }, (_, b) => {
     let mass = 0;
     const [lo, hi] = layers(b);
-    for (let k = lo * nxz; k < hi * nxz; k++) if (placed[k] === MASS) mass++;
+    for (let k = lo * nxz; k < hi * nxz; k++) if (placed[k] === MASS) mass += dz[Math.floor(k / nxz)]; // mass and carving are counted in volume (a layer's height), the layers not being alike
     return { mass, ...fresh };
   });
   let top = -1; // the highest mass layer
@@ -87,9 +94,10 @@ export function createTunnels(form, { cityHeight = null } = {}) {
   // Opens a voxel of the mass. Says whether it changed (context buildings and air cannot be carved).
   const carve = (k) => {
     if (placed[k] !== MASS || cells[k] !== MASS) return false;
-    if (k < nxz || Math.floor(k / nxz) >= roof[k % nxz]) return false; // the bottom layer stays as the floor, the top layer of every column as the roof
+    const layer = Math.floor(k / nxz);
+    if (layer % perStorey !== perStorey - 1 || layer >= roof[k % nxz]) return false; // only a ceiling void is opened, and never the top layer of a column (the roof)
     vox.set(k, AIR);
-    bands[bandOf(k)].carved++;
+    bands[bandOf(k)].carved += dz[layer];
     return true;
   };
 
@@ -120,14 +128,8 @@ export function createTunnels(form, { cityHeight = null } = {}) {
     const at = (t, q) => [Math.floor((d0 * t + p0 * q - vox.x0) / c), Math.floor((d1 * t + p1 * q - vox.z0) / c)];
     let opened = 0;
     for (let s = 0; s < BAND_STOREYS; s++) {
-      const first = lo + s * perStorey; // the storey's floor slab; the tunnels use the layers above it
-      if (first >= hi) break;
-      const last = Math.min(hi, first + perStorey) - 1; // the tunnels' layers: first + 1 .. last
-      if (last <= first) continue;
-      const mid = first + Math.max(1, Math.floor(perStorey / 2)); // the layer the runs through the mass are found on
-      const rows = Math.max(1, Math.min(p.tall, last - first)); // layers the tunnel is high, in the middle of the storey's
-      const low = first + 1 + Math.floor((last - first - rows) / 2);
-      const yAxis = (low + rows / 2) * c, half = (rows * c) / 2; // the tunnel's axis and half height
+      const mid = lo + s * perStorey + perStorey - 1; // the storey's ceiling void: the one layer its tunnels are cut in, and where the runs through the mass are found
+      if (mid >= hi) break;
       for (let m = 0; m < n; m++) {
         const o = qmin - c / 2 + (m + (s % 2 ? 0.75 : 0.25)) * step; // across the wind; the upper storey is half a step over
         // The runs of mass along this line: each is one tunnel, from the windward face to the leeward one.
@@ -146,10 +148,7 @@ export function createTunnels(form, { cityHeight = null } = {}) {
             for (let q = -w; q <= w + 1e-6; q += c / 2) {
               const [i, j] = at(t, o + q);
               if (i < 0 || j < 0 || i >= nx || j >= nz) continue;
-              for (let l = low; l < low + rows; l++) {
-                const dy = ((l + 0.5) * c - yAxis) / half;
-                if ((q / w) ** 2 + dy * dy <= 1 && carve(vox.index(i, j, l))) opened++;
-              }
+              if (carve(vox.index(i, j, mid))) opened++;
             }
           }
         }
@@ -208,44 +207,69 @@ export function createTunnels(form, { cityHeight = null } = {}) {
       active = list.filter((b) => usable.includes(b));
     },
 
-    // What the search for band b's shape is doing: { tried, chosen, shape } (chosen is true once it is settled).
-    shapeInfo: (b) => ({ tried: bands[b].search?.tried ?? 0, chosen: bands[b].chosen !== null, shape: bands[b].chosen ?? bands[b].search?.best ?? null }),
+    // What the search for band b's shape is doing: { tried, rough, chosen, shape }: rough is true once a first, quick answer is in
+    // (the shape is still being refined), chosen once it is settled.
+    shapeInfo: (b) => ({ tried: bands[b].search?.tried ?? 0, rough: bands[b].rough, chosen: bands[b].chosen !== null, shape: bands[b].chosen ?? bands[b].search?.best ?? null }),
+    // Has band b a first, quick answer (the end of the coarse search)?
+    isRough: (b) => bands[b].rough,
 
     // One step of the search for band b's shape, for the wind dir = [ux, uz]: voxelises the next shape to try, solves the airflow
-    // and scores the cooling. When all have been tried it keeps the best and solves for it. Says whether the shape is settled.
-    // `limit` is the most of the band's mass the tunnels may carve away (0..1).
+    // and scores the cooling. `limit` is the most of the band's mass the tunnels may carve away (0..1).
+    // The search is in two parts. First a coarse one: a small grid of shapes (COARSE_GRID), each solved quickly and loosely (COARSE_SOLVE),
+    // which gives a rough answer fast; when it is done the best of them is solved properly and the step says 'rough'. Then the
+    // fine one, from that shape: the numbers are varied one at a time (SHAPES), each shape solved properly, until nothing improves;
+    // the step then says 'settled'. Every other step says null. A shape that carves more than the limit is not solved at all.
     async searchStep(b, dir, limit) {
       const s = bands[b];
-      const q = (s.search ??= { queue: [{ ...START }], seen: new Set(), best: null, bestScore: -Infinity, tried: 0, pass: 0, improved: false });
+      const q = (s.search ??= { phase: "coarse", queue: coarseShapes(), seen: new Set(), best: null, bestScore: -Infinity, tried: 0, pass: 0, improved: false });
       const key = (p) => JSON.stringify(p);
+      const rate = (share) => { // the score of the shape as it is cut now (its airflow solved)
+        if (share > limit) return -share; // over the volume limit it is no good, and the less over the better
+        const cool = tunnels.cooling(b);
+        return cool.mean * (0.5 + 0.5 * cool.evenness);
+      };
       const p = q.queue.shift();
       q.seen.add(key(p));
       shapeBand(b, dir, p);
       const share = tunnels.bandShare(b);
-      await tunnels.solve(b, dir);
-      const cool = tunnels.cooling(b);
-      // Over the volume limit it is no good, and the less over the better, so that the search heads back under it.
-      const score = share > limit ? -share : cool.mean * (0.5 + 0.5 * cool.evenness);
+      if (share <= limit) await tunnels.solve(b, dir, q.phase === "coarse" ? COARSE_SOLVE : {});
+      const score = rate(share);
       q.tried++;
       if (score > q.bestScore + 1e-6) { q.best = p; q.bestScore = score; q.improved = true; }
-      if (q.queue.length) return false;
-      if (q.improved && q.pass < MAX_PASSES) { // vary the numbers of the best shape one at a time
-        q.pass++;
-        q.improved = false;
+      if (q.queue.length) return null;
+      const neighbours = () => {
+        const out = [];
         for (const name of Object.keys(SHAPES)) {
           for (const v of SHAPES[name]) {
             const next = { ...q.best, [name]: v };
-            if (!q.seen.has(key(next))) q.queue.push(next);
+            if (!q.seen.has(key(next))) out.push(next);
           }
         }
-        if (q.queue.length) return false;
+        return out;
+      };
+      if (q.phase === "coarse") { // the quick answer: the best shape, solved properly, and the fine search starts from it
+        shapeBand(b, dir, q.best);
+        await tunnels.solve(b, dir);
+        q.bestScore = rate(tunnels.bandShare(b));
+        q.phase = "refine";
+        q.seen = new Set([key(q.best)]); // the coarse scores were rough: the shapes round it are scored again properly
+        q.pass = 1;
+        q.improved = false;
+        q.queue = neighbours();
+        s.rough = true;
+        return "rough";
+      }
+      if (q.improved && q.pass < MAX_PASSES) { // vary the numbers of the best shape one at a time
+        q.pass++;
+        q.improved = false;
+        q.queue = neighbours();
+        if (q.queue.length) return null;
       }
       shapeBand(b, dir, q.best); // done: the best shape, solved so that what is shown is for it
       await tunnels.solve(b, dir);
       s.chosen = q.best;
-      return true;
+      return "settled";
     },
-
     // The air speed in band b's tunnels in its last solution: { max, mean } relative to the open wind (0 if there is none).
     tunnelSpeed(b) {
       const flow = bands[b].flow, [lo, hi] = layers(b);
@@ -270,20 +294,21 @@ export function createTunnels(form, { cityHeight = null } = {}) {
       const [lo, hi] = layers(b), r = Math.ceil(REACH / c);
       const cool = new Float32Array((hi - lo) * nxz);
       for (let l = lo; l < hi; l++) {
+        // The layers of the band within REACH of this one, and how far (in metres) their centres are.
+        const reach = [];
+        for (let ll = lo; ll < hi; ll++) if (Math.abs(yc[ll] - yc[l]) < REACH) reach.push([ll, yc[ll] - yc[l]]);
         for (let col = 0; col < nxz; col++) {
           const k = l * nxz + col;
           if (!flow.open[k] || !isTunnel(k)) continue;
           const i = col % nx, j = Math.floor(col / nx), v0 = flow.speed[k];
-          for (let dl = -r; dl <= r; dl++) {
-            const ll = l + dl;
-            if (ll < lo || ll >= hi) continue;
+          for (const [ll, dy] of reach) {
             for (let dj = -r; dj <= r; dj++) {
               const jj = j + dj;
               if (jj < 0 || jj >= nz) continue;
               for (let di = -r; di <= r; di++) {
                 const ii = i + di;
                 if (ii < 0 || ii >= nx) continue;
-                const v = v0 * (1 - Math.hypot(di, dj, dl) * c / REACH);
+                const v = v0 * (1 - Math.hypot(di * c, dj * c, dy) / REACH);
                 const q = (ll - lo) * nxz + jj * nx + ii;
                 if (v > cool[q]) cool[q] = v;
               }
@@ -298,11 +323,11 @@ export function createTunnels(form, { cityHeight = null } = {}) {
         for (let col = 0; col < nxz; col++) {
           const k = l * nxz + col;
           if (placed[k] !== MASS || cells[k] !== MASS) continue;
-          const v = cool[(l - lo) * nxz + col];
-          total[s]++;
-          if (v >= NEAR) near[s]++;
-          acc += Math.min(v, 1.5);
-          count++;
+          const v = cool[(l - lo) * nxz + col], w = dz[l]; // a voxel counts for its height, as the layers are not all alike
+          total[s] += w;
+          if (v >= NEAR) near[s] += w;
+          acc += Math.min(v, 1.5) * w;
+          count += w;
         }
       }
       out.coverage = total.map((t, s) => (t ? near[s] / t : 0));
@@ -330,5 +355,8 @@ export function createTunnels(form, { cityHeight = null } = {}) {
   };
   return tunnels;
 }
+
+
+
 
 

@@ -296,6 +296,7 @@ export function createFormView() {
 // where it is as fast, red where it is faster.
 const TUNNEL_SLOW = new THREE.Color(0x2a5cc0), TUNNEL_SAME = new THREE.Color(0xe6e6e6), TUNNEL_FAST = new THREE.Color(0xd9331f);
 const TUNNEL_RANGE = 2; // the speed ratio at which the ramp ends
+const TUNNEL_LAYER = 0.3; // metres: the height of one layer of the map the shader reads
 const TUNNEL_ISO = 0.2; // the level of the softened field the surface lies on (the same as in tunnelAt above)
 // The corners of a cell of the marching cubes tables (x, y, z offsets) and the corners each of its 12 edges joins.
 const MC_CORNERS = [[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0], [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]];
@@ -315,7 +316,7 @@ function tunnelField(vox, isTunnel) {
   const box = [Math.max(0, i0 - 2), Math.min(nx - 1, i1 + 2), Math.max(0, l0 - 2), Math.min(ny - 1, l1 + 2), Math.max(0, j0 - 2), Math.min(nz - 1, j1 + 2)];
   let field = new Float32Array(cells.length);
   for (let k = 0; k < cells.length; k++) if (isTunnel(k)) field[k] = 1;
-  for (const stride of [1, nx, nxz]) { // x, then z, then y
+  for (const stride of [1, nx]) { // x, then z (not y: a tunnel is as thin as its layer, see createTunnelView)
     const next = new Float32Array(cells.length);
     for (let l = box[2]; l <= box[3]; l++) {
       for (let j = box[4]; j <= box[5]; j++) {
@@ -333,7 +334,11 @@ function tunnelField(vox, isTunnel) {
 
 // The surface of the tunnels: { position, normal, colour } arrays (triangles), from the softened field.
 function tunnelSurface(vox, field, box, flow, speedColour) {
-  const { nx, nz, ny, c, x0, z0, cells } = vox, nxz = nx * nz;
+  const { nx, nz, ny, c, x0, z0, cells, yc } = vox, nxz = nx * nz;
+  // The layers are not all the same height: a height in grid units (layer l's centre at l) is turned into metres between the layers' centres,
+  // and the gap between the centres there gives the slope per metre.
+  const gap = (g) => Math.max(0, Math.min(ny - 2, Math.floor(g)));
+  const yAt = (g) => { const l = gap(g); return yc[l] + (g - l) * (yc[l + 1] - yc[l]); };
   const f = (i, l, j) => (i < 0 || j < 0 || l < 0 || i >= nx || j >= nz || l >= ny ? 0 : field[(l * nz + j) * nx + i]);
   // The field at a point in grid units (the trilinear blend of the eight voxel centres round it), and its slope.
   const sample = (x, y, z) => {
@@ -369,7 +374,9 @@ function tunnelSurface(vox, field, box, flow, speedColour) {
           if (!(bits & (1 << e))) continue;
           const [p, q] = MC_EDGES[e], v0 = corner[p], v1 = corner[q], t = v1 === v0 ? 0.5 : (TUNNEL_ISO - v0) / (v1 - v0);
           const A = MC_CORNERS[p], B = MC_CORNERS[q];
-          pt[e] = [i + A[0] + t * (B[0] - A[0]), l + A[1] + t * (B[1] - A[1]), j + A[2] + t * (B[2] - A[2])];
+          // A wall above or below lies where the layer ends (a tunnel is exactly as deep as its layer); one at the side where the field crosses the level.
+          const lay = l + Math.min(A[1], B[1]), g = A[1] !== B[1] ? lay + (vox.ye[lay + 1] - yc[lay]) / (yc[lay + 1] - yc[lay]) : l + A[1];
+          pt[e] = [i + A[0] + t * (B[0] - A[0]), g, j + A[2] + t * (B[2] - A[2])];
         }
         for (let t = index << 4; triTable[t] !== -1; t += 3) {
           const tri = [pt[triTable[t]], pt[triTable[t + 1]], pt[triTable[t + 2]]];
@@ -383,8 +390,9 @@ function tunnelSurface(vox, field, box, flow, speedColour) {
             const ci = Math.floor(v[0] + (s[0] / m) * 0.6), cl = Math.floor(v[1] + (s[1] / m) * 0.6), cj = Math.floor(v[2] + (s[2] / m) * 0.6);
             const k = ci < 0 || cj < 0 || cl < 0 || ci >= nx || cj >= nz || cl >= ny ? -1 : (cl * nz + cj) * nx + ci;
             const tint = speedColour(k >= 0 && flow?.open[k] ? flow.speed[k] : 1);
-            position.push(x0 + (v[0] + 0.5) * c, (v[1] + 0.5) * c, z0 + (v[2] + 0.5) * c);
-            normal.push(s[0] / m, s[1] / m, s[2] / m);
+            position.push(x0 + (v[0] + 0.5) * c, yAt(v[1]), z0 + (v[2] + 0.5) * c);
+            const gy = (s[1] / (yc[gap(v[1]) + 1] - yc[gap(v[1])])) * c, gl = Math.hypot(s[0], gy, s[2]) || 1; // slope per metre, scaled to match the others
+            normal.push(s[0] / gl, gy / gl, s[2] / gl);
             colour.push(tint.r, tint.g, tint.b);
           }
         }
@@ -420,11 +428,13 @@ export function createTunnelView() {
       if (!parent) return clear();
       const { vox, flow } = tunnels;
       if (shownTunnels === tunnels && shownVersion === vox.version && shownFlow === flow && group.parent === parent) return;
-      const { nx, nz, ny, c, x0, z0, cells } = vox;
+      const { nx, nz, ny, c, x0, z0, yc } = vox, nxz = nx * nz;
+      // The map the shader reads has layers of equal height (TUNNEL_LAYER), whatever the voxels' are: each takes the voxel layer it lies in.
+      const rows = Math.ceil(vox.ye[ny] / TUNNEL_LAYER);
       if (shownTunnels !== tunnels || group.parent !== parent) {
         clear();
-        data = new Uint8Array(cells.length);
-        texture = new THREE.Data3DTexture(data, nx, nz, ny);
+        data = new Uint8Array(nxz * rows);
+        texture = new THREE.Data3DTexture(data, nx, nz, rows);
         texture.format = THREE.RedFormat;
         texture.type = THREE.UnsignedByteType;
         texture.minFilter = texture.magFilter = THREE.LinearFilter; // smooth edges to the cut
@@ -434,11 +444,20 @@ export function createTunnelView() {
         parent.add(group);
         shownTunnels = tunnels;
         tunnelUniforms.uTunnelOrigin.value.set(x0, 0, z0);
-        tunnelUniforms.uTunnelBox.value.set(nx * c, ny * c, nz * c, c);
+        tunnelUniforms.uTunnelBox.value.set(nx * c, rows * TUNNEL_LAYER, nz * c, c);
       }
       const soft = tunnelField(vox, tunnels.carvedAt);
       data.fill(0);
-      if (soft) for (let k = 0; k < data.length; k++) data[k] = Math.min(255, Math.round(soft.field[k] * 255));
+      if (soft) {
+        for (let r = 0; r < rows; r++) {
+          const y = (r + 0.5) * TUNNEL_LAYER, l = vox.layerAt(y);
+          if (l < 0) continue;
+          for (let col = 0; col < nxz; col++) {
+            const v = soft.field[l * nxz + col];
+            if (v > 0) data[r * nxz + col] = Math.min(255, Math.round(v * 255));
+          }
+        }
+      }
       texture.needsUpdate = true;
       tunnelUniforms.uTunnelTex.value = texture;
       group.traverse((o) => o.geometry?.dispose());
