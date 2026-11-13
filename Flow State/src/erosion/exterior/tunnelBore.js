@@ -53,12 +53,12 @@ const clears = (item, shape, narrow) => {
   for (let t = item.ta + 3; t <= item.tb - 3; t += 1) {
     const q = w(clamp01((t - item.ta) / L)) + CLEAR;
     if (t - item.ta < 0.8 * q + 1 || item.tb - t < 0.8 * q + 1) continue; // near a face the beside-points may lie past it (checked below)
-    if (!item.inside(t, q) || !item.inside(t, -q)) { if (window.__d) console.log("side", narrow, t.toFixed(1), item.ta.toFixed(1), item.tb.toFixed(1), q.toFixed(1)); return false; }
+    if (!item.inside(t, q) || !item.inside(t, -q)) return false;
   }
   for (const [u, i] of [[0, 0], [1, 1]]) {
     const wq = w(u), q = wq + CLEAR, a = item.edges(wq), b = item.edges(-wq), c1 = item.edges(q), c2 = item.edges(-q);
-    if (!a || !b || !c1 || !c2) { if (window.__d) console.log("null", narrow, i, !!a, !!b, !!c1, !!c2); return false; }
-    for (const [e, at] of [[c1, q], [c2, -q]]) if (Math.abs(e[i] - (b[i] + ((a[i] - b[i]) * (at + wq)) / (2 * wq))) > 1.2) { if (window.__d) console.log("slope", narrow, i, e[i].toFixed(1), a[i].toFixed(1), b[i].toFixed(1)); return false; } // (the height map's faces are not exact: a corner shows as much more than this)
+    if (!a || !b || !c1 || !c2) return false;
+    for (const [e, at] of [[c1, q], [c2, -q]]) if (Math.abs(e[i] - (b[i] + ((a[i] - b[i]) * (at + wq)) / (2 * wq))) > 1.2) return false; // (the height map's faces are not exact: a corner shows as much more than this)
   }
   return true;
 };
@@ -239,5 +239,6 @@ export function createBoreView(uniforms, empty) {
     },
   };
 }
+
 
 
