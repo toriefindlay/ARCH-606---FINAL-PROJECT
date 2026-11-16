@@ -1,4 +1,4 @@
-﻿import { $ } from "../../core/dom.js";
+import { $ } from "../../core/dom.js";
 import { on } from "../../core/events.js";
 import { state, layers } from "../../core/state.js";
 import { onFrame } from "../../view/scene.js";
@@ -13,7 +13,8 @@ import { createFlowView } from "./flowView.js";
 import { createTunnels, REACH, ZONE } from "./tunnels.js";
 import { setActiveTunnels } from "./tunnelCut.js";
 import { renderPreview, createFormView, createTunnelView, setXray } from "./view.js";
-import { mountPanel, settings, syncControls, setWindNote, setSunNote, setFlowNote, setTunnelNote, setBandOptions } from "./panel.js";
+import { mountPanel, settings, syncControls, setWindNote, setSunNote, setFlowNote, setTunnelNote, setCoolingStats, setBandOptions } from "./panel.js";
+import { createCoolingView } from "./coolingView.js";
 import { getWind, getWarmPeriods, requestWind, setWindObstacle, downwind } from "../../site/wind.js";
 import { cityHeights } from "../../site/windFlow.js";
 
@@ -26,6 +27,7 @@ const SUN_IDLE = 1500; // ms without the sun moving before the panel says what t
 
 let form = null; // the one shape the sun and the wind work on (see form.js)
 let formView = null;
+let coolingView = null; // the floor plans shaded by cooling (the "cooling data" layer)
 let tunnelView = null; // the tunnels' walls, and the hole they leave in the mass's own surface
 let tunnelShown = ""; // which tunnels, and which state of them, the view and the cuts were last given
 let tunnelBusy = false; // a step of the tunnels (a solve) is running
@@ -193,6 +195,19 @@ function tunnelShowFrame(dt = 0, force = false) {
   }
   if (t) tunnelView.update(layers.model, t, Object.values(boreState));
   else tunnelView.clear();
+}
+
+// The cooling data layer (x-ray mode): a floor plan per storey shaded by cooling, for every pair of floors whose tunnels have settled.
+function coolingFrame() {
+  const t = tunnels && form && tunnels.builtOn === form.version ? tunnels : null;
+  const on = settings.xray && settings.coolingData && t;
+  const bands = on ? t.active.filter((b) => t.shapeInfo(b).chosen) : [];
+  coolingView.update(layers.model, t, bands);
+  setCoolingStats(on ? (bands.length ? bands.map((b) => {
+    const c = tunnelStats?.[b]?.cooling ?? t.cooling(b);
+    const pct = (list) => list.map((v) => `${(100 * v).toFixed(0)}%`).join(" / ");
+    return `Floors ${2 * b + 1}–${2 * b + 2}: average cooling ${pct(c.avg)}; ${pct(c.coverage)} of each floor counts as cooled`;
+  }).join("\n") : "Shown once a pair of floors has settled.") : "");
 }
 
 // What is drawn of the tunnels is eroded out of the mass over time (tunnelBore.js), not shown as the search tries them: for every pair of
@@ -396,6 +411,7 @@ export function mountExterior() {
   formView = createFormView();
   flowView = createFlowView();
   tunnelView = createTunnelView();
+  coolingView = createCoolingView();
   registerCutProvider("exterior", provideCuts);
   mountPanel($("exterior-panel"), {
     clearErosion: () => {
@@ -434,6 +450,7 @@ export function mountExterior() {
     tunnelFrame();
     tunnelShowFrame(dt);
     setXray(layers.model, settings.xray);
+    coolingFrame();
     flowFrame();
   });
 }

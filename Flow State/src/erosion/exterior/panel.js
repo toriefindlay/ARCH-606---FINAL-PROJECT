@@ -1,10 +1,11 @@
-﻿// CONTROLLER (exterior erosion): the controls in the side panel.
+// CONTROLLER (exterior erosion): the controls in the side panel.
 // `el` is the empty #exterior-panel container in index.html. Call notifyCutsChanged() from
 // erosion/combine.js after any control changes the cuts, and registerPersist() to save settings.
 import { registerPersist } from "../../core/persist.js";
+import { coolingGradient, COOLING_RAMP, COOLED_AT } from "./coolingView.js";
 
 // Read each frame by index.js. `speed` is simulated seconds per real second.
-export const settings = { playing: true, speed: 4, erode: 2, erodeWind: false, erodeSun: false, erodeTunnels: false, tunnelVolume: 20, tunnelBand: -1, xray: false, flowDebug: false, flowHeight: 2 };
+export const settings = { playing: true, speed: 4, erode: 2, erodeWind: false, erodeSun: false, erodeTunnels: false, tunnelVolume: 20, tunnelBand: -1, xray: false, coolingData: false, flowDebug: false, flowHeight: 2 };
 
 const $ = (id) => document.getElementById(id);
 let onClearErosion = () => {};
@@ -25,6 +26,13 @@ export function mountPanel(el, hooks = {}) {
       <input type="range" id="tunnel-volume" min="2" max="30" step="1">
     </label>
     <label title="Draws the mass faint so that only the wind tunnels stay solid."><input type="checkbox" id="xray"> X-ray (mass faint, tunnels solid)</label>
+    <label title="Needs X-ray. Inside the faint mass, every storey gets a floor plan shaded by how well the wind tunnels cool that part of the floor." style="margin-left:18px"><input type="checkbox" id="cooling-data"> Cooling data (shade the floors by cooling)</label>
+    <div id="cool-legend" style="display:none;margin:4px 0 8px 18px">
+      <div style="height:22px;border-radius:4px;border:1px solid #bbb;background:${coolingGradient()}"></div>
+      <div style="position:relative;height:20px;font-size:11px;color:#555">${COOLING_RAMP.map(([p]) => `<span style="position:absolute;left:${p}%;transform:translateX(${p === 0 ? "0" : p === 100 ? "-100%" : "-50%"})">${p}%</span>`).join("")}</div>
+      <div style="font-size:11px;color:#555;line-height:1.35">Cooling at head height: 100% = as much as right beside a tunnel carrying the open wind, fading to 0% three metres away. <b>${COOLED_AT}% and above counts as cooled.</b> Red: little or none; blue: fully cooled.</div>
+      <p id="cool-stats" class="hint" style="margin:6px 0 0;white-space:pre-line"></p>
+    </div>
     <p id="tunnel-note" class="hint" style="margin:0 0 6px;white-space:pre-line"></p>
     <div class="tools">
       <button type="button" class="tool" id="erode-play">Pause</button>
@@ -59,7 +67,8 @@ export function mountPanel(el, hooks = {}) {
   };
   $("erode-tunnels").addEventListener("change", exclusive("erodeTunnels"));
   $("tunnel-volume").addEventListener("input", (e) => { settings.tunnelVolume = Number(e.target.value); syncControls(); });
-  $("xray").addEventListener("change", (e) => (settings.xray = e.target.checked));
+  $("xray").addEventListener("change", (e) => { settings.xray = e.target.checked; syncControls(); });
+  $("cooling-data").addEventListener("change", (e) => { settings.coolingData = e.target.checked; syncControls(); });
   $("tunnel-band").addEventListener("change", (e) => { settings.tunnelBand = Number(e.target.value); syncControls(); });
   $("erode-wind").addEventListener("change", exclusive("erodeWind"));
   $("erode-sun").addEventListener("change", exclusive("erodeSun"));
@@ -78,6 +87,9 @@ export function syncControls() {
   $("erode-tunnels").checked = settings.erodeTunnels;
   $("tunnel-band").value = String(settings.tunnelBand);
   $("xray").checked = settings.xray;
+  $("cooling-data").checked = settings.coolingData;
+  $("cooling-data").disabled = !settings.xray; // the cooling data is drawn inside the x-rayed mass
+  $("cool-legend").style.display = settings.xray && settings.coolingData ? "block" : "none";
   $("tunnel-volume").value = settings.tunnelVolume;
   $("tunnel-volume-out").textContent = `${settings.tunnelVolume}%`;
   $("flow-debug").checked = settings.flowDebug;
@@ -94,6 +106,7 @@ export const setSunNote = setNote("sun-erode-note");
 export const setWindNote = setNote("wind-erode-note");
 export const setFlowNote = setNote("flow-note");
 export const setTunnelNote = setNote("tunnel-note");
+export const setCoolingStats = setNote("cool-stats");
 
 // Lists the pairs of floors that get tunnels in the Floors choice (`bands`: their numbers, 0 = floors 1-2), keeping the one chosen.
 export function setBandOptions(bands) {

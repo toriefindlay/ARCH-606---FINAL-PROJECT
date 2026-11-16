@@ -1,4 +1,4 @@
-﻿// MODEL (exterior erosion): the wind tunnels' state. No scene or DOM code.
+// MODEL (exterior erosion): the wind tunnels' state. No scene or DOM code.
 //
 // The voxel mass (voxelFlow.js) is built once from the form and then kept: tunnels are voxels of the mass switched to air, and
 // the airflow is solved on them (potential flow: it shows where the air is squeezed and speeds up, not turbulence or friction).
@@ -31,7 +31,7 @@ export const STOREY = 14 * 0.3048; // metres: one storey, 14 ft
 export const BAND_STOREYS = 2; // storeys a tunnel may span at most
 export const ZONE = 0.9; // metres: the depth of the ceiling void at the top of every storey, the only place a tunnel may run
 export const REACH = 3; // metres: how far from a tunnel its moving air is taken to cool the floor
-const NEAR = 0.3; // cooling (see cooling()) at which a floor voxel counts as near moving air: about 2 m from air at the open wind's speed
+export const NEAR = 0.3; // cooling (see cooling()) at which a floor voxel counts as near moving air: about 2 m from air at the open wind's speed
 const MIN_RUN = 4; // metres: a tunnel shorter than this (a corner of the mass) is not made
 
 // The numbers the solver chooses from.
@@ -75,7 +75,7 @@ export function createTunnels(form, { cityHeight = null } = {}) {
   const bandOf = (k) => Math.min(bandCount - 1, Math.floor(Math.floor(k / nxz) / perBand));
 
   // What each band has: its mass voxels, how many are carved, its own airflow and the search for its shape.
-  const fresh = { carved: 0, doneKey: "", flow: null, flowVersion: -1, flowDir: null, search: null, chosen: null, rough: false };
+  const fresh = { carved: 0, doneKey: "", flow: null, flowVersion: -1, flowDir: null, search: null, chosen: null, rough: false, mapKey: '', map: null };
   const bands = Array.from({ length: bandCount }, (_, b) => {
     let mass = 0;
     const [lo, hi] = layers(b);
@@ -180,6 +180,37 @@ export function createTunnels(form, { cityHeight = null } = {}) {
     for (let t = to; t >= a; t -= step) if (inside(t)) { z = t; break; }
     const bisect = (out, inn) => { for (let i = 0; i < 8; i++) { const m = (out + inn) / 2; if (inside(m)) inn = m; else out = m; } return inn; };
     return [a > from ? bisect(a - step, a) : a, z < to ? bisect(z + step, z) : z];
+  };
+
+  // The cooling at every voxel of band b from its last solution: every voxel gets the strongest cooling of any tunnel air within REACH
+  // metres, that air's speed (x the open wind) fading to nothing at REACH. Index (layer - lo) * nxz + column.
+  const coolField = (b) => {
+    const flow = bands[b].flow, [lo, hi] = layers(b), r = Math.ceil(REACH / c);
+    const cool = new Float32Array((hi - lo) * nxz);
+    for (let l = lo; l < hi; l++) {
+      // The layers of the band within REACH of this one, and how far (in metres) their centres are.
+      const reach = [];
+      for (let ll = lo; ll < hi; ll++) if (Math.abs(yc[ll] - yc[l]) < REACH) reach.push([ll, yc[ll] - yc[l]]);
+      for (let col = 0; col < nxz; col++) {
+        const k = l * nxz + col;
+        if (!flow.open[k] || !isTunnel(k)) continue;
+        const i = col % nx, j = Math.floor(col / nx), v0 = flow.speed[k];
+        for (const [ll, dy] of reach) {
+          for (let dj = -r; dj <= r; dj++) {
+            const jj = j + dj;
+            if (jj < 0 || jj >= nz) continue;
+            for (let di = -r; di <= r; di++) {
+              const ii = i + di;
+              if (ii < 0 || ii >= nx) continue;
+              const v = v0 * (1 - Math.hypot(di * c, dj * c, dy) / REACH);
+              const q = (ll - lo) * nxz + jj * nx + ii;
+              if (v > cool[q]) cool[q] = v;
+            }
+          }
+        }
+      }
+    }
+    return cool;
   };
 
   const tunnels = {
@@ -323,40 +354,27 @@ export function createTunnels(form, { cityHeight = null } = {}) {
       return { max, mean: n ? total / n : 0 };
     },
 
+    // The cooling at every voxel of band b (see coolField): { lo, hi, cool } with cool[(layer - lo) * nx * nz + column], or null if there is no
+    // solution. Kept until the voxels or the solution change.
+    coolingMapKey: (b) => bands[b].flowVersion + "|" + vox.version, // changes whenever coolingMap(b) does
+    coolingMap(b) {
+      const s = bands[b];
+      if (!s.flow) return null;
+      const key = s.flowVersion + "|" + vox.version;
+      if (s.mapKey !== key) { s.mapKey = key; s.map = { lo: layers(b)[0], hi: layers(b)[1], cool: coolField(b) }; }
+      return s.map;
+    },
+
     // How well band b's floors are cooled, read from its last solution. Every mass voxel of the band that is still solid gets the
     // strongest cooling of any tunnel air within REACH metres: that air's speed (x the open wind), fading to nothing at REACH.
     // Returns { coverage: [per storey], mean, evenness }: coverage is the part of the storey's solid voxels where that is at
     // least NEAR (the floor is near moving air), mean is the average cooling (capped at 1.5), and evenness is the weaker
     // storey's coverage over the stronger's (1 = both floors cooled alike). All 0 if there is nothing yet.
     cooling(b) {
-      const flow = bands[b].flow, out = { coverage: new Array(BAND_STOREYS).fill(0), mean: 0, evenness: 0 };
+      const flow = bands[b].flow, out = { coverage: new Array(BAND_STOREYS).fill(0), avg: new Array(BAND_STOREYS).fill(0), mean: 0, evenness: 0 };
       if (!flow) return out;
-      const [lo, hi] = layers(b), r = Math.ceil(REACH / c);
-      const cool = new Float32Array((hi - lo) * nxz);
-      for (let l = lo; l < hi; l++) {
-        // The layers of the band within REACH of this one, and how far (in metres) their centres are.
-        const reach = [];
-        for (let ll = lo; ll < hi; ll++) if (Math.abs(yc[ll] - yc[l]) < REACH) reach.push([ll, yc[ll] - yc[l]]);
-        for (let col = 0; col < nxz; col++) {
-          const k = l * nxz + col;
-          if (!flow.open[k] || !isTunnel(k)) continue;
-          const i = col % nx, j = Math.floor(col / nx), v0 = flow.speed[k];
-          for (const [ll, dy] of reach) {
-            for (let dj = -r; dj <= r; dj++) {
-              const jj = j + dj;
-              if (jj < 0 || jj >= nz) continue;
-              for (let di = -r; di <= r; di++) {
-                const ii = i + di;
-                if (ii < 0 || ii >= nx) continue;
-                const v = v0 * (1 - Math.hypot(di * c, dj * c, dy) / REACH);
-                const q = (ll - lo) * nxz + jj * nx + ii;
-                if (v > cool[q]) cool[q] = v;
-              }
-            }
-          }
-        }
-      }
-      const total = new Array(BAND_STOREYS).fill(0), near = new Array(BAND_STOREYS).fill(0);
+      const [lo, hi] = layers(b), cool = coolField(b);
+      const total = new Array(BAND_STOREYS).fill(0), near = new Array(BAND_STOREYS).fill(0), sum1 = new Array(BAND_STOREYS).fill(0);
       let acc = 0, count = 0;
       for (let l = lo; l < hi; l++) {
         const s = Math.min(BAND_STOREYS - 1, Math.floor((l - lo) / perStorey));
@@ -367,10 +385,12 @@ export function createTunnels(form, { cityHeight = null } = {}) {
           total[s] += w;
           if (v >= NEAR) near[s] += w;
           acc += Math.min(v, 1.5) * w;
+          sum1[s] += Math.min(v, 1) * w;
           count += w;
         }
       }
       out.coverage = total.map((t, s) => (t ? near[s] / t : 0));
+      out.avg = total.map((t, s) => (t ? sum1[s] / t : 0)); // the average cooling of the storey, 1 = as much as beside a tunnel carrying the open wind
       out.mean = count ? acc / count : 0;
       const used = out.coverage.filter((_, s) => total[s]);
       out.evenness = used.length && Math.max(...used) > 0 ? Math.min(...used) / Math.max(...used) : 0;
