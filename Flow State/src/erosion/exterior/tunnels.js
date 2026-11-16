@@ -110,11 +110,26 @@ export function createTunnels(form, { cityHeight = null } = {}) {
   const isTunnel = (k) => placed[k] === MASS && cells[k] === AIR; // air that the mass once held
   const sum = (key, list = active) => list.reduce((s, b) => s + bands[b][key], 0);
 
+  // The occupied spaces (the interior erosion's spheres { x, y, z, r }, world metres) that tunnels keep out of: a tunnel bends round them
+  // (see planRuns), and no voxel whose centre lies in one is ever carved.
+  let obstacles = [], obstaclesKey = "";
+  const inSpace = (x, y, z) => {
+    for (const s of obstacles) {
+      const ax = x - s.x, ay = y - s.y, az = z - s.z;
+      if (ax * ax + ay * ay + az * az < s.r * s.r) return true;
+    }
+    return false;
+  };
+
   // Opens a voxel of the mass. Says whether it changed (context buildings and air cannot be carved).
   const carve = (k) => {
     if (placed[k] !== MASS || cells[k] !== MASS) return false;
     const layer = Math.floor(k / nxz);
     if (!placement.allowed(layer, k % nxz, roof[k % nxz])) return false;
+    if (obstacles.length) {
+      const col = k - layer * nxz, [x, y, z] = vox.centre(col % nx, Math.floor(col / nx), layer);
+      if (inSpace(x, y, z)) return false;
+    }
     vox.set(k, AIR);
     bands[bandOf(k)].carved += dz[layer];
     return true;
@@ -165,27 +180,233 @@ export function createTunnels(form, { cityHeight = null } = {}) {
         for (const [t0, t1] of runs) if (t1 - t0 >= MIN_RUN) out.push({ mid, s, o, t0, t1, dir, step });
       }
     }
-    return out;
+    return obstacles.length ? planRoots(b, out, p) : out;
   };
 
-  // Cuts the tunnels of shape p in band b (after clearing it), along the wind dir = [ux, uz]. Says how many voxels it opened.
-  const shapeBand = (b, dir, p) => {
-    clearBand(b);
-    const [d0, d1] = dir, p0 = -d1, p1 = d0;
+  // Roots. A tunnel (a lane along the wind) that meets an occupied space does not go through it: it stops short of the space and splits into
+  // strands that run round the space like roots round a rock, in every direction (up, down and to the sides), hugging its surface, and join
+  // up again on the far side, where the lane carries on. A lane's `pieces` are its parts in the order the air goes through them:
+  //   { type: "lane", t0, t1, capStart, capEnd, s0 }   a stretch of the straight lane (t along the wind); the ends that are not at a face of
+  //                                                    the mass are capped; s0 is how far along the whole way it starts
+  //   { type: "strand", pts: Float32Array (x, y, z ...), rad, len, s0 }   one strand round a space
+  // and `pathLen` is the length of the whole way. A lane that can not get through is left out.
+  const DEV_MARGIN = 0.3; // metres a tunnel keeps clear of a space
+  const ROOT_STEP = 0.25, ROOT_JOIN = 2.5, ROOT_TINY = 0.5, END_GAP = 0.5, ROOT_RAMP = 3, STRAND_STEP = 0.4;
+  const nearest = (x, y, z) => { // the nearest space: { d: the distance to its surface (negative inside), nx, ny, nz: the way out of it }
+    let best = null;
+    for (const s of obstacles) {
+      const ax = x - s.x, ay = y - s.y, az = z - s.z, len = Math.hypot(ax, ay, az), d = len - s.r;
+      if (!best || d < best.d) best = { d, nx: len > 1e-6 ? ax / len : 1, ny: len > 1e-6 ? ay / len : 0, nz: len > 1e-6 ? az / len : 0 };
+    }
+    return best ?? { d: Infinity, nx: 1, ny: 0, nz: 0 };
+  };
+
+  // Plans the lanes of one band. Every lane that is opened at its windward face must come out at its leeward face: it either gets through (the
+  // strands round a space join it up again) or, where it can not, it joins a neighbouring lane that does (a link, see joinLane), and its own
+  // way on is left out. A lane whose mouth would be inside a space is not opened at all.
+  const planRoots = (b, runs, p) => {
+    const planned = runs.map((run) => ({ run, res: rootPieces(b, run, p) }));
+    const open = planned.filter((x) => x.res && !x.res.partial); // lanes with a way through of their own
+    const pending = planned.filter((x) => x.res?.partial);
+    for (let pass = 0; pass < 4 && pending.length; pass++) { // a lane may join one that has itself joined another
+      let progress = false;
+      for (const item of pending.slice()) {
+        const link = joinLane(b, item, open.concat(planned.filter((x) => x.link)), p);
+        if (!link) continue;
+        item.res = { pieces: [...item.res.pieces, link.piece], pathLen: item.res.s + link.piece.len };
+        item.link = true;
+        item.joinTo = link.target;
+        pending.splice(pending.indexOf(item), 1);
+        progress = true;
+      }
+      if (!progress) break;
+    }
+    const kept = planned.filter((x) => x.res && !x.res.partial);
+    return kept.map((x) => ({ ...x.run, pieces: x.res.pieces, pathLen: x.res.pathLen, joinTo: x.joinTo ? kept.indexOf(x.joinTo) : -1 }));
+  };
+
+  const rootPieces = (b, run, p) => {
+    const { t0, t1, o, step, dir, mid } = run, [d0, d1] = dir, y = yc[mid], L = t1 - t0;
+    const wAt = (t) => tunnelWidth(p, (t - t0) / L, step) / 2;
+    const n = Math.max(2, Math.ceil(L / ROOT_STEP)), ts = (i) => t0 + (i * L) / n, at = (t) => [d0 * t - d1 * o, y, d1 * t + d0 * o];
+    const blocked = new Uint8Array(n + 1);
+    for (let i = 0; i <= n; i++) { const t = ts(i), q = at(t); blocked[i] = nearest(q[0], y, q[2]).d < wAt(t) + DEV_MARGIN + END_GAP ? 1 : 0; }
+    if (blocked[0]) return null; // a space across the mouth of the tunnel: it is not opened
+    const spans = []; // the blocked stretches [i0, i1] (ones close together are one)
+    for (let i = 0; i <= n; i++) {
+      if (!blocked[i]) continue;
+      let j = i;
+      while (j < n && blocked[j + 1]) j++;
+      const last = spans[spans.length - 1];
+      if (last && ts(i) - ts(last[1]) < ROOT_JOIN) last[1] = j; else spans.push([i, j]);
+      i = j;
+    }
+    const pieces = [];
+    let s = 0, cursor = 0, fed = false;
+    for (const [i0, i1] of spans) {
+      const a = ts(cursor), z = ts(i0);
+      if (z - a < ROOT_TINY) return null; // a space right at the mouth
+      pieces.push({ type: "lane", t0: a, t1: z, capStart: fed, capEnd: true, s0: s });
+      s += z - a;
+      const fail = { partial: true, pieces, s, join: { t: z, w: wAt(z) } }; // the lane stops here and has to join a neighbour
+      if (i1 >= n - 2) return fail; // the space reaches the far face
+      const strands = makeStrands(b, at(z), at(ts(i1)), wAt(z), dir);
+      if (!strands.length) return fail; // no way round
+      const mean = strands.reduce((sum, st) => sum + st.len, 0) / strands.length;
+      for (const st of strands) pieces.push({ type: "strand", pts: st.pts, rad: st.rad, len: st.len, s0: s });
+      s += mean;
+      cursor = i1;
+      fed = true;
+    }
+    const a = ts(cursor);
+    if (t1 - a >= ROOT_TINY) { pieces.push({ type: "lane", t0: a, t1, capStart: fed, capEnd: false, s0: s }); s += t1 - a; }
+    else if (fed) return { partial: true, pieces, s, join: { t: ts(cursor), w: wAt(ts(cursor)) }, atEnd: true };
+    return { pieces, pathLen: s };
+  };
+
+  // A link from a lane that has to stop (item) to a neighbouring lane that gets through: a smooth curve in the level of the tunnels, leaving
+  // the lane along the wind and joining the neighbour's, clear of the spaces and inside the mass. `lanes` are the candidates (lanes that
+  // have a way through). Returns { piece, target } or null.
+  const joinLane = (b, item, lanes, p) => {
+    const { run, res } = item, { t: tj0, w } = res.join, [d0, d1] = run.dir, y = yc[run.mid], [lo, hi] = layers(b);
+    const rad = Math.max(0.5, Math.min(1.6, 0.8 * w)), yMin = vox.ye[lo], yMax = vox.ye[hi];
+    const world = (t, q) => [d0 * t - d1 * q, y, d1 * t + d0 * q];
+    const candidates = lanes.filter((x) => x !== item && x.run.mid === run.mid && Math.abs(x.run.o - run.o) <= 1.7 * run.step && x.run.t1 > tj0)
+      .sort((a, c) => Math.abs(a.run.o - run.o) - Math.abs(c.run.o - run.o));
+    for (const target of candidates) {
+      const dq = target.run.o - run.o;
+      for (const mult of [2.2, 3.4, 5, 7]) {
+        const tj = tj0 + Math.max(4, mult * Math.abs(dq));
+        const piece = target.res.pieces.find((pc) => pc.type === "lane" && tj >= pc.t0 + 1 && tj <= pc.t1 - 1);
+        if (!piece) continue;
+        // a smooth curve (cubic Hermite, along the wind at both ends)
+        const chord = tj - tj0, pts = [], m = Math.max(4, Math.ceil(Math.hypot(chord, dq) / STRAND_STEP));
+        let ok = true, len = 0, prev = null;
+        for (let i = 0; i <= m && ok; i++) {
+          const u = i / m, h00 = 2 * u ** 3 - 3 * u ** 2 + 1, h10 = u ** 3 - 2 * u ** 2 + u, h01 = -2 * u ** 3 + 3 * u ** 2, h11 = u ** 3 - u ** 2;
+          const t = h00 * tj0 + h10 * chord + h01 * tj + h11 * chord, q = h00 * run.o + h01 * target.run.o;
+          const pt = world(t, q);
+          if (nearest(pt[0], pt[1], pt[2]).d < rad + DEV_MARGIN - 0.1) ok = false;
+          const top = y + rad + 0.4, k = rad + 1;
+          if (ok) ok = y - rad >= yMin && y + rad <= yMax && form.heightAt(pt[0], pt[2]) >= top && form.heightAt(pt[0] + k, pt[2]) >= top && form.heightAt(pt[0] - k, pt[2]) >= top && form.heightAt(pt[0], pt[2] + k) >= top && form.heightAt(pt[0], pt[2] - k) >= top;
+          if (prev) len += Math.hypot(pt[0] - prev[0], pt[2] - prev[2]);
+          prev = pt;
+          pts.push(pt);
+        }
+        if (ok) return { piece: { type: "strand", pts: Float32Array.from(pts.flat()), rad, len, s0: res.s, link: true }, target };
+      }
+    }
+    return null;
+  };
+  // The strands that carry a tunnel round the spaces in its way, from E (where the lane stops) to X (where it carries on): 2 to 4 of them,
+  // as many as fit round, each heading out in a different direction round the way through and pressed onto a skin round the spaces as wide as
+  // the strand. Any strand that would leave the mass, or the two floors of this pair, or come nearer than a corner clearance to its sides,
+  // is left out.
+  const makeStrands = (b, E, X, wMain, dir) => {
+    const [lo, hi] = layers(b), yMin = vox.ye[lo], yMax = vox.ye[hi];
+    const mid = [(E[0] + X[0]) / 2, (E[1] + X[1]) / 2, (E[2] + X[2]) / 2], reach = Math.hypot(X[0] - E[0], X[1] - E[1], X[2] - E[2]) / 2 + 4;
+    const touched = obstacles.filter((s) => Math.hypot(s.x - mid[0], s.y - mid[1], s.z - mid[2]) - s.r < reach);
+    if (!touched.length) return [];
+    const C = [0, 0, 0];
+    for (const s of touched) { C[0] += s.x; C[1] += s.y; C[2] += s.z; }
+    for (let k = 0; k < 3; k++) C[k] /= touched.length;
+    let Rb = 0;
+    for (const s of touched) Rb = Math.max(Rb, Math.hypot(s.x - C[0], s.y - C[1], s.z - C[2]) + s.r);
+    const wb = Math.max(0.5, Math.min(1.6, 0.62 * wMain)), dOff = wb + DEV_MARGIN;
+    let a = [X[0] - E[0], X[1] - E[1], X[2] - E[2]];
+    const al = Math.hypot(a[0], a[1], a[2]);
+    a = al > 0.5 ? a.map((v) => v / al) : [dir[0], 0, dir[1]];
+    let u = [a[2], 0, -a[0]];
+    const ul = Math.hypot(u[0], u[2]) || 1;
+    u = [u[0] / ul, 0, u[2] / ul];
+    const v = [a[1] * u[2], a[2] * u[0] - a[0] * u[2], -a[1] * u[0]];
+    const K = Math.max(2, Math.min(4, Math.round((2 * Math.PI * (Rb + dOff)) / (2 * wb + 2))));
+    const okPoint = (x, yy) => {
+      if (yy - wb < yMin || yy + wb > yMax) return false;
+      const top = yy + wb + 0.4, q = wb + 1;
+      return form.heightAt(x[0], x[2]) >= top && form.heightAt(x[0] + q, x[2]) >= top && form.heightAt(x[0] - q, x[2]) >= top && form.heightAt(x[0], x[2] + q) >= top && form.heightAt(x[0], x[2] - q) >= top;
+    };
+    const strands = [];
+    for (let k = 0; k < K; k++) {
+      const phi = 0.35 + (2 * Math.PI * k) / K, w = [0, 1, 2].map((i) => u[i] * Math.cos(phi) + v[i] * Math.sin(phi));
+      const P = [0, 1, 2].map((i) => C[i] + w[i] * (Rb + dOff + 0.8));
+      const pts = [E];
+      for (const [from, to] of [[E, P], [P, X]]) {
+        const len = Math.hypot(to[0] - from[0], to[1] - from[1], to[2] - from[2]), m = Math.max(1, Math.ceil(len / STRAND_STEP));
+        for (let i = 1; i <= m; i++) pts.push([0, 1, 2].map((q) => from[q] + ((to[q] - from[q]) * i) / m));
+      }
+      const acc = [0];
+      for (let i = 1; i < pts.length; i++) acc.push(acc[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1], pts[i][2] - pts[i - 1][2]));
+      const total = acc[acc.length - 1];
+      // press the points onto the skin round the spaces, gently near the two ends so that the strand leaves the lane smoothly
+      for (let i = 1; i < pts.length - 1; i++) {
+        const e = Math.min(1, Math.min(acc[i], total - acc[i]) / ROOT_RAMP), ramp = e * e * (3 - 2 * e);
+        const q = pts[i].slice();
+        for (let it = 0; it < 4; it++) { const nr = nearest(q[0], q[1], q[2]), push = dOff - nr.d; q[0] += nr.nx * push; q[1] += nr.ny * push; q[2] += nr.nz * push; }
+        pts[i] = [0, 1, 2].map((c) => pts[i][c] + (q[c] - pts[i][c]) * ramp);
+      }
+      for (let pass = 0; pass < 3; pass++) {
+        const next = pts.map((q) => q.slice());
+        for (let i = 1; i < pts.length - 1; i++) for (let c = 0; c < 3; c++) next[i][c] = (pts[i - 1][c] + 2 * pts[i][c] + pts[i + 1][c]) / 4;
+        for (let i = 0; i < pts.length; i++) pts[i] = next[i];
+      }
+      let ok = true, len = 0;
+      for (let i = 0; i < pts.length && ok; i++) {
+        const q = pts[i];
+        ok = nearest(q[0], q[1], q[2]).d >= dOff - 0.25 && okPoint(q, q[1]);
+        if (i) len += Math.hypot(q[0] - pts[i - 1][0], q[1] - pts[i - 1][1], q[2] - pts[i - 1][2]);
+      }
+      if (ok) strands.push({ pts: Float32Array.from(pts.flat()), rad: wb, len });
+    }
+    return strands;
+  };
+  // Opens the voxels within r of a point, in the layers lo up to hi (not including). Says how many it opened.
+  const carveBall = (x, y, z, r, lo, hi) => {
     let opened = 0;
-    for (const { mid, o, t0, t1, step } of runsOf(b, dir, p)) {
-      for (let t = t0; t <= t1; t += c / 2) {
-        const w = Math.max(tunnelWidth(p, (t - t0) / (t1 - t0), step), c) / 2; // the half width here; never under a voxel
-        for (let q = -w; q <= w + 1e-6; q += c / 2) {
-          const i = Math.floor((d0 * t + p0 * (o + q) - vox.x0) / c), j = Math.floor((d1 * t + p1 * (o + q) - vox.z0) / c);
-          if (i < 0 || j < 0 || i >= nx || j >= nz) continue;
-          if (carve(vox.index(i, j, mid))) opened++;
+    const i0 = Math.max(0, Math.floor((x - r - vox.x0) / c)), i1 = Math.min(nx - 1, Math.floor((x + r - vox.x0) / c));
+    const j0 = Math.max(0, Math.floor((z - r - vox.z0) / c)), j1 = Math.min(nz - 1, Math.floor((z + r - vox.z0) / c));
+    const l0 = Math.max(lo, vox.layerAt(Math.max(0, y - r))), l1 = Math.min(hi - 1, vox.layerAt(y + r));
+    if (l0 < 0 || l1 < 0) return 0;
+    for (let l = l0; l <= l1; l++) {
+      for (let j = j0; j <= j1; j++) {
+        for (let i = i0; i <= i1; i++) {
+          const cc = vox.centre(i, j, l);
+          if ((cc[0] - x) ** 2 + (cc[1] - y) ** 2 + (cc[2] - z) ** 2 <= r * r && carve(vox.index(i, j, l))) opened++;
         }
       }
     }
     return opened;
   };
 
+  // Cuts the tunnels of shape p in band b (after clearing it), along the wind dir = [ux, uz]: the lanes, and where a lane meets an occupied
+  // space the strands that go round it (see planRoots). Says how many voxels it opened.
+  const shapeBand = (b, dir, p) => {
+    clearBand(b);
+    const [d0, d1] = dir, p0 = -d1, p1 = d0, [lo, hi] = layers(b);
+    let opened = 0;
+    for (const run of runsOf(b, dir, p)) {
+      const { mid, o, t0, t1, step } = run;
+      for (const pc of run.pieces ?? [{ type: "lane", t0, t1 }]) {
+        if (pc.type === "strand") { // a ball at every half voxel along the strand
+          const pts = pc.pts, r = Math.max(pc.rad, 0.6 * c);
+          for (let i = 0; i + 3 < pts.length; i += 3) {
+            const dx = pts[i + 3] - pts[i], dy = pts[i + 4] - pts[i + 1], dzz = pts[i + 5] - pts[i + 2], m = Math.max(1, Math.ceil(Math.hypot(dx, dy, dzz) / (c / 2)));
+            for (let k = 0; k < m; k++) opened += carveBall(pts[i] + (dx * k) / m, pts[i + 1] + (dy * k) / m, pts[i + 2] + (dzz * k) / m, r, lo, hi);
+          }
+          continue;
+        }
+        for (let t = pc.t0; t <= pc.t1; t += c / 2) {
+          const w = Math.max(tunnelWidth(p, (t - t0) / (t1 - t0), step), c) / 2; // the half width here; never under a voxel
+          for (let q = -w; q <= w + 1e-6; q += c / 2) {
+            const i = Math.floor((d0 * t + p0 * (o + q) - vox.x0) / c), j = Math.floor((d1 * t + p1 * (o + q) - vox.z0) / c);
+            if (i < 0 || j < 0 || i >= nx || j >= nz) continue;
+            if (carve(vox.index(i, j, mid))) opened++;
+          }
+        }
+      }
+    }
+    return opened;
+  };
   // Is there mass at (x, z) in layer mid, with a roof still above it? (From the form's height map, which is finer than the voxels.)
   const massAt = (mid, x, z) => form.heightAt(x, z) >= vox.ye[mid + 1] + 0.3;
   // Where the mass starts and ends along the line (t, q) of a run, found to a few centimetres: [in, out] along the wind, or null.
@@ -270,15 +491,31 @@ export function createTunnels(form, { cityHeight = null } = {}) {
     // ta to tb along the wind (the mass's windward and leeward faces, to a few cm), at the height y (the middle of the layer they are cut in, which
     // is 2 * half deep); edges(q) gives the same for the line q across from the axis ([in, out] or null). Independent of what is carved.
     layout(b, dir, p) {
-      const make = (run) => { // `shift(dq)` is the same tunnel moved dq metres across the wind (null if there is no tunnel there)
-        const e = edges(run, 0);
-        if (!e || e[1] - e[0] < MIN_RUN) return null;
-        return { ...run, ta: e[0], tb: e[1], y: yc[run.mid], half: dz[run.mid] / 2, edges: (q) => edges(run, q), shift: (dq) => make({ ...run, o: run.o + dq }),
+      const out = [];
+      // A piece of a lane as a tunnel to draw: `shift(dq)` is the same lane moved dq metres across the wind (null if there is none there).
+      const makeLane = (run, full, pc, laneId, pathLen) => {
+        const capStart = !!pc.capStart, capEnd = !!pc.capEnd;
+        return { ...run, type: "lane", laneId, joinTo: run.joinTo ?? -1, pathLen, s0: pc.s0 ?? 0, capStart, capEnd,
+          ta: capStart ? pc.t0 : full[0], tb: capEnd ? pc.t1 : full[1], tStart: capStart ? pc.t0 : full[0], tEnd: capEnd ? pc.t1 : full[1],
+          uTa: full[0], uL: full[1] - full[0], y: yc[run.mid], half: dz[run.mid] / 2, edges: (q) => edges(run, q),
+          shift: (dq) => { // (a lane round an occupied space is not moved over)
+            if (obstacles.length) return null;
+            const moved = { ...run, o: run.o + dq }, f = edges(moved, 0);
+            return f && f[1] - f[0] >= MIN_RUN ? makeLane(moved, f, { t0: moved.t0, t1: moved.t1 }, laneId, f[1] - f[0]) : null;
+          },
           inside: (t, q) => massAt(run.mid, run.dir[0] * t - run.dir[1] * (run.o + q), run.dir[1] * t + run.dir[0] * (run.o + q)) };
       };
-      return runsOf(b, dir, p).map(make).filter(Boolean);
+      runsOf(b, dir, p).forEach((run, laneId) => {
+        const full = edges(run, 0);
+        if (!full || full[1] - full[0] < MIN_RUN) return;
+        const pathLen = run.pathLen ?? full[1] - full[0];
+        for (const pc of run.pieces ?? [{ type: "lane", t0: run.t0, t1: run.t1 }]) {
+          if (pc.type === "strand") out.push({ type: "strand", laneId, joinTo: run.joinTo ?? -1, pts: pc.pts, rad: pc.rad, len: pc.len, s0: pc.s0, pathLen, mid: run.mid, s: run.s });
+          else out.push(makeLane(run, full, pc, laneId, pathLen));
+        }
+      });
+      return out;
     },
-
     // Is this voxel air that the mass once held (part of a tunnel)?
     carvedAt: isTunnel,
 
@@ -290,6 +527,13 @@ export function createTunnels(form, { cityHeight = null } = {}) {
       merged = null;
       mergedKey = "";
     },
+
+    // The occupied spaces the tunnels keep out of: a list of spheres { x, y, z, r } in world metres. Call before setActive (which starts the tunnels again).
+    setObstacles(list) {
+      obstacles = list.map((s) => ({ x: s.x, y: s.y, z: s.z, r: s.r }));
+      obstaclesKey = obstacles.map((s) => `${s.x.toFixed(2)},${s.y.toFixed(2)},${s.z.toFixed(2)},${s.r.toFixed(2)}`).join(";");
+    },
+    get obstaclesKey() { return obstaclesKey; },
 
     // Chooses the bands to work on (a list of band numbers, 0 = floors 1 and 2) and puts the mass back as placed.
     setActive(list) {

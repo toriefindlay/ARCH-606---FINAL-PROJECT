@@ -15,6 +15,7 @@ import { setActiveTunnels } from "./tunnelCut.js";
 import { renderPreview, createFormView, createTunnelView, setXray } from "./view.js";
 import { mountPanel, settings, syncControls, setWindNote, setSunNote, setFlowNote, setTunnelNote, setFloorRows, setBandOptions } from "./panel.js";
 import { createCoolingView } from "./coolingView.js";
+import { getSpaces, spacesSignature } from "../interior/spaces.js";
 import { getWind, getWarmPeriods, requestWind, setWindObstacle, downwind } from "../../site/wind.js";
 import { cityHeights } from "../../site/windFlow.js";
 
@@ -126,6 +127,17 @@ function tunnelMessage(text) {
   setTunnelNote(text);
 }
 
+// The occupied spaces (interior erosion) the tunnels grow round. A change is only taken up once the spheres have stopped changing for a moment, so
+// that dragging one does not start the tunnels again at every step.
+const SPACES_SETTLE = 800; // ms
+let spacesSeen = "", spacesSince = 0, spacesApplied = "", spacesList = [];
+function settledSpaces() {
+  const sig = spacesSignature(), now = performance.now();
+  if (sig !== spacesSeen) { spacesSeen = sig; spacesSince = now; }
+  if (sig !== spacesApplied && now - spacesSince >= SPACES_SETTLE) { spacesApplied = sig; spacesList = getSpaces().map((s) => ({ ...s })); }
+  return spacesApplied;
+}
+
 function tunnelFrame() {
   tunnelWorking = false;
   if (!settings.erodeTunnels) return tunnelMessage("");
@@ -147,9 +159,10 @@ function tunnelFrame() {
   tunnelWinds = winds;
   const chosen = t.usable.includes(settings.tunnelBand) ? settings.tunnelBand : -1;
   const limit = settings.tunnelVolume / 100, key = `${limit}`;
-  const plan = `${chosen}|${key}|${t.usable.map((b) => winds[b].from).join(",")}`;
-  if (t.plan !== plan) { // other floors, winds or volume limit: the mass is put back and the tunnels start again
+  const plan = `${chosen}|${key}|${t.usable.map((b) => winds[b].from).join(",")}|${settledSpaces()}`;
+  if (t.plan !== plan) { // other floors, winds, volume limit or occupied spaces: the mass is put back and the tunnels start again
     t.plan = plan;
+    t.setObstacles(spacesList);
     t.setActive(chosen < 0 ? t.usable : [chosen]);
     tunnelStats = null;
   }
