@@ -37,7 +37,7 @@ const MIN_RUN = 4; // metres: a tunnel shorter than this (a corner of the mass) 
 // The numbers the solver chooses from.
 export const SHAPES = {
   spacing: [6, 8, 10, 12, 14], // metres between tunnels in one storey
-  throat: [1.4, 2.1, 2.8, 3.6, 4.5], // metres: the width at the narrowest point (rounded up to a whole voxel at least)
+  throat: [1.4, 2.1, 2.8, 3.6, 4.5, 6, 8], // metres: the width at the narrowest point (rounded up to a whole voxel at least)
   mouth: [1, 1.5, 2, 2.5], // x the throat: the width at the windward face
   exit: [1, 1.4, 1.8], // x the throat: the width at the leeward face
   pos: [0.35, 0.5, 0.65], // how far along the tunnel the throat is
@@ -53,8 +53,14 @@ const coarseShapes = () => {
 
 // The width of a tunnel at u (0 at the windward face, 1 at the leeward face) for the shape p: eased between the mouth, throat and exit.
 const ease = (x) => (1 - Math.cos(Math.PI * x)) / 2;
-export function tunnelWidth(p, u) {
-  return p.throat * (u < p.pos ? 1 + (p.mouth - 1) * ease(1 - u / p.pos) : 1 + (p.exit - 1) * ease((u - p.pos) / (1 - p.pos)));
+export const GAP = 3 * 0.3048; // metres: the least clear space between two tunnels (3 ft), measured between their openings
+export const LIP = 0.6; // metres: how much wider and deeper than the tube its opening in the wall is at the wall (see tunnelBore.js)
+// `step` is the distance between the tunnels (the spacing, or what it came to on this mass). However wide the numbers say it is, a tunnel is
+// scaled down to fit: its widest part, with the rounded lip of its opening, always leaves GAP metres to the next tunnel.
+export function tunnelWidth(p, u, step = p.spacing) {
+  const raw = p.throat * (u < p.pos ? 1 + (p.mouth - 1) * ease(1 - u / p.pos) : 1 + (p.exit - 1) * ease((u - p.pos) / (1 - p.pos)));
+  const widest = p.throat * Math.max(1, p.mouth, p.exit);
+  return raw * Math.min(1, Math.max(0.5, step - GAP - 2 * LIP) / widest);
 }
 
 // form: the shared form (form.js), as it is now. cityHeight: (x, z) => metres, the site's buildings (windFlow.js cityHeights).
@@ -143,7 +149,7 @@ export function createTunnels(form, { cityHeight = null } = {}) {
           if (inside && start === null) start = t;
           if (!inside && start !== null) { runs.push([start, t - c / 2]); start = null; }
         }
-        for (const [t0, t1] of runs) if (t1 - t0 >= MIN_RUN) out.push({ mid, s, o, t0, t1, dir });
+        for (const [t0, t1] of runs) if (t1 - t0 >= MIN_RUN) out.push({ mid, s, o, t0, t1, dir, step });
       }
     }
     return out;
@@ -154,9 +160,9 @@ export function createTunnels(form, { cityHeight = null } = {}) {
     clearBand(b);
     const [d0, d1] = dir, p0 = -d1, p1 = d0;
     let opened = 0;
-    for (const { mid, o, t0, t1 } of runsOf(b, dir, p)) {
+    for (const { mid, o, t0, t1, step } of runsOf(b, dir, p)) {
       for (let t = t0; t <= t1; t += c / 2) {
-        const w = Math.max(tunnelWidth(p, (t - t0) / (t1 - t0)), c) / 2; // the half width here; never under a voxel
+        const w = Math.max(tunnelWidth(p, (t - t0) / (t1 - t0), step), c) / 2; // the half width here; never under a voxel
         for (let q = -w; q <= w + 1e-6; q += c / 2) {
           const i = Math.floor((d0 * t + p0 * (o + q) - vox.x0) / c), j = Math.floor((d1 * t + p1 * (o + q) - vox.z0) / c);
           if (i < 0 || j < 0 || i >= nx || j >= nz) continue;
@@ -173,7 +179,7 @@ export function createTunnels(form, { cityHeight = null } = {}) {
   const edges = (run, q) => {
     const [d0, d1] = run.dir, p0 = -d1, p1 = d0;
     const inside = (t) => massAt(run.mid, d0 * t + p0 * (run.o + q), d1 * t + p1 * (run.o + q));
-    const from = run.t0 - 2 * c, to = run.t1 + 2 * c, step = 0.15;
+    const reach = 2 * c + 3 * Math.abs(q), from = run.t0 - reach, to = run.t1 + reach, step = 0.15; // (a face at a shallow angle to the wind meets a line beside the axis far from where it meets the axis)
     let a = null, z = null;
     for (let t = from; t <= to; t += step) if (inside(t)) { a = t; break; }
     if (a === null) return null;

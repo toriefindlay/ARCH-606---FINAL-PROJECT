@@ -1,4 +1,4 @@
-﻿// VIEW (exterior erosion): the wind tunnels as the wind would wear them out of a block of stone. No solver code.
+// VIEW (exterior erosion): the wind tunnels as the wind would wear them out of a block of stone. No solver code.
 //
 // Every tunnel is a tube with an elliptical cross-section along the wind, in the ceiling void at the top of a storey (tunnels.js
 // `layout`). Its drawn shape is not voxels but the shape's own numbers, so it is smooth at any size. It is bored from the windward
@@ -10,11 +10,10 @@
 // map for the shader (see view.js) which discards the mass's own surface where a tube meets it, so that the opening is exactly the
 // tube's cross-section. The mass's own surface is the original model; nothing about it changes.
 import * as THREE from "three";
-import { tunnelWidth, STOREY, ZONE } from "./tunnels.js";
+import { tunnelWidth, STOREY, ZONE, GAP, LIP } from "./tunnels.js";
 
 const RING = 28; // points round a tube's cross-section
 const STEP = 0.7; // metres between the stations of a tube (they bunch up at the two ends, see spread)
-const LIP = 0.6; // metres: how much wider and deeper than the tube its opening in the wall is at the wall, rounded off into the tube
 const LIP_LEN = 1.4; // metres: how far in from the wall the rounding goes
 const CLEAR = 1; // metres a tunnel keeps from the corners and sides of the mass
 const NARROW = [1, 0.8, 0.6, 0.45]; // how much narrower than its shape a tunnel is made, in turn, to keep that clearance
@@ -40,7 +39,7 @@ function bore(tube, shape, f) {
     const r = bored - (t - ta); // how far behind the tip of the bore this point is (negative: not reached yet)
     if (r <= 0) return { w: 0, h: 0, s: 0 };
     const x = Math.min(1, r / nose), scale = Math.sqrt(x * (2 - x)); // a round tip
-    const w = ((tunnelWidth(shape, clamp01((t - ta) / L)) * tube.narrow) / 2) * scale;
+    const w = ((tunnelWidth(shape, clamp01((t - ta) / L), tube.step) * tube.narrow) / 2) * scale;
     return { w, h: Math.min(1, w / half), s: scale }; // as deep as it is wide until it is as deep as the void
   };
 }
@@ -49,10 +48,14 @@ function bore(tube, shape, f) {
 // (its opening included) there must be mass all along; and at each of the two faces the wall must carry on straight for CLEAR metres
 // beyond the opening on both sides (a face may be at an angle to the wind, so it is compared with the line through the opening's own two edges).
 const clears = (item, shape, narrow) => {
-  const L = item.tb - item.ta, w = (u) => (tunnelWidth(shape, u) * narrow) / 2 + LIP;
+  const L = item.tb - item.ta, w = (u) => (tunnelWidth(shape, u, item.step) * narrow) / 2 + LIP;
+  // How slanted the two faces are to the wind (along the wind per metre across it), from the lines along the opening's two edges.
+  const e0 = [item.edges(w(0)), item.edges(-w(0))], e1 = [item.edges(w(1)), item.edges(-w(1))];
+  if (e0.includes(null) || e1.includes(null)) return false;
+  const slant0 = Math.abs(e0[0][0] - e0[1][0]) / (2 * w(0)), slant1 = Math.abs(e1[0][1] - e1[1][1]) / (2 * w(1));
   for (let t = item.ta + 3; t <= item.tb - 3; t += 1) {
     const q = w(clamp01((t - item.ta) / L)) + CLEAR;
-    if (t - item.ta < 0.8 * q + 1 || item.tb - t < 0.8 * q + 1) continue; // near a face the beside-points may lie past it (checked below)
+    if (t - item.ta < slant0 * q + 1 || item.tb - t < slant1 * q + 1) continue; // near a face the beside-points may lie past it (checked below)
     if (!item.inside(t, q) || !item.inside(t, -q)) return false;
   }
   for (const [u, i] of [[0, 0], [1, 1]]) {
@@ -88,16 +91,20 @@ export function createBoreView(uniforms, empty) {
         // (and left out if there is no way).
         let pick = null;
         for (const narrow of NARROW) {
+          // Moving a tunnel over must not close the gap to its neighbours (they may move towards it too): its widest part, the lips and twice the move
+          // have to fit in the spacing with GAP to spare.
+          const widest = Math.max(tunnelWidth(shape, 0, first.step), tunnelWidth(shape, shape.pos, first.step), tunnelWidth(shape, 1, first.step)) * narrow + 2 * LIP;
           for (const dq of [0, 0.75, -0.75, 1.5, -1.5, 2.25, -2.25]) {
-            if (Math.abs(dq) > 0.35 * shape.spacing) continue;
+            if (Math.abs(dq) > 0.35 * shape.spacing || widest + 2 * Math.abs(dq) > first.step - GAP + 1e-6) continue;
             const item = dq ? first.shift(dq) : first;
             if (item && clears(item, shape, narrow)) { pick = { run: item, narrow }; break; }
           }
           if (pick) break;
         }
+        if (window.__d) console.log('tube', i, 'step', first.step, 'pick', !!pick, 'ta', first.ta, 'tb', first.tb);
         if (!pick) return null;
-        const { run, narrow } = pick, half = (u) => (tunnelWidth(shape, u) * narrow) / 2;
-        const wide = Math.max(shape.mouth, shape.exit, 1) * (shape.throat * narrow) / 2;
+        const { run, narrow } = pick, half = (u) => (tunnelWidth(shape, u, run.step) * narrow) / 2;
+        const wide = Math.max(tunnelWidth(shape, 0, run.step), tunnelWidth(shape, shape.pos, run.step), tunnelWidth(shape, 1, run.step)) * narrow / 2;
         const lines = Array.from({ length: RING }, (_, k) => { // where the mass starts and ends along each line of the tube's wall
           const cos = Math.cos((2 * Math.PI * k) / RING);
           const a = run.edges(cos * (half(0) + LIP)), z = run.edges(cos * (half(1) + LIP));
@@ -112,6 +119,7 @@ export function createBoreView(uniforms, empty) {
         });
         return gap ? null : { ...run, lines, wide, narrow, delay: delayOf(b, i), shape };
       }).filter(Boolean);
+      if (window.__d) console.log('layout', b, JSON.stringify(shape), 'tubes', tubes.length);
       layouts.set(key, tubes);
     }
     return tubes;

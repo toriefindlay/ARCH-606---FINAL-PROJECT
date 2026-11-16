@@ -31,9 +31,12 @@ export function mountPanel(el, hooks = {}) {
       <div style="height:22px;border-radius:4px;border:1px solid #bbb;background:${coolingGradient()}"></div>
       <div style="position:relative;height:20px;font-size:11px;color:#555">${COOLING_RAMP.map(([p]) => `<span style="position:absolute;left:${p}%;transform:translateX(${p === 0 ? "0" : p === 100 ? "-100%" : "-50%"})">${p}%</span>`).join("")}</div>
       <div style="font-size:11px;color:#555;line-height:1.35">Cooling at head height: 100% = as much as right beside a tunnel carrying the open wind, fading to 0% three metres away. <b>${COOLED_AT}% and above counts as cooled.</b> Red: little or none; blue: fully cooled.</div>
-      <p id="cool-stats" class="hint" style="margin:6px 0 0;white-space:pre-line"></p>
     </div>
-    <p id="tunnel-note" class="hint" style="margin:0 0 6px;white-space:pre-line"></p>
+    <p id="tunnel-note" class="hint" style="margin:0 0 6px"></p>
+    <details id="floor-data" open style="margin:0 0 8px">
+      <summary style="cursor:pointer;font-weight:600;font-size:13px">Floor data (open a pair of floors for its numbers)</summary>
+      <div id="floor-rows"></div>
+    </details>
     <div class="tools">
       <button type="button" class="tool" id="erode-play">Pause</button>
       <select id="erode-speed" aria-label="Simulation speed">
@@ -106,7 +109,45 @@ export const setSunNote = setNote("sun-erode-note");
 export const setWindNote = setNote("wind-erode-note");
 export const setFlowNote = setNote("flow-note");
 export const setTunnelNote = setNote("tunnel-note");
-export const setCoolingStats = setNote("cool-stats");
+// The floor data table: one collapsible row per pair of floors. `rows`: [{ b, title, summary, fields: [[label, value], ...] }] in floor order.
+// Rows are kept (and stay open or shut) between calls; only text that changed is written.
+const floorRows = new Map(); // band number -> { details, summary, body, labels }
+export function setFloorRows(rows) {
+  const host = $("floor-rows");
+  if (!host) return;
+  const keep = new Set(rows.map((r) => r.b));
+  for (const [b, el] of floorRows) if (!keep.has(b)) { el.details.remove(); floorRows.delete(b); }
+  let previous = null;
+  for (const r of rows) {
+    let el = floorRows.get(r.b);
+    if (!el) {
+      const details = document.createElement("details"), summary = document.createElement("summary"), body = document.createElement("table");
+      details.style.cssText = "border-bottom:1px solid #d6cfc3;padding:3px 0";
+      summary.style.cssText = "cursor:pointer;font-size:12px;line-height:1.35";
+      body.style.cssText = "width:100%;font-size:11.5px;border-collapse:collapse;margin:4px 0 2px";
+      details.append(summary, body);
+      el = { details, summary, body, labels: "" };
+      floorRows.set(r.b, el);
+    }
+    const text = `${r.title} · ${r.summary}`;
+    if (el.summary.textContent !== text) el.summary.textContent = text;
+    const labels = r.fields.map((f) => f[0]).join("|");
+    if (labels !== el.labels) { // the fields are new or different: rebuild the table
+      el.labels = labels;
+      el.body.replaceChildren(...r.fields.map(([label]) => {
+        const tr = document.createElement("tr"), th = document.createElement("th"), td = document.createElement("td");
+        th.textContent = label;
+        th.style.cssText = "text-align:left;vertical-align:top;font-weight:600;padding:2px 6px 2px 0;white-space:nowrap;color:#555";
+        td.style.cssText = "padding:2px 0;vertical-align:top";
+        tr.append(th, td);
+        return tr;
+      }));
+    }
+    r.fields.forEach(([, value], i) => { const td = el.body.rows[i].cells[1]; if (td.textContent !== value) td.textContent = value; });
+    if (!el.details.parentNode || el.details.previousElementSibling !== previous) host.insertBefore(el.details, previous ? previous.nextSibling : host.firstChild);
+    previous = el.details;
+  }
+}
 
 // Lists the pairs of floors that get tunnels in the Floors choice (`bands`: their numbers, 0 = floors 1-2), keeping the one chosen.
 export function setBandOptions(bands) {
