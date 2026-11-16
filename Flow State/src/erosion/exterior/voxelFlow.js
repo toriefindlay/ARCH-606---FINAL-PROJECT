@@ -26,7 +26,7 @@ export const AIR = 0, MASS = 1, CONTEXT = 2; // what a voxel holds
 // that every floor lies on a voxel layer.
 // zone: with a storey, the depth in metres of a thin layer at the top of every storey (the ceiling void), which the voxels' layers are
 // cut to match; the rest of the storey is one to three thicker layers. Layers are then not all the same height (see vox.ye).
-export function createVoxelMass(form, { cityHeight = null, maxCells = 250000, storey = 0, zone = 0 } = {}) {
+export function createVoxelMass(form, { cityHeight = null, maxCells = 250000, storey = 0, zone = 0, perStorey: perStoreyOption = 0 } = {}) {
   const { nx: fnx, nz: fnz, cx, cz, x0: fx0, z0: fz0, h0 } = form;
   let i0 = fnx, i1 = -1, j0 = fnz, j1 = -1;
   for (let j = 0; j < fnz; j++) {
@@ -47,7 +47,11 @@ export function createVoxelMass(form, { cityHeight = null, maxCells = 250000, st
   // reaches (whole pairs of storeys); above that the layers are c high again.
   const ye = [0];
   let perStorey = 0;
-  if (storey > 0 && zone > 0 && zone < storey) {
+  if (storey > 0 && perStoreyOption > 0) { // every storey is the same number of equal layers
+    perStorey = perStoreyOption;
+    const storeys = Math.max(2, Math.ceil(top / (2 * storey)) * 2);
+    for (let s = 0; s < storeys * perStorey; s++) ye.push(ye[ye.length - 1] + storey / perStorey);
+  } else if (storey > 0 && zone > 0 && zone < storey) {
     const rest = storey - zone, m = clamp(Math.round(rest / c), 2, 3);
     perStorey = m + 1;
     const storeys = Math.max(2, Math.ceil(top / (2 * storey)) * 2);

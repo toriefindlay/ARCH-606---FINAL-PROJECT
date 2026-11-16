@@ -5,7 +5,7 @@ import { registerPersist } from "../../core/persist.js";
 import { coolingGradient, COOLING_RAMP, COOLED_AT } from "./coolingView.js";
 
 // Read each frame by index.js. `speed` is simulated seconds per real second.
-export const settings = { playing: true, speed: 4, erode: 2, erodeWind: false, erodeSun: false, erodeTunnels: false, tunnelVolume: 20, tunnelBand: -1, xray: false, coolingData: false, flowDebug: false, flowHeight: 2 };
+export const settings = { playing: true, speed: 4, erode: 2, erodeWind: false, erodeSun: false, erodeTunnels: false, tunnelVolume: 20, tunnelWind: -1, xray: false, coolingData: false, flowDebug: false, flowHeight: 2 };
 
 const $ = (id) => document.getElementById(id);
 let onClearErosion = () => {};
@@ -19,8 +19,8 @@ export function mountPanel(el, hooks = {}) {
     <label title="The prevailing wind slowly rounds the mass's edges, windward ones first. It never cuts into the mass."><input type="checkbox" id="erode-wind"> Wind (rounds the edges)</label>
     <p id="wind-erode-note" class="hint" style="margin:0 0 6px"></p>
     <label title="Wind tunnels: the solver works out where the wind can cut through the mass to cool its interior, and opens them. Keeps its own 3D version of the mass."><input type="checkbox" id="erode-tunnels"> Wind tunnels (cut through the mass)</label>
-    <label title="Every pair of storeys (14 ft each) gets tunnels of its own for a different part of the warm season, or work on just one pair. Tunnels never leave their pair, so they span two storeys at most.">Floors
-      <select id="tunnel-band"><option value="-1">All floors</option></select>
+    <label title="The wind the tunnels are worn for: one time of the warm season, or all of it, for the whole structure.">Wind for the tunnels
+      <select id="tunnel-wind"><option value="-1">Whole warm season</option></select>
     </label>
     <label title="The most of the mass the tunnels may carve away. The wind keeps widening them until they reach this.">Tunnel volume <output id="tunnel-volume-out"></output>
       <input type="range" id="tunnel-volume" min="2" max="30" step="1">
@@ -30,7 +30,7 @@ export function mountPanel(el, hooks = {}) {
     <div id="cool-legend" style="display:none;margin:4px 0 8px 18px">
       <div style="height:22px;border-radius:4px;border:1px solid #bbb;background:${coolingGradient()}"></div>
       <div style="position:relative;height:20px;font-size:11px;color:#555">${COOLING_RAMP.map(([p]) => `<span style="position:absolute;left:${p}%;transform:translateX(${p === 0 ? "0" : p === 100 ? "-100%" : "-50%"})">${p}%</span>`).join("")}</div>
-      <div style="font-size:11px;color:#555;line-height:1.35">Cooling just above the floor: 100% = as much as right beside a tunnel carrying the open wind, fading to 0% three metres away. <b>${COOLED_AT}% and above counts as cooled.</b> Red: little or none; blue: fully cooled.</div>
+      <div style="font-size:11px;color:#555;line-height:1.35">Cooling just above the floor: 100% = as much as right beside a tunnel carrying the open wind, fading to 0% three metres away. <b>${COOLED_AT}% and above counts as fully cooled; less counts in proportion.</b> Red: little or none; blue: fully cooled.</div>
     </div>
     <p id="tunnel-note" class="hint" style="margin:0 0 6px"></p>
     <details id="floor-data" open style="margin:0 0 8px">
@@ -72,7 +72,7 @@ export function mountPanel(el, hooks = {}) {
   $("tunnel-volume").addEventListener("input", (e) => { settings.tunnelVolume = Number(e.target.value); syncControls(); });
   $("xray").addEventListener("change", (e) => { settings.xray = e.target.checked; syncControls(); });
   $("cooling-data").addEventListener("change", (e) => { settings.coolingData = e.target.checked; syncControls(); });
-  $("tunnel-band").addEventListener("change", (e) => { settings.tunnelBand = Number(e.target.value); syncControls(); });
+  $("tunnel-wind").addEventListener("change", (e) => { settings.tunnelWind = Number(e.target.value); syncControls(); });
   $("erode-wind").addEventListener("change", exclusive("erodeWind"));
   $("erode-sun").addEventListener("change", exclusive("erodeSun"));
   syncControls();
@@ -88,7 +88,7 @@ export function syncControls() {
   $("erode-wind").checked = settings.erodeWind;
   $("erode-sun").checked = settings.erodeSun;
   $("erode-tunnels").checked = settings.erodeTunnels;
-  $("tunnel-band").value = String(settings.tunnelBand);
+  $("tunnel-wind").value = String(settings.tunnelWind);
   $("xray").checked = settings.xray;
   $("cooling-data").checked = settings.coolingData;
   $("cooling-data").disabled = !settings.xray; // the cooling data is drawn inside the x-rayed mass
@@ -149,16 +149,15 @@ export function setFloorRows(rows) {
   }
 }
 
-// Lists the pairs of floors that get tunnels in the Floors choice (`bands`: their numbers, 0 = floors 1-2), keeping the one chosen.
-export function setBandOptions(bands) {
-  const el = $("tunnel-band"), list = bands.join(",");
-  if (!el || el.dataset.bands === list) return;
-  el.dataset.bands = list;
-  el.innerHTML = `<option value="-1">All floors</option>` + bands.map((b) => `<option value="${b}">Floors ${2 * b + 1}–${2 * b + 2}</option>`).join("");
-  if (!bands.includes(settings.tunnelBand)) settings.tunnelBand = -1;
-  el.value = String(settings.tunnelBand);
+// Lists the parts of the warm season the tunnels can be worn for (`periods`: getWarmPeriods(), each with a label), keeping the one chosen.
+export function setWindOptions(periods) {
+  const el = $("tunnel-wind"), list = periods.map((p) => p.label).join(",");
+  if (!el || el.dataset.periods === list) return;
+  el.dataset.periods = list;
+  el.innerHTML = `<option value="-1">Whole warm season</option>` + periods.map((p, i) => `<option value="${i}">${p.label}</option>`).join("");
+  if (settings.tunnelWind >= periods.length) settings.tunnelWind = -1;
+  el.value = String(settings.tunnelWind);
 }
-
 registerPersist("exteriorErosion", {
   capture: () => ({ ...settings }),
   restore: (saved) => {

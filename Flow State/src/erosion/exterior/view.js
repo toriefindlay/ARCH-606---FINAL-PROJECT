@@ -1,7 +1,7 @@
 // VIEW (exterior erosion): draws the mass as the sun and the wind have shaped it.
 // Create a group under layers.* on "site:built" and redraw it on "cuts:changed".
 import * as THREE from "three";
-import { createBoreView } from "./tunnelBore.js";
+import { createMeshView } from "./tunnelMesh.js";
 
 export function renderPreview(cuts) {
   // TODO
@@ -21,48 +21,40 @@ const EMPTY_WIND = new THREE.DataTexture(new Float32Array([-1, 0]), 1, 1, THREE.
 EMPTY_WIND.needsUpdate = true;
 windUniforms.uWindHeight.value = EMPTY_WIND;
 
-// The wind tunnels (tunnelBore.js): they run in one layer of every storey (see `placement` in tunnels.js), as tubes with an elliptical cross-section.
-// The shader is told where they are by a 3D map with one layer (a plan of the whole site) per storey and two bytes per texel: across
-// the tunnel, how far from its axis the point is as a fraction of its half width there (255 = at the edge or outside), and how tall
-// it is there as a fraction of the layer's depth (0 = no tunnel). The mass's own surface is discarded where the point lies inside the
-// ellipse these give, so the opening in a wall is exactly the cross-section of the tube, which tunnelBore.js draws inside it.
-const EMPTY_BORE = new THREE.Data3DTexture(new Uint8Array([255, 0]), 1, 1, 1);
-EMPTY_BORE.format = THREE.RGFormat;
-EMPTY_BORE.type = THREE.UnsignedByteType;
-EMPTY_BORE.unpackAlignment = 1;
-EMPTY_BORE.needsUpdate = true;
+// The wind tunnels (tunnelMesh.js, grown by tunnels.js): the shader is told where they are by a 3D map over the mass, one byte per texel, how much
+// of the point is tunnel (0 to 1, softened so that the edges are smooth). The mass's own surface is discarded where the map is above
+// TUNNEL_ISO, so the opening in a wall is exactly the cross-section of the tunnel that tunnelMesh.js draws inside it.
+const EMPTY_TUNNEL = new THREE.Data3DTexture(new Uint8Array([0]), 1, 1, 1);
+EMPTY_TUNNEL.format = THREE.RedFormat;
+EMPTY_TUNNEL.type = THREE.UnsignedByteType;
+EMPTY_TUNNEL.unpackAlignment = 1;
+EMPTY_TUNNEL.needsUpdate = true;
 const tunnelUniforms = {
-  uBoreTex: { value: EMPTY_BORE },
-  uBoreBox: { value: new THREE.Vector4(0, 0, 1, 1) }, // the plan's corner (x, z) and size in metres
-  uBoreStorey: { value: new THREE.Vector4(1, 0, 1, 0) }, // a storey's height, the height of the tunnels' axis above its floor, half their layer's depth, the number of storeys in the map
+  uTunnelTex: { value: EMPTY_TUNNEL },
+  uTunnelOrigin: { value: new THREE.Vector3() }, // the map's corner in world metres (y = 0 is the ground)
+  uTunnelSize: { value: new THREE.Vector3(1, 1, 1) }, // its size in x, y, z
+  uTunnelIso: { value: 0.5 },
 };
-
 const WIND_GLSL = /* glsl */ `
 uniform sampler2D uWindHeight;
 uniform vec4 uWindBox;
 uniform float uWindCell;
-uniform highp sampler3D uBoreTex;
-uniform vec4 uBoreBox;
-uniform vec4 uBoreStorey;
+uniform highp sampler3D uTunnelTex;
+uniform vec3 uTunnelOrigin;
+uniform vec3 uTunnelSize;
+uniform float uTunnelIso;
 varying vec3 vWindPos;
 bool tunnelAt(vec3 p) {
-  float s = floor(p.y / uBoreStorey.x);
-  if (s < 0.0 || s >= uBoreStorey.w) return false;
-  float hz = uBoreStorey.z;
-  float dy = p.y - (s * uBoreStorey.x + uBoreStorey.y); // from the axis of this storey's tunnels
-  if (abs(dy) > 3.0 * hz) return false;
-  vec3 uvw = vec3((p.x - uBoreBox.x) / uBoreBox.z, (p.z - uBoreBox.y) / uBoreBox.w, (s + 0.5) / uBoreStorey.w);
-  if (uvw.x < 0.0 || uvw.y < 0.0 || uvw.x > 1.0 || uvw.y > 1.0) return false;
-  vec2 v = texture(uBoreTex, uvw).rg; // across, height
-  if (v.g < 0.02) return false;
-  float e = dy / (v.g * 3.0 * hz); // the height is stored as a third of its fraction of the void
-  return e * e + v.r * v.r < 1.0;
+  vec3 uvw = (p - uTunnelOrigin) / uTunnelSize;
+  uvw = vec3(uvw.x, uvw.z, uvw.y); // the map's depth is height
+  if (uvw.x < 0.0 || uvw.y < 0.0 || uvw.z < 0.0 || uvw.x > 1.0 || uvw.y > 1.0 || uvw.z > 1.0) return false;
+  return texture(uTunnelTex, uvw).r > uTunnelIso;
 }
 // A piece of the mass's surface (not a roof or an underside) goes if it lies in a tunnel, or just inside one (lines have no normal and are only tested where they are).
 bool tunnelCut(vec3 p, vec3 n) {
   if (dot(n, n) > 0.0 && abs(n.y) > 0.6) return false; // roofs and undersides are never opened (the tunnels run through the walls)
   if (tunnelAt(p)) return true;
-  return dot(n, n) > 0.0 && tunnelAt(p - n * 0.05);
+  return dot(n, n) > 0.0 && tunnelAt(p - n * 0.2);
 }
 // (rounded height or -1, original height) of the column at an (x, z); an empty column off the map.
 vec2 windColumn(vec2 xz) {
@@ -299,8 +291,8 @@ export function createFormView() {
 
 /* ---------- the wind tunnels ---------- */
 
-// The tunnels' tubes and the openings they leave in the mass's surface: see tunnelBore.js, which draws them and fills the map above.
-export const createTunnelView = () => createBoreView(tunnelUniforms, EMPTY_BORE);
+// The tunnels' walls and the openings they leave in the mass's surface: see tunnelMesh.js, which draws them and fills the map above.
+export const createTunnelView = () => createMeshView(tunnelUniforms, EMPTY_TUNNEL);
 
 /* ---------- x-ray ---------- */
 
