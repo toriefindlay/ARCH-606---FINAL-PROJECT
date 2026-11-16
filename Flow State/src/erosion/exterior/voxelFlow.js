@@ -48,7 +48,7 @@ export function createVoxelMass(form, { cityHeight = null, maxCells = 250000, st
   const ye = [0];
   let perStorey = 0;
   if (storey > 0 && zone > 0 && zone < storey) {
-    const rest = storey - zone, m = clamp(Math.round(rest / c), 1, 3);
+    const rest = storey - zone, m = clamp(Math.round(rest / c), 2, 3);
     perStorey = m + 1;
     const storeys = Math.max(2, Math.ceil(top / (2 * storey)) * 2);
     for (let s = 0; s < storeys; s++) {

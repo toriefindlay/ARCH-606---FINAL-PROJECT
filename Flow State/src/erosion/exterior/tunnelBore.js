@@ -1,6 +1,6 @@
 // VIEW (exterior erosion): the wind tunnels as the wind would wear them out of a block of stone. No solver code.
 //
-// Every tunnel is a tube with an elliptical cross-section along the wind, in the ceiling void at the top of a storey (tunnels.js
+// Every tunnel is a tube with an elliptical cross-section along the wind, in the layer of a storey that tunnels.js `placement` gives (tunnels.js
 // `layout`). Its drawn shape is not voxels but the shape's own numbers, so it is smooth at any size. It is bored from the windward
 // face: at the start it is a small round dimple in the wall, which deepens and widens as the bore goes in, with a rounded tip, and
 // breaks out of the leeward face as a small hole that opens up. `prog` (0 to 1) says how far the erosion has got; the tunnels do not
@@ -10,7 +10,7 @@
 // map for the shader (see view.js) which discards the mass's own surface where a tube meets it, so that the opening is exactly the
 // tube's cross-section. The mass's own surface is the original model; nothing about it changes.
 import * as THREE from "three";
-import { tunnelWidth, STOREY, ZONE, GAP, LIP } from "./tunnels.js";
+import { tunnelWidth, STOREY, GAP, LIP } from "./tunnels.js";
 
 const RING = 28; // points round a tube's cross-section
 const STEP = 0.7; // metres between the stations of a tube (they bunch up at the two ends, see spread)
@@ -101,7 +101,6 @@ export function createBoreView(uniforms, empty) {
           }
           if (pick) break;
         }
-        if (window.__d) console.log('tube', i, 'step', first.step, 'pick', !!pick, 'ta', first.ta, 'tb', first.tb);
         if (!pick) return null;
         const { run, narrow } = pick, half = (u) => (tunnelWidth(shape, u, run.step) * narrow) / 2;
         const wide = Math.max(tunnelWidth(shape, 0, run.step), tunnelWidth(shape, shape.pos, run.step), tunnelWidth(shape, 1, run.step)) * narrow / 2;
@@ -114,12 +113,13 @@ export function createBoreView(uniforms, empty) {
         const L = run.tb - run.ta;
         const gap = lines.some(([a, z], k) => {
           const cos = Math.cos((2 * Math.PI * k) / RING);
-          for (let t = a + 0.3; t < z - 0.3; t += 0.75) if (!run.inside(t, cos * half(clamp01((t - run.ta) / L)) * 1.02)) return true;
+          // Near a face the lines of the wall may lie outside the mass (a face at a shallow angle to the wind, and the lip drawing them in): only the stretch
+          // between is checked, which is where a side or a corner of the mass would show.
+          for (let t = a + LIP_LEN + 2.5; t < z - LIP_LEN - 2.5; t += 0.75) if (!run.inside(t, cos * half(clamp01((t - run.ta) / L)) * 1.02)) return true;
           return false;
         });
         return gap ? null : { ...run, lines, wide, narrow, delay: delayOf(b, i), shape };
       }).filter(Boolean);
-      if (window.__d) console.log('layout', b, JSON.stringify(shape), 'tubes', tubes.length);
       layouts.set(key, tubes);
     }
     return tubes;
@@ -205,7 +205,7 @@ export function createBoreView(uniforms, empty) {
     texture.needsUpdate = true;
     uniforms.uBoreTex.value = texture;
     uniforms.uBoreBox.value.set(vox.x0, vox.z0, tw * cell, td * cell);
-    uniforms.uBoreStorey.value.set(STOREY, ZONE, count);
+    uniforms.uBoreStorey.value.set(STOREY, tunnels.level.offset, tunnels.level.half, count);
   };
 
   return {

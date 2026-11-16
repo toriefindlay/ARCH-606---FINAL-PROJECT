@@ -1,4 +1,4 @@
-﻿// VIEW (exterior erosion): draws the mass as the sun and the wind have shaped it.
+// VIEW (exterior erosion): draws the mass as the sun and the wind have shaped it.
 // Create a group under layers.* on "site:built" and redraw it on "cuts:changed".
 import * as THREE from "three";
 import { createBoreView } from "./tunnelBore.js";
@@ -21,10 +21,10 @@ const EMPTY_WIND = new THREE.DataTexture(new Float32Array([-1, 0]), 1, 1, THREE.
 EMPTY_WIND.needsUpdate = true;
 windUniforms.uWindHeight.value = EMPTY_WIND;
 
-// The wind tunnels (tunnelBore.js): they run in the ceiling void at the top of every storey, as tubes with an elliptical cross-section.
+// The wind tunnels (tunnelBore.js): they run in one layer of every storey (see `placement` in tunnels.js), as tubes with an elliptical cross-section.
 // The shader is told where they are by a 3D map with one layer (a plan of the whole site) per storey and two bytes per texel: across
 // the tunnel, how far from its axis the point is as a fraction of its half width there (255 = at the edge or outside), and how tall
-// it is there as a fraction of the void's depth (0 = no tunnel). The mass's own surface is discarded where the point lies inside the
+// it is there as a fraction of the layer's depth (0 = no tunnel). The mass's own surface is discarded where the point lies inside the
 // ellipse these give, so the opening in a wall is exactly the cross-section of the tube, which tunnelBore.js draws inside it.
 const EMPTY_BORE = new THREE.Data3DTexture(new Uint8Array([255, 0]), 1, 1, 1);
 EMPTY_BORE.format = THREE.RGFormat;
@@ -34,7 +34,7 @@ EMPTY_BORE.needsUpdate = true;
 const tunnelUniforms = {
   uBoreTex: { value: EMPTY_BORE },
   uBoreBox: { value: new THREE.Vector4(0, 0, 1, 1) }, // the plan's corner (x, z) and size in metres
-  uBoreStorey: { value: new THREE.Vector3(1, 1, 0) }, // a storey's height, the void's depth, the number of storeys in the map
+  uBoreStorey: { value: new THREE.Vector4(1, 0, 1, 0) }, // a storey's height, the height of the tunnels' axis above its floor, half their layer's depth, the number of storeys in the map
 };
 
 const WIND_GLSL = /* glsl */ `
@@ -43,15 +43,15 @@ uniform vec4 uWindBox;
 uniform float uWindCell;
 uniform highp sampler3D uBoreTex;
 uniform vec4 uBoreBox;
-uniform vec3 uBoreStorey;
+uniform vec4 uBoreStorey;
 varying vec3 vWindPos;
 bool tunnelAt(vec3 p) {
   float s = floor(p.y / uBoreStorey.x);
-  if (s < 0.0 || s >= uBoreStorey.z) return false;
-  float hz = 0.5 * uBoreStorey.y;
-  float dy = p.y - ((s + 1.0) * uBoreStorey.x - hz); // from the middle of this storey's void
+  if (s < 0.0 || s >= uBoreStorey.w) return false;
+  float hz = uBoreStorey.z;
+  float dy = p.y - (s * uBoreStorey.x + uBoreStorey.y); // from the axis of this storey's tunnels
   if (abs(dy) > 3.0 * hz) return false;
-  vec3 uvw = vec3((p.x - uBoreBox.x) / uBoreBox.z, (p.z - uBoreBox.y) / uBoreBox.w, (s + 0.5) / uBoreStorey.z);
+  vec3 uvw = vec3((p.x - uBoreBox.x) / uBoreBox.z, (p.z - uBoreBox.y) / uBoreBox.w, (s + 0.5) / uBoreStorey.w);
   if (uvw.x < 0.0 || uvw.y < 0.0 || uvw.x > 1.0 || uvw.y > 1.0) return false;
   vec2 v = texture(uBoreTex, uvw).rg; // across, height
   if (v.g < 0.02) return false;

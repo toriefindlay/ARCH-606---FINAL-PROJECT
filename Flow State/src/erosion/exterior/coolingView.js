@@ -1,12 +1,12 @@
 // VIEW (exterior erosion): the "cooling data" layer. Inside the (x-rayed) mass, every storey gets a floor plan shaded by how well that
-// part of the floor is cooled by the wind tunnels, at about head height above the floor (CHEST). No solver code.
+// part of the floor is cooled by the wind tunnels, just above the floor (CHEST). No solver code.
 //
 // Cooling is the solver's cooling (tunnels.js coolingMap): 1 = as much cooling as right beside a tunnel carrying the open wind's speed,
 // fading to nothing 3 m away. Shown as a percentage, 0 to 100% (anything above 1 counts as 100%).
 import * as THREE from "three";
 import { STOREY, NEAR } from "./tunnels.js";
 
-const CHEST = 1.2; // metres above the floor that the plan is drawn at
+const CHEST = 0.6; // metres above the floor that the plan is drawn at
 
 // The colour ramp: [percent, hex]. Red where there is no cooling, through amber and pale yellow, to blue where it is fully cooled.
 export const COOLING_RAMP = [[0, 0xb8321f], [25, 0xe8a23a], [50, 0xf2e394], [75, 0x6fb0d2], [100, 0x1d4e89]];

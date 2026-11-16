@@ -10,7 +10,7 @@ import { createWindErosion, setActiveForm } from "./windErode.js";
 import { createSunGrowth } from "./sunGrow.js";
 import { createVoxelMass, solveFlow } from "./voxelFlow.js";
 import { createFlowView } from "./flowView.js";
-import { createTunnels, REACH, ZONE } from "./tunnels.js";
+import { createTunnels, REACH } from "./tunnels.js";
 import { setActiveTunnels } from "./tunnelCut.js";
 import { renderPreview, createFormView, createTunnelView, setXray } from "./view.js";
 import { mountPanel, settings, syncControls, setWindNote, setSunNote, setFlowNote, setTunnelNote, setFloorRows, setBandOptions } from "./panel.js";
@@ -172,7 +172,7 @@ function floorRow(t, b, w) {
     ["Carved", `${(100 * t.bandShare(b)).toFixed(1)}% of the pair's volume`],
   ];
   if (p) {
-    fields.push(["Tunnels", `${p.spacing} m apart, in the ${ZONE} m ceiling void of each storey`]);
+    fields.push(["Tunnels", `${p.spacing} m apart, at mid-height of each storey`]);
     fields.push(["Shape", `${p.throat} m wide at the throat, mouth ×${p.mouth}, exit ×${p.exit}, throat ${Math.round(p.pos * 100)}% along`]);
   }
   const ready = s && s.mean > 0 && cool;

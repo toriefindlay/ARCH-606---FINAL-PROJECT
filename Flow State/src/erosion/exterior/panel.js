@@ -30,7 +30,7 @@ export function mountPanel(el, hooks = {}) {
     <div id="cool-legend" style="display:none;margin:4px 0 8px 18px">
       <div style="height:22px;border-radius:4px;border:1px solid #bbb;background:${coolingGradient()}"></div>
       <div style="position:relative;height:20px;font-size:11px;color:#555">${COOLING_RAMP.map(([p]) => `<span style="position:absolute;left:${p}%;transform:translateX(${p === 0 ? "0" : p === 100 ? "-100%" : "-50%"})">${p}%</span>`).join("")}</div>
-      <div style="font-size:11px;color:#555;line-height:1.35">Cooling at head height: 100% = as much as right beside a tunnel carrying the open wind, fading to 0% three metres away. <b>${COOLED_AT}% and above counts as cooled.</b> Red: little or none; blue: fully cooled.</div>
+      <div style="font-size:11px;color:#555;line-height:1.35">Cooling just above the floor: 100% = as much as right beside a tunnel carrying the open wind, fading to 0% three metres away. <b>${COOLED_AT}% and above counts as cooled.</b> Red: little or none; blue: fully cooled.</div>
     </div>
     <p id="tunnel-note" class="hint" style="margin:0 0 6px"></p>
     <details id="floor-data" open style="margin:0 0 8px">

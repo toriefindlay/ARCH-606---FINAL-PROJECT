@@ -5,8 +5,9 @@
 //
 // Floors: the mass is cut into storeys of STOREY metres (14 ft), and the storeys are grouped in pairs, the BANDS (floors 1-2,
 // floors 3-4, ...). The tunnels of a band never leave it, so they span two storeys at most. One layer of voxels at the bottom of
-// every storey is a few thick layers (the rooms) and, on top, one thin layer ZONE metres deep: the ceiling void. Tunnels are only
-// cut in the ceiling voids, so the rooms and the way through them are never touched. The top layer of every column is left as
+// every storey is a few layers of voxels (the last, thin one ZONE metres deep, is the ceiling void). Where tunnels may form is decided in one
+// place, `placement` below: for now anywhere in the mass except the roof (the top layer of every column) and, in the drawn tunnels, within
+// CLEAR of its corners and sides. The top layer of every column is left as
 // the roof. A pair of floors with less than a whole storey of mass in it is skipped (`usable`).
 //
 // Every band has its own wind: its tunnels face the direction it is given (index.js gives each band a different part of the
@@ -29,7 +30,18 @@ import { createVoxelMass, solveFlow, AIR, MASS } from "./voxelFlow.js";
 
 export const STOREY = 14 * 0.3048; // metres: one storey, 14 ft
 export const BAND_STOREYS = 2; // storeys a tunnel may span at most
-export const ZONE = 0.9; // metres: the depth of the ceiling void at the top of every storey, the only place a tunnel may run
+export const ZONE = 0.9; // metres: the depth of the thin layer at the top of every storey (it only shapes the voxel layers; tunnels are not tied to it)
+
+// WHERE tunnels may form. Change this to change it; nothing else decides it.
+//   level(perStorey): the voxel layer of a storey (0 = its lowest) that the tunnels of that storey are cut in. Now the middle of the storey.
+//   allowed(layer, column, roofLayer): may the voxel at this layer and column (index into one layer of the grid) be carved? Now anywhere
+//   below the roof, but never the ground layer.
+// (The drawn tunnels are placed from level() too; a rule that moves tunnels up or down per storey also needs the shader in view.js, which
+// takes one height for every storey, to be told.)
+export const placement = {
+  level: (perStorey) => Math.floor((perStorey - 1) / 2),
+  allowed: (layer, column, roofLayer) => layer > 0 && layer < roofLayer,
+};
 export const REACH = 3; // metres: how far from a tunnel its moving air is taken to cool the floor
 export const NEAR = 0.3; // cooling (see cooling()) at which a floor voxel counts as near moving air: about 2 m from air at the open wind's speed
 const MIN_RUN = 4; // metres: a tunnel shorter than this (a corner of the mass) is not made
@@ -71,7 +83,8 @@ export function createTunnels(form, { cityHeight = null } = {}) {
   if (!vox) return null;
   const { nx, nz, ny, c, cells, dz, yc } = vox;
   const nxz = nx * nz;
-  const perStorey = vox.perStorey; // voxel layers in one storey; the last of them is the ceiling void (the zone)
+  const perStorey = vox.perStorey; // voxel layers in one storey
+  const level = placement.level(perStorey); // the layer of a storey its tunnels are cut in
   const perBand = perStorey * BAND_STOREYS;
   const placed = Uint8Array.from(cells); // the mass as it was placed, to put it back
   const roof = new Int16Array(nxz).fill(-1); // the layer of the top mass voxel in every column (-1 where there is none)
@@ -101,7 +114,7 @@ export function createTunnels(form, { cityHeight = null } = {}) {
   const carve = (k) => {
     if (placed[k] !== MASS || cells[k] !== MASS) return false;
     const layer = Math.floor(k / nxz);
-    if (layer % perStorey !== perStorey - 1 || layer >= roof[k % nxz]) return false; // only a ceiling void is opened, and never the top layer of a column (the roof)
+    if (!placement.allowed(layer, k % nxz, roof[k % nxz])) return false;
     vox.set(k, AIR);
     bands[bandOf(k)].carved += dz[layer];
     return true;
@@ -116,7 +129,7 @@ export function createTunnels(form, { cityHeight = null } = {}) {
   };
 
   // The tunnels of shape p in band b along the wind dir = [ux, uz], as runs through the mass: { mid, s, o, t0, t1 } with mid the layer of the
-  // ceiling void they lie in, s the storey of the band, o how far across the wind and t0..t1 from the windward face to the leeward one
+  // level they lie in, s the storey of the band, o how far across the wind and t0..t1 from the windward face to the leeward one
   // (along the wind). Positions are world metres in the frame of dir: x = d0 t - d1 q, z = d1 t + d0 q. Found on the voxels, so the ends
   // are only as exact as a voxel; see `layout` for the drawn ones.
   const runsOf = (b, dir, p) => {
@@ -136,7 +149,7 @@ export function createTunnels(form, { cityHeight = null } = {}) {
     const n = Math.max(1, Math.round((qmax - qmin + c) / p.spacing)), step = (qmax - qmin + c) / n;
     const at = (t, q) => [Math.floor((d0 * t + p0 * q - vox.x0) / c), Math.floor((d1 * t + p1 * q - vox.z0) / c)];
     for (let s = 0; s < BAND_STOREYS; s++) {
-      const mid = lo + s * perStorey + perStorey - 1; // the storey's ceiling void: the one layer its tunnels are cut in, and where the runs through the mass are found
+      const mid = lo + s * perStorey + level; // the layer the storey's tunnels are cut in, and where the runs through the mass are found
       if (mid >= hi) break;
       for (let m = 0; m < n; m++) {
         const o = qmin - c / 2 + (m + (s % 2 ? 0.75 : 0.25)) * step; // across the wind; the upper storey is half a step over
@@ -173,7 +186,7 @@ export function createTunnels(form, { cityHeight = null } = {}) {
     return opened;
   };
 
-  // Is there mass at (x, z) in the ceiling void of layer mid, with a roof still above it? (From the form's height map, which is finer than the voxels.)
+  // Is there mass at (x, z) in layer mid, with a roof still above it? (From the form's height map, which is finer than the voxels.)
   const massAt = (mid, x, z) => form.heightAt(x, z) >= vox.ye[mid + 1] + 0.3;
   // Where the mass starts and ends along the line (t, q) of a run, found to a few centimetres: [in, out] along the wind, or null.
   const edges = (run, q) => {
@@ -225,6 +238,7 @@ export function createTunnels(form, { cityHeight = null } = {}) {
     builtOn: form.version, // the form version the voxels were built from: if the form changes, the tunnels are built afresh
     bandCount, // how many pairs of floors the mass has
     storeys: bandCount * BAND_STOREYS, // how many storeys that is
+    level: { offset: yc[level], half: dz[level] / 2 }, // where the tunnels of a storey are: the height of their axis above the storey's floor, and half their depth
     usable, // the bands that get tunnels: the ones with a whole storey of mass in them
     get active() { return active; },
     get carved() { return sum("carved", bands.map((_, b) => b)); }, // voxels of the mass that are air now
@@ -253,7 +267,7 @@ export function createTunnels(form, { cityHeight = null } = {}) {
     },
 
     // The tunnels of shape p in band b for the wind dir, as they are drawn: each { dir, s, mid, o, ta, tb, y, half, edges(q) }: its axis runs from
-    // ta to tb along the wind (the mass's windward and leeward faces, to a few cm), at the height y (the middle of the ceiling void, which
+    // ta to tb along the wind (the mass's windward and leeward faces, to a few cm), at the height y (the middle of the layer they are cut in, which
     // is 2 * half deep); edges(q) gives the same for the line q across from the axis ([in, out] or null). Independent of what is carved.
     layout(b, dir, p) {
       const make = (run) => { // `shift(dq)` is the same tunnel moved dq metres across the wind (null if there is no tunnel there)
