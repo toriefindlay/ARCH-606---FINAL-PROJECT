@@ -167,7 +167,7 @@ function tunnelFrame() {
   const growing = !t.done;
   const solving = t.done && t.stale(wind.dir);
   tunnelWorking = growing && settings.playing;
-  const head = failed ? "Stopped (see the console)" : growing ? (settings.playing ? "Wearing the tunnels into the stone" : "Paused") : solving ? "Working out the airflow" : "Settled";
+  const head = failed ? "Stopped (see the console)" : growing ? (settings.playing ? `Wearing the tunnels into the stone (network ${t.variant + 1} of ${t.variants}; the best is kept)` : "Paused") : solving ? "Working out the airflow" : "Settled";
   setTunnelNote(`${head} (limit ${settings.tunnelVolume}% of the mass, ${(100 * t.share).toFixed(1)}% worn away)`);
   setFloorRows([floorRow(t, wind)]);
   if (tunnelBusy || failed || !settings.playing || (!growing && !solving)) return;

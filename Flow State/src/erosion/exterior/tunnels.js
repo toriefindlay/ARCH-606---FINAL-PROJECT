@@ -30,13 +30,16 @@ const R_FLOOR = 0.35; // metres: the least radius of a tube that carries air
 const REL_PRUNE = 0.002; // a tube that carries less than this part of the flow near it is removed
 const GROW_ROUNDS = 120, SETTLE_ROUNDS = 30;
 const TRUNK_ROUNDS = 45; // rounds in which only the straight trunks grow, before any branch sprouts
+const VARIANTS = 3; // networks grown from different random starts, of which the best is kept
+const JUNCTION = 0.5, FRICTION = 0.04, PICARD = 3; // losses where a tube starts, friction along it (per diameter), and the rounds of settling the flow
 const MAX_GROWING = 90; // channels growing at once at most (each is a tube that carries nothing yet, and costs volume) // rounds in which the network grows, and rounds after that in which it only adapts
 const RAMP_ROUNDS = 80; // rounds over which the volume allowed rises to the limit
 const MURRAY = 0.22; // radius ~ flow^MURRAY (Murray's law says 1/3, but with that parallel tubes fight until one is left: a smaller power lets them share)
 const WALL_OUT = 1.2; // metres: a tube that ends at a wall goes this far outside it (so that the opening is cut cleanly)
 const HASH_CELL = 4; // metres: the cells of the lookup for what is near
 
-const hash = (k) => { let x = Math.imul(k ^ 0x9e3779b9, 0x85ebca6b); x ^= x >>> 13; x = Math.imul(x, 0xc2b2ae35); x ^= x >>> 16; return (x >>> 0) / 4294967295; }; // 0..1
+let salt = 0; // changes the random pattern (each variant of the network has its own)
+const hash = (k) => { let x = Math.imul((k + salt) ^ 0x9e3779b9, 0x85ebca6b); x ^= x >>> 13; x = Math.imul(x, 0xc2b2ae35); x ^= x >>> 16; return (x >>> 0) / 4294967295; }; // 0..1
 
 let serial = 0;
 export function createTunnels(form, { cityHeight = null } = {}) {
@@ -97,17 +100,26 @@ export function createTunnels(form, { cityHeight = null } = {}) {
   let obstacles = [], obstaclesKey = "";
   let wind = [1, 0];
   let nodes = [], edges = [];
+  const bTop = vox.ye[Math.min(ny, top + 1)]; // how high the mass is
+  let variant = 0, best = null; // the variant being grown, and the best finished so far
   let iteration = 0, finished = false, version = 0, epoch = 0, branchCount = 0;
   let uncovered = []; // the points of the mass no tunnel cools yet
   let attractors = null; // sample points in the mass
   let flowResult = null, flowVersion = -1, flowDir = null, mapKey = "", map = null, networkVolume = 0;
 
-  // The pressure the wind puts on a wall whose way out is (nx, nz): high where it blows on it, low in its lee, a little low at the sides.
-  const wallPressure = (wx, wz) => {
+  // The pressure (in units of the wind's dynamic pressure) the wind puts on a wall whose way out is (nx, nz) at height y, dc metres from the
+  // nearest corner of the mass: high where it blows on it, low in its lee, a little low at the sides, and the stronger the higher up (the wind
+  // is faster there); near a corner the suction on the leeward and side walls is much stronger (the air is pulled round it).
+  const wallPressure = (wx, wz, y = 0, dc = 99) => {
     const cd = wx * wind[0] + wz * wind[1]; // -1 on the windward wall, +1 on the leeward
-    return (cd < 0 ? -0.8 * cd : -0.5 * cd) - 0.3 * (1 - cd * cd);
+    const height = 0.75 + 0.5 * Math.min(1, y / Math.max(5, bTop));
+    let p = (cd < 0 ? -0.8 * cd : -0.5 * cd) - 0.3 * (1 - cd * cd);
+    if (cd > -0.3) p -= 0.5 * Math.max(0, 1 - dc / 5);
+    return p * height;
   };
-  const windOf = (f) => f.nx * wind[0] + f.nz * wind[1];
+  const corners = []; // the corners of the mass
+  for (let j = 0; j < nz; j++) for (let i = 0; i < nx; i++) if (isMass(i, j) && (!isMass(i - 1, j) || !isMass(i + 1, j)) && (!isMass(i, j - 1) || !isMass(i, j + 1))) corners.push([vox.x0 + (i + 0.5) * c, vox.z0 + (j + 0.5) * c]);
+  const cornerDist = (x, z) => { let d = Infinity; for (const q of corners) d = Math.min(d, Math.hypot(q[0] - x, q[1] - z)); return d; };  const windOf = (f) => f.nx * wind[0] + f.nz * wind[1];
 
   const sphereClear = (x, y, z, rad) => { // is the point at least rad (and a margin) from every occupied space?
     for (const s of obstacles) if (Math.hypot(x - s.x, y - s.y, z - s.z) < s.r + rad + 0.3) return false;
@@ -125,7 +137,7 @@ export function createTunnels(form, { cityHeight = null } = {}) {
   const addEdge = (a, b, r = R_START, extra = {}) => { const e = { a, b, r, L: Math.max(0.2, Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z)), q: 0, born: iteration, br: 0, ...extra }; edges.push(e); return e; };
 
   // A wall node outside the mass at a facade point.
-  const wallNodeAt = (x, y, z, wx, wz) => addNode(x + wx * WALL_OUT, y, z + wz * WALL_OUT, { wall: true, pf: wallPressure(wx, wz) });
+  const wallNodeAt = (x, y, z, wx, wz) => addNode(x + wx * WALL_OUT, y, z + wz * WALL_OUT, { wall: true, pf: wallPressure(wx, wz, y, cornerDist(x, z)) });
 
   /* ---------- growth ---------- */
   const growing = new Map(); // branch number -> the tip that is growing: { node, dir, target, len, maxLen }
@@ -219,52 +231,62 @@ export function createTunnels(form, { cityHeight = null } = {}) {
   };
 
   /* ---------- the flow ---------- */
-  // Solves the pressure at every point: the wall nodes held at the wind's pressure, the air flowing through the tubes. Returns the largest flow.
+  // Solves the pressure at every point: the wall nodes held at the wind's pressure, the air flowing through the tubes. The tubes follow the law of
+  // pipe flow in the large (turbulent) regime: the pressure lost between the ends of a tube is K x the dynamic pressure of the air in it, K being
+  // the losses where it starts plus friction along it, so the air in it goes at v = sqrt(pressure difference / K) times the open wind and the flow is
+  // (area) x v. (Solved by settling a linear network a few times over: the conductance of a tube is its C / sqrt(pressure difference).)
+  // Sets every tube's flow (q) and air speed (speed, relative to the open wind). Returns the largest flow.
   const solvePressure = () => {
     const n = nodes.length;
     nodes.forEach((nd, i) => { nd.i = i; });
-    const diag = new Float64Array(n), g = edges.map((e) => (e.r ** 4) / e.L);
-    edges.forEach((e, k) => { diag[e.a.i] += g[k]; diag[e.b.i] += g[k]; });
-    const adj = Array.from({ length: n }, () => []);
-    edges.forEach((e, k) => { adj[e.a.i].push([e.b.i, g[k]]); adj[e.b.i].push([e.a.i, g[k]]); });
+    const K = edges.map((e) => JUNCTION + (FRICTION * e.L) / (2 * e.r));
+    const C = edges.map((e, k) => (Math.PI * e.r * e.r) / Math.sqrt(K[k]));
     const p = new Float64Array(n), fixed = new Uint8Array(n);
     let mean = 0, nf = 0;
     nodes.forEach((nd, i) => { if (nd.wall) { fixed[i] = 1; p[i] = nd.pf; mean += nd.pf; nf++; } else p[i] = nd.p || 0; });
     mean = nf ? mean / nf : 0;
     const leak = 1e-9;
-    const apply = (v, out) => { for (let i = 0; i < n; i++) { if (fixed[i]) { out[i] = 0; continue; } let s = (diag[i] + leak) * v[i]; for (const [j, gg] of adj[i]) if (!fixed[j]) s -= gg * v[j]; out[i] = s; } };
-    const r = new Float64Array(n), z = new Float64Array(n), d = new Float64Array(n), ad = new Float64Array(n);
-    // right-hand side: what the fixed walls push into their neighbours (and the leak towards the mean wall pressure)
-    for (let i = 0; i < n; i++) {
-      if (fixed[i]) continue;
-      let s = leak * mean;
-      for (const [j, gg] of adj[i]) if (fixed[j]) s += gg * p[j];
-      r[i] = s;
-    }
-    apply(p, ad);
-    let rz = 0, r0 = 0;
-    for (let i = 0; i < n; i++) { if (fixed[i]) continue; r[i] -= ad[i]; z[i] = r[i] / (diag[i] + leak); d[i] = z[i]; rz += r[i] * z[i]; r0 += r[i] * r[i]; }
-    if (r0 > 0) {
-      for (let it = 0; it < 300; it++) {
-        apply(d, ad);
-        let dad = 0;
-        for (let i = 0; i < n; i++) dad += d[i] * ad[i];
-        if (dad <= 0) break;
-        const alpha = rz / dad;
-        let rr = 0, rz2 = 0;
-        for (let i = 0; i < n; i++) { if (fixed[i]) continue; p[i] += alpha * d[i]; r[i] -= alpha * ad[i]; z[i] = r[i] / (diag[i] + leak); rz2 += r[i] * z[i]; rr += r[i] * r[i]; }
-        if (Math.sqrt(rr / r0) < 1e-6) break;
-        const beta = rz2 / rz;
-        rz = rz2;
-        for (let i = 0; i < n; i++) if (!fixed[i]) d[i] = z[i] + beta * d[i];
+    for (let pass = 0; pass < PICARD; pass++) {
+      const g = edges.map((e, k) => C[k] / Math.sqrt(Math.abs(p[e.a.i] - p[e.b.i]) + 1e-3));
+      const diag = new Float64Array(n), adj = Array.from({ length: n }, () => []);
+      edges.forEach((e, k) => { diag[e.a.i] += g[k]; diag[e.b.i] += g[k]; adj[e.a.i].push([e.b.i, g[k]]); adj[e.b.i].push([e.a.i, g[k]]); });
+      const apply = (v, out) => { for (let i = 0; i < n; i++) { if (fixed[i]) { out[i] = 0; continue; } let s = (diag[i] + leak) * v[i]; for (const [j, gg] of adj[i]) if (!fixed[j]) s -= gg * v[j]; out[i] = s; } };
+      const r = new Float64Array(n), z = new Float64Array(n), d = new Float64Array(n), ad = new Float64Array(n);
+      for (let i = 0; i < n; i++) {
+        if (fixed[i]) continue;
+        let s = leak * mean;
+        for (const [j, gg] of adj[i]) if (fixed[j]) s += gg * p[j];
+        r[i] = s;
+      }
+      apply(p, ad);
+      let rz = 0, r0 = 0;
+      for (let i = 0; i < n; i++) { if (fixed[i]) continue; r[i] -= ad[i]; z[i] = r[i] / (diag[i] + leak); d[i] = z[i]; rz += r[i] * z[i]; r0 += r[i] * r[i]; }
+      if (r0 > 0) {
+        for (let it = 0; it < 300; it++) {
+          apply(d, ad);
+          let dad = 0;
+          for (let i = 0; i < n; i++) dad += d[i] * ad[i];
+          if (dad <= 0) break;
+          const alpha = rz / dad;
+          let rr = 0, rz2 = 0;
+          for (let i = 0; i < n; i++) { if (fixed[i]) continue; p[i] += alpha * d[i]; r[i] -= alpha * ad[i]; z[i] = r[i] / (diag[i] + leak); rz2 += r[i] * z[i]; rr += r[i] * r[i]; }
+          if (Math.sqrt(rr / r0) < 1e-6) break;
+          const beta = rz2 / rz;
+          rz = rz2;
+          for (let i = 0; i < n; i++) if (!fixed[i]) d[i] = z[i] + beta * d[i];
+        }
       }
     }
     nodes.forEach((nd, i) => { nd.p = p[i]; });
     let qmax = 0;
-    edges.forEach((e, k) => { e.q = g[k] * (e.a.p - e.b.p); qmax = Math.max(qmax, Math.abs(e.q)); });
+    edges.forEach((e, k) => {
+      const dp = p[e.a.i] - p[e.b.i];
+      e.q = Math.sign(dp) * C[k] * Math.sqrt(Math.abs(dp));
+      e.speed = Math.min(1.6, Math.sqrt(Math.abs(dp) / K[k]));
+      qmax = Math.max(qmax, Math.abs(e.q));
+    });
     return qmax;
   };
-
   // The tubes take the radius their flow calls for; the weak ones go.
   const adapt = (qmax, budget) => {
     if (qmax <= 0) return;
@@ -395,6 +417,9 @@ export function createTunnels(form, { cityHeight = null } = {}) {
     // side wall. They carry the air through the structure; branches come later (see TRUNK_ROUNDS) from the ones that carry most.
     const windward = facade.filter((f) => windOf(f) < -0.3), exits = facade.filter((f) => windOf(f) > 0.1);
     if (!windward.length || !exits.length) return;
+    // the trunks make for the walls with the strongest suction (the lowest pressure): the greater the pressure difference, the faster the air
+    const pressureOf = (f) => wallPressure(f.nx, f.nz, f.y, cornerDist(f.x, f.z));
+    const suction = [...exits].sort((a, b) => pressureOf(a) - pressureOf(b)).slice(0, Math.max(8, Math.ceil(exits.length * 0.4)));
     const area = windward.length * c * layerHeight, wanted = Math.max(8, Math.min(90, Math.round(area / 50)));
     const order = windward.map((f, i) => [f, hash(i * 31 + 7)]).sort((a, b) => a[1] - b[1]).map((x) => x[0]);
     // the same number on every storey, so that every floor is reached (the trunks are not all at the foot of the walls)
@@ -412,7 +437,7 @@ export function createTunnels(form, { cityHeight = null } = {}) {
       }
     }
     for (const f of chosen) {
-      const g = startChannel(f), t = exits[Math.floor(hash(g.node.br * 977) * exits.length)];
+      const g = startChannel(f), t = suction[Math.floor(hash(g.node.br * 977) * suction.length)];
       g.target = { x: t.x - t.nx * 2, y: f.y + (hash(g.node.br * 13) - 0.5) * 3, z: t.z - t.nz * 2 };
       g.exit = { x: t.x + t.nx * 3, y: g.target.y, z: t.z + t.nz * 3 }; // (and through the wall there)
       g.jit = 0.12; g.noPull = true; // straight, and not led off to the cooling still to be done
@@ -425,6 +450,7 @@ export function createTunnels(form, { cityHeight = null } = {}) {
     nodes = []; edges = []; growing.clear();
     iteration = 0; finished = false; branchCount = 0; version++; epoch++; networkVolume = 0;
     uncovered = []; attractors = null;
+    variant = 0; best = null; salt = 0;
     flowResult = null; flowVersion = -1; mapKey = ""; map = null;
   };
 
@@ -458,16 +484,10 @@ export function createTunnels(form, { cityHeight = null } = {}) {
     }
   };
 
-  // The air speed in every tube, relative to the open wind: the flow through it over its cross-section, scaled so that the fastest tubes (the
-  // 95th percentile) carry air at 1.2 x the open wind. (The network's pressures are in arbitrary units, so only the pattern is meaningful.)
+  // The air speed in every tube relative to the open wind (see solvePressure): settled once more, for the tubes as they are.
   const computeSpeeds = () => {
-    if (!edges.length) return;
-    solvePressure();
-    const v = edges.map((e) => Math.abs(e.q) / (Math.PI * e.r * e.r)), sorted = [...v].sort((a, b) => a - b);
-    const ref = sorted[Math.floor(sorted.length * 0.95)] || sorted[sorted.length - 1] || 1, scale = ref > 0 ? 1.2 / ref : 0;
-    edges.forEach((e, i) => { e.speed = Math.min(1.6, v[i] * scale); });
+    if (edges.length) solvePressure();
   };
-
   // The cooling at every voxel from the network (see cooling()): every voxel takes the strongest cooling of any tube within REACH metres, that tube's
   // air speed fading to nothing at REACH. Index (layer * nx * nz + column).
   const isTunnel = (k) => placed[k] === MASS && cells[k] === AIR;
@@ -498,6 +518,53 @@ export function createTunnels(form, { cityHeight = null } = {}) {
     }
     return cool;
   };
+  // How well the floors are cooled, from the cooling at every voxel: { coverage: [per storey], avg: [per storey], mean, evenness } (see cooling()).
+  // solid(k) says whether a voxel counts as floor.
+  const coolStats = (cool, solid) => {
+    const total = new Array(storeys).fill(0), nearW = new Array(storeys).fill(0), sum1 = new Array(storeys).fill(0);
+    let acc = 0, count = 0;
+    for (let l = 0; l < hiLayer; l++) {
+      const s = Math.min(storeys - 1, Math.floor(l / perStorey));
+      for (let col = 0; col < nxz; col++) {
+        const k = l * nxz + col;
+        if (placed[k] !== MASS || !solid(k)) continue;
+        const v = cool[k], w = dz[l];
+        total[s] += w;
+        nearW[s] += Math.min(1, v / NEAR) * w; // (it counts in proportion to the cooling, up to NEAR: slow air still cools, a little)
+        acc += Math.min(v, 1.5) * w;
+        sum1[s] += Math.min(v, 1) * w;
+        count += w;
+      }
+    }
+    const out = { coverage: total.map((t, s) => (t ? nearW[s] / t : 0)), avg: total.map((t, s) => (t ? sum1[s] / t : 0)), mean: count ? acc / count : 0, evenness: 0, covered: count ? nearW.reduce((a, b) => a + b, 0) / count : 0 };
+    const used = out.coverage.filter((_, s) => total[s]);
+    out.evenness = used.length && Math.max(...used) > 0 ? Math.min(...used) / Math.max(...used) : 0;
+    return out;
+  };
+
+  // How good the network as it is now is: the part of the floor it cools, weighted towards cooling all the floors alike.
+  const networkScore = () => {
+    computeSpeeds();
+    const st = coolStats(coolField(), () => true);
+    return st.covered * (0.5 + 0.5 * st.evenness);
+  };
+
+  // Keeping a network, and putting it back (a copy that does not depend on the tubes' objects).
+  const snapshot = () => {
+    nodes.forEach((nd, i) => { nd.i = i; });
+    return {
+      nodes: nodes.map((n) => ({ x: n.x, y: n.y, z: n.z, wall: n.wall, pf: n.pf, p: n.p, br: n.br })),
+      edges: edges.map((e) => ({ a: e.a.i, b: e.b.i, r: e.r, L: e.L, q: e.q, born: e.born, br: e.br, speed: e.speed })),
+    };
+  };
+  const restore = (snap) => {
+    nodes = snap.nodes.map((n) => ({ ...n }));
+    edges = snap.edges.map((e) => ({ ...e, a: nodes[e.a], b: nodes[e.b] }));
+    growing.clear();
+    networkVolume = 0;
+    for (const e of edges) networkVolume += Math.PI * e.r * e.r * e.L;
+  };
+
   const tunnels = {
     id: ++serial, // tells one set of tunnels from another
     vox,
@@ -509,6 +576,8 @@ export function createTunnels(form, { cityHeight = null } = {}) {
     get carved() { return networkVolume; }, // the volume (m3) of the tubes
     get share() { return massVolume ? networkVolume / massVolume : 0; }, // the part of the mass the tubes take up
     get iteration() { return iteration; },
+    get variant() { return variant; }, // the network being grown (0 up to variants - 1): the best of them is kept
+    get variants() { return VARIANTS; },
     get done() { return finished; },
     get version() { return version; }, // changes whenever the network does
     carvedAt: isTunnel, // (once the network is finished and cut into the voxels)
@@ -628,8 +697,20 @@ export function createTunnels(form, { cityHeight = null } = {}) {
       networkVolume = 0;
       for (const e of edges) networkVolume += Math.PI * e.r * e.r * e.L;
       if (iteration >= GROW_ROUNDS + SETTLE_ROUNDS) {
+        const score = networkScore();
+        if (!best || score > best.score) best = { ...snapshot(), score };
+        if (variant < VARIANTS - 1) { // another network, from a different random start
+          variant++;
+          salt = variant * 7919 + 13;
+          nodes = []; edges = []; growing.clear();
+          iteration = 0; branchCount = 0; networkVolume = 0; uncovered = []; attractors = null;
+          version++;
+          return false;
+        }
+        restore(best); // the best of them
         computeSpeeds();
         voxelise();
+        version++;
         finished = true;
       }
       return finished;
@@ -668,30 +749,8 @@ export function createTunnels(form, { cityHeight = null } = {}) {
     // storey (1 = as much as beside a tunnel carrying the open wind), mean the average over the whole mass (capped at 1.5), and evenness the weakest
     // storey's coverage over the strongest's (1 = all floors cooled alike). All 0 if there is nothing yet.
     cooling() {
-      const out = { coverage: new Array(storeys).fill(0), avg: new Array(storeys).fill(0), mean: 0, evenness: 0 };
-      if (!finished || !edges.length) return out;
-      const cmap = tunnels.coolingMap(), total = new Array(storeys).fill(0), nearW = new Array(storeys).fill(0), sum1 = new Array(storeys).fill(0);
-      let acc = 0, count = 0;
-      for (let l = 0; l < hiLayer; l++) {
-        const s = Math.min(storeys - 1, Math.floor(l / perStorey));
-        for (let col = 0; col < nxz; col++) {
-          const k = l * nxz + col;
-          if (placed[k] !== MASS || cells[k] !== MASS) continue;
-          const v = cmap.cool[l * nxz + col], w = dz[l];
-          total[s] += w;
-          nearW[s] += Math.min(1, v / NEAR) * w; // (it counts in proportion to the cooling, up to NEAR: slow air still cools, a little)
-          acc += Math.min(v, 1.5) * w;
-          sum1[s] += Math.min(v, 1) * w;
-          count += w;
-        }
-      }
-      out.coverage = total.map((t, s) => (t ? nearW[s] / t : 0));
-      out.avg = total.map((t, s) => (t ? sum1[s] / t : 0));
-      out.mean = count ? acc / count : 0;
-      const used = out.coverage.filter((_, s) => total[s]);
-      out.evenness = used.length && Math.max(...used) > 0 ? Math.min(...used) / Math.max(...used) : 0;
-      return out;
-    },
-  };
+      if (!finished || !edges.length) return { coverage: new Array(storeys).fill(0), avg: new Array(storeys).fill(0), mean: 0, evenness: 0 };
+      return coolStats(tunnels.coolingMap().cool, (k) => cells[k] === MASS);
+    },  };
   return tunnels;
 }
