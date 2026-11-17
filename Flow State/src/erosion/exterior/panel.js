@@ -5,7 +5,7 @@ import { registerPersist } from "../../core/persist.js";
 import { coolingGradient, COOLING_RAMP, COOLING_MAX, COOLED_AT } from "./coolingView.js";
 
 // Read each frame by index.js. `speed` is simulated seconds per real second.
-export const settings = { playing: true, speed: 4, erode: 2, erodeWind: false, erodeSun: false, erodeTunnels: false, tunnelVolume: 8, tunnelStack: 4, tunnelWind: -1, tunnelMulti: true, xray: false, coolingData: false, flowDebug: false, flowHeight: 2 };
+export const settings = { playing: true, speed: 4, erode: 2, erodeWind: false, erodeSun: false, erodeTunnels: false, tunnelVolume: 8, tunnelStack: 4, tunnelWind: -1, tunnelMulti: true, skinSoften: 70, xray: false, coolingData: false, flowDebug: false, flowHeight: 2 };
 
 const $ = (id) => document.getElementById(id);
 let onClearErosion = () => {};
@@ -29,6 +29,9 @@ export function mountPanel(el, hooks = {}) {
       <input type="range" id="tunnel-stack" min="0" max="10" step="1">
     </label>
     <label title="On: the tunnels are tuned for the main wind directions of the warm season together (each weighted by its hours and speed), so they still cool when the wind turns. Off: tuned for the main wind alone."><input type="checkbox" id="tunnel-multi"> Tune for all main wind directions</label>
+    <label title="Once the tunnels are finished, the outside of the mass slowly softens: the corners round off, and the faces dish in round every opening so that the edge of each tunnel flows into the face. It only takes material away at the surface and never changes the tunnels or the cooling. 0 turns it off.">Soften the skin <output id="skin-soften-out"></output>
+      <input type="range" id="skin-soften" min="0" max="100" step="5">
+    </label>
     <label title="Draws the mass faint so that only the wind tunnels stay solid."><input type="checkbox" id="xray"> X-ray (mass faint, tunnels solid)</label>
     <label title="Needs X-ray. Inside the faint mass, every storey gets a floor plan shaded by how well the wind tunnels cool that part of the floor." style="margin-left:18px"><input type="checkbox" id="cooling-data"> Cooling data (shade the floors by cooling)</label>
     <div id="cool-legend" style="display:none;margin:4px 0 8px 18px">
@@ -77,6 +80,7 @@ export function mountPanel(el, hooks = {}) {
   $("xray").addEventListener("change", (e) => { settings.xray = e.target.checked; syncControls(); });
   $("cooling-data").addEventListener("change", (e) => { settings.coolingData = e.target.checked; syncControls(); });
   $("tunnel-stack").addEventListener("input", (e) => { settings.tunnelStack = Number(e.target.value); syncControls(); });
+  $("skin-soften").addEventListener("input", (e) => { settings.skinSoften = Number(e.target.value); syncControls(); });
   $("tunnel-multi").addEventListener("change", (e) => { settings.tunnelMulti = e.target.checked; syncControls(); });
   $("tunnel-wind").addEventListener("change", (e) => { settings.tunnelWind = Number(e.target.value); syncControls(); });
   $("erode-wind").addEventListener("change", exclusive("erodeWind"));
@@ -96,6 +100,8 @@ export function syncControls() {
   $("erode-tunnels").checked = settings.erodeTunnels;
   $("tunnel-wind").value = String(settings.tunnelWind);
   $("tunnel-multi").checked = settings.tunnelMulti;
+  $("skin-soften").value = settings.skinSoften;
+  $("skin-soften-out").textContent = settings.skinSoften ? `${settings.skinSoften}%` : "off";
   $("tunnel-stack").value = settings.tunnelStack;
   $("tunnel-stack-out").textContent = settings.tunnelStack ? `${settings.tunnelStack} K` : "off";
   $("xray").checked = settings.xray;

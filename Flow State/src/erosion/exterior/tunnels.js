@@ -842,6 +842,21 @@ export function createTunnels(form, { cityHeight = null } = {}) {
     placedAt: (k) => placed[k] === MASS, // is this voxel part of the mass as placed (rather than outside air or a building)?
     heightAt: (x, z) => form.heightAt(x, z), // how high the mass is at a point (0 where there is none)
 
+    // Where the finished network opens onto the walls: [{ x, y, z, nx, nz, r }] (the point on the wall, the way out, the radius of the tube there).
+    // Read by the skin (tunnelMesh.js), which only shapes the surface round them; nothing here changes the network.
+    openings() {
+      if (!finished) return [];
+      const found = new Map();
+      for (const e of edges) {
+        for (const nd of [e.a, e.b]) {
+          if (!nd.wall || nd.wx === undefined) continue;
+          const o = found.get(nd);
+          if (!o || e.r > o.r) found.set(nd, { x: nd.x - nd.wx * WALL_OUT, y: nd.y, z: nd.z - nd.wz * WALL_OUT, nx: nd.wx, nz: nd.wz, r: e.r });
+        }
+      }
+      return [...found.values()];
+    },
+
     // The tubes: { nodes: [{ x, y, z, wall }], edges: [{ a, b, r }] } (a and b are nodes), as they are now.
     network: () => ({ nodes, edges }),
 

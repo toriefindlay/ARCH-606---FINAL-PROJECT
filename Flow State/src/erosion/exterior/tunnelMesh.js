@@ -1,4 +1,4 @@
-// VIEW (exterior erosion): the wind tunnels as they have been worn into the stone (tunnels.js). No solver code.
+﻿// VIEW (exterior erosion): the wind tunnels as they have been worn into the stone (tunnels.js). No solver code.
 //
 // The tubes of the vein network (tunnels.js) are drawn into a smooth field on a fine grid (a 3D map, 1 inside a tunnel, falling to 0 over a few
 // decimetres), and the tunnels' walls are the level ISO of that field, built with marching cubes and shaded smoothly: tubes of any radius, joined
@@ -6,7 +6,10 @@
 // where the field is above ISO, so that where a tunnel reaches a wall it leaves a smooth opening. The walls are drawn as the tunnels grow.
 import * as THREE from "three";
 import { edgeTable, triTable } from "three/addons/objects/MarchingCubes.js";
+import { createSkinShell } from "./skinShell.js";
 
+// THE SKIN: once the tunnels are finished (and `skin.amount` is above 0) the outside of the mass is drawn as one smooth softened surface instead (see
+// skinShell.js), which replaces the mass's own surface and takes the tunnels as part of itself. Nothing here changes the tunnels or the cooling.
 const ISO = 0.5; // the level of the field the surface lies on (the same as uTunnelIso in view.js)
 const MIN_INTERVAL = 300; // ms between rebuilds while the tunnels grow
 const MC_CORNERS = [[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0], [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]];
@@ -14,10 +17,18 @@ const MC_EDGES = [[0, 1], [1, 2], [2, 3], [3, 0], [4, 5], [5, 6], [6, 7], [7, 4]
 
 export function createMeshView(uniforms, empty) {
   let group = null, mesh = null, texture = null, data = null, dims = "";
-  let wall = null, matched = false, lastKey = "", lastTime = 0;
+  let skinMesh = null; // the softened outside of the mass (see skinShell.js), while it is shown: it replaces the mass's own surface
+  let wall = null, skinMaterial = null, matched = false, lastKey = "", lastTime = 0;
+  const shell = createSkinShell();
 
+  const dropSkin = () => {
+    if (skinMesh) { skinMesh.parent?.remove(skinMesh); skinMesh.geometry.dispose(); skinMesh = null; }
+    uniforms.uHideMass.value = 0;
+  };
   const clear = () => {
     uniforms.uTunnelTex.value = empty;
+    dropSkin();
+    shell.clear();
     mesh?.geometry.dispose();
     group?.parent?.remove(group);
     texture?.dispose();
@@ -25,8 +36,41 @@ export function createMeshView(uniforms, empty) {
     dims = "";
     lastKey = "";
   };
+  const geometryOf = (g) => {
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute("position", new THREE.Float32BufferAttribute(g.position, 3));
+    geo.setAttribute("normal", new THREE.Float32BufferAttribute(g.normal, 3));
+    return geo;
+  };
+  // The materials (the colour of the mass's own), and the group the tunnels' walls go in (which the x-ray mode leaves solid).
+  const place = (parent) => {
+    if (!wall) wall = new THREE.MeshLambertMaterial({ side: THREE.DoubleSide });
+    if (!skinMaterial) skinMaterial = new THREE.MeshLambertMaterial({ side: THREE.DoubleSide });
+    if (!matched) parent.traverse((o) => { if (!matched && o.isMesh && o.material?.color && o !== mesh && o !== skinMesh) { wall.color.copy(o.material.color); skinMaterial.color.copy(o.material.color); matched = true; } });
+    if (!group || group.parent !== parent) {
+      group?.parent?.remove(group);
+      group = new THREE.Group();
+      group.userData.solid = true; // the x-ray mode (view.js) leaves the tunnels as they are
+      parent.add(group);
+    }
+    if (mesh) { group.remove(mesh); mesh.geometry.dispose(); mesh = null; }
+  };
 
-  const rebuild = (parent, tunnels) => {
+  // The softened skin (amount above 0): its surface, with the tunnels in it, replaces the mass's own; the tunnels' map is not needed.
+  const rebuildSkin = (parent, built) => {
+    dropSkin();
+    place(parent);
+    uniforms.uTunnelTex.value = empty;
+    if (built.wall.position.length) { mesh = new THREE.Mesh(geometryOf(built.wall), wall); group.add(mesh); }
+    if (built.skin.position.length) { skinMesh = new THREE.Mesh(geometryOf(built.skin), skinMaterial); parent.add(skinMesh); } // (faint in x-ray, like the mass)
+    uniforms.uHideMass.value = 1;
+  };
+
+  const rebuild = (parent, tunnels, skin) => {
+    const amount = skin?.amount ?? 0;
+    const built = amount > 0 ? shell.build(tunnels, amount) : null;
+    if (built) return rebuildSkin(parent, built);
+    dropSkin();
     const { massBox } = tunnels, { nodes, edges } = tunnels.network();
     // the finer grid: one cell of fc metres every way, over the mass and a little beyond
     const ox = massBox.x0 - 3, oz = massBox.z0 - 3, W = massBox.x1 - massBox.x0 + 6, D = massBox.z1 - massBox.z0 + 6, H = massBox.top + 1;
@@ -55,7 +99,8 @@ export function createMeshView(uniforms, empty) {
           }
         }
       }
-    }    // the map for the shader
+    }
+    // the map for the shader
     const size = `${fnx}x${fnz}x${fny}`;
     if (size !== dims) {
       texture?.dispose();
@@ -111,20 +156,9 @@ export function createMeshView(uniforms, empty) {
         }
       }
     }
-    if (!wall) wall = new THREE.MeshLambertMaterial({ side: THREE.DoubleSide });
-    if (!matched) parent.traverse((o) => { if (!matched && o.isMesh && o.material?.color && o !== mesh) { wall.color.copy(o.material.color); matched = true; } });
-    if (!group || group.parent !== parent) {
-      group?.parent?.remove(group);
-      group = new THREE.Group();
-      group.userData.solid = true; // the x-ray mode (view.js) leaves the tunnels as they are
-      parent.add(group);
-    }
-    if (mesh) { group.remove(mesh); mesh.geometry.dispose(); mesh = null; }
+    place(parent);
     if (position.length) {
-      const geo = new THREE.BufferGeometry();
-      geo.setAttribute("position", new THREE.Float32BufferAttribute(position, 3));
-      geo.setAttribute("normal", new THREE.Float32BufferAttribute(normal, 3));
-      mesh = new THREE.Mesh(geo, wall);
+      mesh = new THREE.Mesh(geometryOf({ position, normal }), wall);
       group.add(mesh);
     }
   };
@@ -133,15 +167,16 @@ export function createMeshView(uniforms, empty) {
     clear,
     // Shows the tunnels of `tunnels` (tunnels.js) under `parent`. Cheap to call every frame: it only rebuilds when they have changed, and at most
     // every MIN_INTERVAL ms.
-    update(parent, tunnels) {
+    // `skin` ({ amount: 0 to 1 }, optional) softens the outside of the mass once the tunnels are done (see skinShell.js).
+    update(parent, tunnels, skin = null) {
       if (!parent || !tunnels || !tunnels.carved) return clear();
-      const key = `${tunnels.id}|${parent.id}|${tunnels.version}`;
+      const key = `${tunnels.id}|${parent.id}|${tunnels.version}|${tunnels.done ? skin?.amount ?? 0 : 0}`;
       if (key === lastKey && group?.parent === parent) return;
       const now = performance.now();
       if (group?.parent === parent && now - lastTime < MIN_INTERVAL) return;
       lastKey = key;
       lastTime = now;
-      rebuild(parent, tunnels);
+      rebuild(parent, tunnels, tunnels.done ? skin : null);
     },
   };
 }

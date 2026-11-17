@@ -31,6 +31,7 @@ EMPTY_TUNNEL.unpackAlignment = 1;
 EMPTY_TUNNEL.needsUpdate = true;
 const tunnelUniforms = {
   uTunnelTex: { value: EMPTY_TUNNEL },
+  uHideMass: { value: 0 }, // 1 while the softened skin (skinShell.js) is drawn: it replaces the mass's own surface and edge lines altogether
   uTunnelOrigin: { value: new THREE.Vector3() }, // the map's corner in world metres (y = 0 is the ground)
   uTunnelSize: { value: new THREE.Vector3(1, 1, 1) }, // its size in x, y, z
   uTunnelIso: { value: 0.5 },
@@ -40,6 +41,7 @@ uniform sampler2D uWindHeight;
 uniform vec4 uWindBox;
 uniform float uWindCell;
 uniform highp sampler3D uTunnelTex;
+uniform float uHideMass;
 uniform vec3 uTunnelOrigin;
 uniform vec3 uTunnelSize;
 uniform float uTunnelIso;
@@ -90,7 +92,7 @@ const patched = new WeakSet();
 function patch(material, key, kind) {
   if (patched.has(material)) return;
   patched.add(material);
-  const discard = kind === "skin" ? "tunnelCut(vWindPos, wn)" : "windRounded(vWindPos, wn) || tunnelCut(vWindPos, wn)";
+  const discard = kind === "skin" ? "tunnelCut(vWindPos, wn)" : "uHideMass > 0.5 || windRounded(vWindPos, wn) || tunnelCut(vWindPos, wn)";
   material.onBeforeCompile = (shader) => {
     Object.assign(shader.uniforms, windUniforms, tunnelUniforms);
     shader.vertexShader = shader.vertexShader

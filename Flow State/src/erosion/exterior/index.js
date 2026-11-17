@@ -33,6 +33,8 @@ let tunnelView = null; // the tunnels' walls, and the hole they leave in the mas
 let tunnelShown = ""; // which tunnels, and which state of them, the view and the cuts were last given
 let tunnelBusy = false; // a step of the tunnels (a solve) is running
 let tunnelWorking = false; // the tunnels are being worn: the cut offered to the pipeline waits for the end
+let skinClock = 0; // simulated seconds since the tunnels were finished (the skin softens with it)
+const SKIN_SECONDS = 600, SKIN_STEPS = 8; // how long the skin takes to soften fully (at the erosion speed), and in how many steps
 let tunnelWinds = null; // the wind of the whole structure, as last worked out by tunnelFrame
 let tunnelStats = null; // the air speed in the tunnels and the cooling, in the last solution
 let tunnels = null; // the persistent voxel mass the wind tunnels are carved from (tunnels.js), built from the form when first wanted
@@ -220,7 +222,12 @@ function tunnelShowFrame(dt = 0, force = false) {
       notifyCutsChanged();
     }
   }
-  if (t) tunnelView.update(layers.model, t);
+  // The skin softens slowly once the tunnels are done (see tunnelMesh.js): the clock runs while they are, with the erosion speed, and starts again with new
+  // tunnels. The amount moves in steps (every change is a rebuild of the walls), and the slider says how far it goes.
+  if (!t || !t.done) skinClock = 0;
+  else if (settings.playing) skinClock += dt * settings.speed;
+  const skinAmount = t && t.done ? (Math.round(Math.min(1, skinClock / SKIN_SECONDS) * SKIN_STEPS) / SKIN_STEPS) * (settings.skinSoften / 100) : 0;
+  if (t) tunnelView.update(layers.model, t, { amount: Math.round(skinAmount * 100) / 100 });
   else tunnelView.clear();
 }
 
