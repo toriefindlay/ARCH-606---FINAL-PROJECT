@@ -154,9 +154,13 @@ function tunnelFrame() {
   const wind = { ...base, label: picked ? base.label : base.label === "all year" ? "all year" : "whole warm season", dir: downwind(base.from) };
   tunnelWinds = wind;
   const limit = settings.tunnelVolume / 100;
-  const plan = `${wind.from}|${limit}|${settledSpaces()}`;
+  // The stack effect: air inside warmer by dT than outside is lighter, and a column of it of height y has the pressure head g*(dT/T)*y; in units of
+  // the open wind's dynamic pressure (U^2/2) that is stack * y per metre. Strong in weak wind and in tall masses.
+  const U = Math.max(1.5, base.mean || 3), stack = settings.tunnelStack ? (9.81 * (settings.tunnelStack / (273.15 + (base.meanTemp ?? 20)))) / (0.5 * U * U) : 0;
+  const plan = `${wind.from}|${limit}|${settledSpaces()}|${stack.toFixed(4)}`;
   if (t.plan !== plan) { // another wind, volume limit or occupied spaces: the mass is put back and the tunnels start again
     t.plan = plan;
+    t.setBuoyancy(stack);
     t.setObstacles(spacesList);
     t.setWind(wind.dir);
     tunnelStats = null;

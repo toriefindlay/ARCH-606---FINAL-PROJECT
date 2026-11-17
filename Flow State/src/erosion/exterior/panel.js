@@ -5,7 +5,7 @@ import { registerPersist } from "../../core/persist.js";
 import { coolingGradient, COOLING_RAMP, COOLED_AT } from "./coolingView.js";
 
 // Read each frame by index.js. `speed` is simulated seconds per real second.
-export const settings = { playing: true, speed: 4, erode: 2, erodeWind: false, erodeSun: false, erodeTunnels: false, tunnelVolume: 40, tunnelWind: -1, xray: false, coolingData: false, flowDebug: false, flowHeight: 2 };
+export const settings = { playing: true, speed: 4, erode: 2, erodeWind: false, erodeSun: false, erodeTunnels: false, tunnelVolume: 40, tunnelStack: 4, tunnelWind: -1, xray: false, coolingData: false, flowDebug: false, flowHeight: 2 };
 
 const $ = (id) => document.getElementById(id);
 let onClearErosion = () => {};
@@ -24,6 +24,9 @@ export function mountPanel(el, hooks = {}) {
     </label>
     <label title="The most of the mass the tunnels may carve away. The wind keeps widening them until they reach this.">Tunnel volume <output id="tunnel-volume-out"></output>
       <input type="range" id="tunnel-volume" min="2" max="40" step="1">
+    </label>
+    <label title="Stack effect: how much warmer the air inside is than outside, in degrees. Warm air rises, so the tunnels also draw air in low and out high, which matters most in tall masses and in weak wind. 0 turns it off.">Warm-air rise (indoor warmer by) <output id="tunnel-stack-out"></output>
+      <input type="range" id="tunnel-stack" min="0" max="10" step="1">
     </label>
     <label title="Draws the mass faint so that only the wind tunnels stay solid."><input type="checkbox" id="xray"> X-ray (mass faint, tunnels solid)</label>
     <label title="Needs X-ray. Inside the faint mass, every storey gets a floor plan shaded by how well the wind tunnels cool that part of the floor." style="margin-left:18px"><input type="checkbox" id="cooling-data"> Cooling data (shade the floors by cooling)</label>
@@ -72,6 +75,7 @@ export function mountPanel(el, hooks = {}) {
   $("tunnel-volume").addEventListener("input", (e) => { settings.tunnelVolume = Number(e.target.value); syncControls(); });
   $("xray").addEventListener("change", (e) => { settings.xray = e.target.checked; syncControls(); });
   $("cooling-data").addEventListener("change", (e) => { settings.coolingData = e.target.checked; syncControls(); });
+  $("tunnel-stack").addEventListener("input", (e) => { settings.tunnelStack = Number(e.target.value); syncControls(); });
   $("tunnel-wind").addEventListener("change", (e) => { settings.tunnelWind = Number(e.target.value); syncControls(); });
   $("erode-wind").addEventListener("change", exclusive("erodeWind"));
   $("erode-sun").addEventListener("change", exclusive("erodeSun"));
@@ -89,6 +93,8 @@ export function syncControls() {
   $("erode-sun").checked = settings.erodeSun;
   $("erode-tunnels").checked = settings.erodeTunnels;
   $("tunnel-wind").value = String(settings.tunnelWind);
+  $("tunnel-stack").value = settings.tunnelStack;
+  $("tunnel-stack-out").textContent = settings.tunnelStack ? `${settings.tunnelStack} K` : "off";
   $("xray").checked = settings.xray;
   $("cooling-data").checked = settings.coolingData;
   $("cooling-data").disabled = !settings.xray; // the cooling data is drawn inside the x-rayed mass

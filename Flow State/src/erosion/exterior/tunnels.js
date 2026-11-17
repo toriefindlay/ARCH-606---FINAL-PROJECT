@@ -132,6 +132,7 @@ export function createTunnels(form, { cityHeight = null } = {}) {
   let nodes = [], edges = [];
   const bTop = vox.ye[Math.min(ny, top + 1)]; // how high the mass is
   let variant = 0, best = null; // the variant being grown, and the best finished so far
+  let buoyancy = 0; // the stack effect, per metre of height (see setBuoyancy)
   let iteration = 0, finished = false, version = 0, epoch = 0, branchCount = 0;
   let uncovered = []; // the points of the mass no tunnel cools yet
   let attractors = null; // sample points in the mass
@@ -276,7 +277,9 @@ export function createTunnels(form, { cityHeight = null } = {}) {
     const C = edges.map((e, k) => (Math.PI * e.r * e.r) / Math.sqrt(K[k]));
     const p = new Float64Array(n), fixed = new Uint8Array(n);
     let mean = 0, nf = 0;
-    nodes.forEach((nd, i) => { if (nd.wall) { fixed[i] = 1; p[i] = nd.pf; mean += nd.pf; nf++; } else p[i] = nd.p || 0; });
+    // (the stack effect: the potential of the air in the tubes is its pressure plus its weight, p + rho_in g y, and a wall's is the outside
+    // pressure there plus the same: wind pressure minus (rho_out - rho_in) g y, so it falls with height by `buoyancy` per metre)
+    nodes.forEach((nd, i) => { if (nd.wall) { const pw = nd.pf - buoyancy * nd.y; fixed[i] = 1; p[i] = pw; mean += pw; nf++; } else p[i] = nd.p || 0; });
     mean = nf ? mean / nf : 0;
     const leak = 1e-9;
     for (let pass = 0; pass < (tuning ? 1 : PICARD); pass++) { // (while tuning: once, from the last solution, which is near enough to tell better from worse)
@@ -709,6 +712,11 @@ export function createTunnels(form, { cityHeight = null } = {}) {
     get obstaclesKey() { return obstaclesKey; },
 
     // The wind (the direction it blows towards, [ux, uz]) for the whole structure. The tunnels start again.
+    // The stack effect (see solvePressure): the pressure head per metre of height of air warmer than the air outside, in units of the open wind's
+    // dynamic pressure. (The tunnels start again.)
+    setBuoyancy(b) {
+      buoyancy = b;
+    },
     setWind(dir) {
       wind = [dir[0], dir[1]];
       reset();
