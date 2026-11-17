@@ -152,17 +152,24 @@ function tunnelFrame() {
   const picked = periods[settings.tunnelWind];
   const base = picked ?? getWarmWind() ?? { ...getWind(), label: "all year" };
   const wind = { ...base, label: picked ? base.label : base.label === "all year" ? "all year" : "whole warm season", dir: downwind(base.from) };
+  // The winds the tunnels are tuned against: the main directions of the rose (up to 4, none under a fifth of the main one's share of the hours),
+  // each weighted by its share of the hours times its speed (more wind, more cooling). The first is the main wind the network is grown for.
+  const rose = (base.bins ?? []).map((b, i) => ({ from: i * 22.5, freq: b.freq, weight: b.freq * Math.max(b.mean, 0.5) })).sort((a, b) => b.freq - a.freq);
+  const windSet = rose.filter((b, i) => i < (settings.tunnelMulti ? 4 : 1) && b.freq > 0 && b.freq >= 0.2 * rose[0].freq).map((b) => ({ ...b, dir: downwind(b.from) }));
+  const weightSum = windSet.reduce((s, b) => s + b.weight, 0) || 1;
+  wind.set = windSet.map((b) => ({ from: b.from, share: b.weight / weightSum }));
   tunnelWinds = wind;
   const limit = settings.tunnelVolume / 100;
   // The stack effect: air inside warmer by dT than outside is lighter, and a column of it of height y has the pressure head g*(dT/T)*y; in units of
   // the open wind's dynamic pressure (U^2/2) that is stack * y per metre. Strong in weak wind and in tall masses.
   const U = Math.max(1.5, base.mean || 3), stack = settings.tunnelStack ? (9.81 * (settings.tunnelStack / (273.15 + (base.meanTemp ?? 20)))) / (0.5 * U * U) : 0;
-  const plan = `${wind.from}|${limit}|${settledSpaces()}|${stack.toFixed(4)}`;
+  const plan = `${wind.from}|${limit}|${settledSpaces()}|${stack.toFixed(4)}|${wind.set.map((b) => `${b.from}:${b.share.toFixed(2)}`).join(",")}`;
   if (t.plan !== plan) { // another wind, volume limit or occupied spaces: the mass is put back and the tunnels start again
     t.plan = plan;
     t.setBuoyancy(stack);
     t.setObstacles(spacesList);
     t.setWind(wind.dir);
+    t.setWindSet(windSet.map((b) => ({ dir: b.dir, weight: b.weight })));
     tunnelStats = null;
     t.failed = null;
   }
@@ -189,6 +196,11 @@ function floorRow(t, w) {
   const ready = s && s.mean > 0 && cool && t.done;
   if (ready) {
     fields.push(["Tunnel air", `${s.mean.toFixed(2)}× the open wind`]);
+    const tr = t.tuneResult;
+    if (w.set?.length > 1 && tr) {
+      fields.push(["Tuned for", w.set.map((b) => `${b.from.toFixed(0)}° (${pct(b.share)})`).join(", ")]);
+      fields.push(["Cooling score", `all winds ${pct(tr.from)} → ${pct(tr.to)}; main wind ${pct(tr.mainFrom)} → ${pct(tr.mainTo)}`]);
+    }
     cool.avg.forEach((v, i) => fields.push([`Floor ${i + 1}`, `average cooling ${pct(v)}, ${pct(cool.coverage[i])} cooled by moving air within ${REACH} m`]));
     fields.push(["Evenness", `${pct(cool.evenness)} (the weakest floor over the strongest)`]);
   }

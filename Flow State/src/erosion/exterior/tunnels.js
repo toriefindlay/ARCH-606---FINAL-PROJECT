@@ -15,6 +15,7 @@
 // Nothing fixes where a tunnel is or how wide: only the flow. Never touched: the roof, the ground layer, the corners of the mass (CLEAR from
 // them), and the occupied spaces (the interior erosion's spheres).
 //
+// The network is grown for one wind (the main one), then tuned against the cooling it gives over several (see startTuning), by simulated annealing.
 // When the network is finished it is cut into the voxels, the real airflow (potential flow, voxelFlow.js) is solved through them, and
 // cooling() says how well the floors are cooled: every floor voxel takes the strongest cooling of any tunnel air within REACH metres.
 import { createVoxelMass, solveFlow, tick, AIR, MASS } from "./voxelFlow.js";
@@ -25,17 +26,19 @@ export const NEAR = 0.3; // cooling (see cooling()) at which a floor voxel count
 const LAYERS = 5; // voxel layers in a storey
 const CLEAR = 1; // metres: the least that tunnels keep from the corners of the mass
 const STEP = 1.5; // metres a channel grows in a round
-const R_START = 0.4, R_MIN = 0.2, R_MAX = 1.1; // metres: the radius of a new tube, the radius below which a shrinking tube is removed, the most a trunk gets
-const R_FLOOR = 0.35; // metres: the least radius of a tube that carries air
-const REL_PRUNE = 0.002; // a tube that carries less than this part of the flow near it is removed
-const GROW_ROUNDS = 120, SETTLE_ROUNDS = 30;
+const R_START = 0.6, R_MIN = 0.5, R_MAX = 1.6; // metres: the radius of a new tube, the radius below which a shrinking tube is removed, the most a trunk gets
+const R_FLOOR = 0.7; // metres: the least radius of a tube that carries air (no thin veins: few, wide tunnels move more air and cool further, see reachOf)
+const REL_PRUNE = 0.015; // a tube that carries less than this part of the flow near it is removed
+const R_REF = 0.7; // metres: the radius of a tube whose moving air cools out to REACH (a wider tube reaches further, a narrower one less far, see reachOf)
+const GROW_ROUNDS = 100, SETTLE_ROUNDS = 15;
 const ALIGN = 0.4, FLAT = 0.4; // how strongly a branch is turned along the wind, and how much its up-and-down is damped
-const TRUNK_GAP = 6; // metres: the trunks start at least this far apart (twice REACH, so that they cover the floor between them)
+const TRUNK_GAP = 9; // metres: the trunks start at least this far apart (about twice the reach of a trunk, so that they cover the floor between them)
 const TRUNK_ROUNDS = 45; // rounds in which only the straight trunks grow, before any branch sprouts
-const TUNE_SECONDS = 20; // (40 s gave about 4.4% more cooling score on the test slab, 10 s about 2.4%) // (30 s gave only about 1.5% more cooling score than this slice of trials: about 300 trials, each re-solving the whole network) // how long the best network is tuned for (see startTuning)
-const VARIANTS = 3; // networks grown from different random starts, of which the best is kept
-const JUNCTION = 0.5, FRICTION = 0.04, PICARD = 3; // losses where a tube starts, friction along it (per diameter), and the rounds of settling the flow
-const MAX_GROWING = 90; // channels growing at once at most (each is a tube that carries nothing yet, and costs volume) // rounds in which the network grows, and rounds after that in which it only adapts
+const TUNE_SECONDS = 14; // (40 s gave about 4.4% more cooling score on the test slab, 10 s about 2.4%) // (30 s gave only about 1.5% more cooling score than this slice of trials: about 300 trials, each re-solving the whole network) // how long the best network is tuned for (see startTuning)
+const TUNE_PER_WIND = 4; // seconds more tuning for every wind after the first that the network is judged against (see startTuning)
+const VARIANTS = 2; // networks grown from different random starts, of which the best is kept
+const JUNCTION = 0.8, BEND = 0.05, FRICTION = 0.04, PICARD = 3; // losses at a point where a tube ends or tubes meet (the opening, a junction), at a point where one simply carries on (a slight bend), friction along it (per diameter), and the rounds of settling the flow
+const MAX_GROWING = 50; // channels growing at once at most (each is a tube that carries nothing yet, and costs volume) // rounds in which the network grows, and rounds after that in which it only adapts
 const RAMP_ROUNDS = 80; // rounds over which the volume allowed rises to the limit
 const MURRAY = 0.22; // radius ~ flow^MURRAY (Murray's law says 1/3, but with that parallel tubes fight until one is left: a smaller power lets them share)
 const WALL_OUT = 1.2; // metres: a tube that ends at a wall goes this far outside it (so that the opening is cut cleanly)
@@ -58,7 +61,7 @@ export function createTunnels(form, { cityHeight = null } = {}) {
   const storeys = Math.max(1, Math.ceil((top + 1) / perStorey));
   const hiLayer = Math.min(ny, storeys * perStorey);
   let massVolume = 0, bx0 = Infinity, bx1 = -Infinity, bz0 = Infinity, bz1 = -Infinity;
-  for (let k = 0; k < placed.length; k++) if (placed[k] === MASS) massVolume += dz[Math.floor(k / nxz)];
+  for (let k = 0; k < placed.length; k++) if (placed[k] === MASS) massVolume += dz[Math.floor(k / nxz)] * c * c; // (m3: the layer's height times the area of a cell)
   for (let col = 0; col < nxz; col++) {
     if (roof[col] < 0) continue;
     const i = col % nx, j = Math.floor(col / nx);
@@ -128,7 +131,8 @@ export function createTunnels(form, { cityHeight = null } = {}) {
 
   /* ---------- the network ---------- */
   let obstacles = [], obstaclesKey = "";
-  let wind = [1, 0];
+  let wind = [1, 0]; // the wind the network is grown for (the main one)
+  let windSet = []; // the winds it is judged against: [{ dir: [ux, uz], weight }], the weights adding up to 1 (see setWindSet)
   let nodes = [], edges = [];
   const bTop = vox.ye[Math.min(ny, top + 1)]; // how high the mass is
   let variant = 0, best = null; // the variant being grown, and the best finished so far
@@ -141,8 +145,8 @@ export function createTunnels(form, { cityHeight = null } = {}) {
   // The pressure (in units of the wind's dynamic pressure) the wind puts on a wall whose way out is (nx, nz) at height y, dc metres from the
   // nearest corner of the mass: high where it blows on it, low in its lee, a little low at the sides, and the stronger the higher up (the wind
   // is faster there); near a corner the suction on the leeward and side walls is much stronger (the air is pulled round it).
-  const wallPressure = (wx, wz, y = 0, dc = 99) => {
-    const cd = wx * wind[0] + wz * wind[1]; // -1 on the windward wall, +1 on the leeward
+  const wallPressure = (wx, wz, y = 0, dc = 99, w = wind) => {
+    const cd = wx * w[0] + wz * w[1]; // -1 on the windward wall, +1 on the leeward
     const height = 0.75 + 0.5 * Math.min(1, y / Math.max(5, bTop));
     let p = (cd < 0 ? -0.8 * cd : -0.5 * cd) - 0.3 * (1 - cd * cd);
     if (cd > -0.3) p -= 0.5 * Math.max(0, 1 - dc / 5);
@@ -168,7 +172,8 @@ export function createTunnels(form, { cityHeight = null } = {}) {
   const addEdge = (a, b, r = R_START, extra = {}) => { const e = { a, b, r, L: Math.max(0.2, Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z)), q: 0, born: iteration, br: 0, ...extra }; edges.push(e); return e; };
 
   // A wall node outside the mass at a facade point.
-  const wallNodeAt = (x, y, z, wx, wz) => addNode(x + wx * WALL_OUT, y, z + wz * WALL_OUT, { wall: true, pf: wallPressure(wx, wz, y, cornerDist(x, z)) });
+  // (it keeps its way out (wx, wz) and its distance from the nearest corner (dc), so that its pressure can be worked out again for another wind)
+  const wallNodeAt = (x, y, z, wx, wz) => { const dc = cornerDist(x, z); return addNode(x + wx * WALL_OUT, y, z + wz * WALL_OUT, { wall: true, wx, wz, dc, pf: wallPressure(wx, wz, y, dc) }); };
 
   /* ---------- growth ---------- */
   const growing = new Map(); // branch number -> the tip that is growing: { node, dir, target, len, maxLen }
@@ -273,7 +278,12 @@ export function createTunnels(form, { cityHeight = null } = {}) {
   const solvePressure = () => {
     const n = nodes.length;
     nodes.forEach((nd, i) => { nd.i = i; });
-    const K = edges.map((e) => JUNCTION + (FRICTION * e.L) / (2 * e.r));
+    // The loss in a tube is half the loss of each of its ends plus the friction along it. A tube is cut into short segments, so a point with two
+    // tubes at it is only a bend (BEND): charging JUNCTION for every segment would make the air in a long tunnel crawl whatever its shape.
+    const deg = new Uint16Array(n);
+    for (const e of edges) { deg[e.a.i]++; deg[e.b.i]++; }
+    const endLoss = (nd) => (deg[nd.i] === 2 ? BEND : JUNCTION);
+    const K = edges.map((e) => (endLoss(e.a) + endLoss(e.b)) / 2 + (FRICTION * e.L) / (2 * e.r));
     const C = edges.map((e, k) => (Math.PI * e.r * e.r) / Math.sqrt(K[k]));
     const p = new Float64Array(n), fixed = new Uint8Array(n);
     let mean = 0, nf = 0;
@@ -532,15 +542,19 @@ export function createTunnels(form, { cityHeight = null } = {}) {
   // The cooling at every voxel from the network (see cooling()): every voxel takes the strongest cooling of any tube within REACH metres, that tube's
   // air speed fading to nothing at REACH. Index (layer * nx * nz + column).
   const isTunnel = (k) => placed[k] === MASS && cells[k] === AIR;
+  // How far from a tube its moving air cools: REACH for a tube of radius R_REF, further for a wider one (it moves more air), less far for a thinner one
+  // (between 0.5 and 1.8 REACH). This is what makes the tuning prefer a few wide tunnels to many thin ones of the same volume.
+  const reachOf = (e) => REACH * Math.max(0.5, Math.min(1.8, e.r / R_REF));
   const coolField = (stride = 1) => { // (stride 2 or more: only every stride-th voxel each way is worked out, for the tuning)
     const cool = new Float32Array(hiLayer * nxz);
     for (const e of edges) {
       const v0 = e.speed ?? 0;
       if (v0 < 0.02) continue;
+      const reach = reachOf(e);
       const a = e.a, b = e.b, sx = b.x - a.x, sy = b.y - a.y, sz = b.z - a.z, len2 = sx * sx + sy * sy + sz * sz || 1;
-      const i0 = Math.max(0, Math.floor((Math.min(a.x, b.x) - REACH - vox.x0) / c)), i1 = Math.min(nx - 1, Math.floor((Math.max(a.x, b.x) + REACH - vox.x0) / c));
-      const j0 = Math.max(0, Math.floor((Math.min(a.z, b.z) - REACH - vox.z0) / c)), j1 = Math.min(nz - 1, Math.floor((Math.max(a.z, b.z) + REACH - vox.z0) / c));
-      let l0 = vox.layerAt(Math.max(0, Math.min(a.y, b.y) - REACH)), l1 = vox.layerAt(Math.max(a.y, b.y) + REACH);
+      const i0 = Math.max(0, Math.floor((Math.min(a.x, b.x) - reach - vox.x0) / c)), i1 = Math.min(nx - 1, Math.floor((Math.max(a.x, b.x) + reach - vox.x0) / c));
+      const j0 = Math.max(0, Math.floor((Math.min(a.z, b.z) - reach - vox.z0) / c)), j1 = Math.min(nz - 1, Math.floor((Math.max(a.z, b.z) + reach - vox.z0) / c));
+      let l0 = vox.layerAt(Math.max(0, Math.min(a.y, b.y) - reach)), l1 = vox.layerAt(Math.max(a.y, b.y) + reach);
       l0 = Math.max(0, l0); l1 = l1 < 0 ? hiLayer - 1 : Math.min(hiLayer - 1, l1);
       for (let l = l0 + ((stride - (l0 % stride)) % stride); l <= l1; l += stride) {
         const y = yc[l];
@@ -550,8 +564,8 @@ export function createTunnels(form, { cityHeight = null } = {}) {
             const x = vox.x0 + (i + 0.5) * c;
             const u = Math.max(0, Math.min(1, ((x - a.x) * sx + (y - a.y) * sy + (z - a.z) * sz) / len2));
             const d = Math.hypot(x - (a.x + sx * u), y - (a.y + sy * u), z - (a.z + sz * u));
-            if (d >= REACH) continue;
-            const v = v0 * (1 - d / REACH), q = l * nxz + j * nx + i;
+            if (d >= reach) continue;
+            const v = v0 * (1 - d / reach), q = l * nxz + j * nx + i;
             if (v > cool[q]) cool[q] = v;
           }
         }
@@ -585,18 +599,42 @@ export function createTunnels(form, { cityHeight = null } = {}) {
   };
 
   // How good the network as it is now is: the part of the floor it cools, weighted towards cooling all the floors alike.
-  const networkScore = () => {
-    const stride = tuning ? 2 : 1; // (the tuning looks at an eighth of the voxels: the same picture of the floors, much quicker)
-    computeSpeeds();
+  const scoreOf = (stride) => {
     const st = coolStats(coolField(stride), () => true, stride);
     return st.covered * (0.5 + 0.5 * st.evenness);
+  };
+  // The walls take the pressure the wind w = [ux, uz] puts on them.
+  const setPressures = (w) => { for (const nd of nodes) if (nd.wall) nd.pf = wallPressure(nd.wx, nd.wz, nd.y, nd.dc, w); };
+  // The score for one wind. k >= 0 (while tuning): the pressures of the last solution for that wind are the start of this one, so that one pass is enough.
+  const scoreWind = (w, stride, k = -1) => {
+    setPressures(w);
+    if (k >= 0) nodes.forEach((nd, i) => { nd.p = tuning.ps[k][i]; });
+    computeSpeeds();
+    if (k >= 0) nodes.forEach((nd, i) => { tuning.ps[k][i] = nd.p; });
+    return scoreOf(stride);
+  };
+  // How good the network is over all the winds in windSet, each weighted by its share of the warm-season wind (the main wind alone if there is
+  // only one). While tuning, every tube also gets `use`, its air speed averaged over the winds, for choosing which tubes to change. When it is
+  // done the walls and the speeds are those of the main wind again (what the panel and the cooling map show).
+  const networkScore = () => {
+    const stride = tuning ? 2 : 1; // (the tuning looks at an eighth of the voxels: the same picture of the floors, much quicker)
+    const ws = tuning ? tuning.winds : windSet.length > 1 ? windSet : null;
+    if (!ws) { setPressures(wind); computeSpeeds(); return scoreOf(stride); }
+    if (tuning) for (const e of edges) e.use = 0;
+    let s = 0;
+    ws.forEach((w, k) => {
+      s += w.weight * scoreWind(w.dir, stride, tuning ? k : -1);
+      if (tuning) for (const e of edges) e.use += w.weight * (e.speed ?? 0);
+    });
+    if (!tuning) { setPressures(wind); computeSpeeds(); }
+    return s;
   };
 
   // Keeping a network, and putting it back (a copy that does not depend on the tubes' objects).
   const snapshot = () => {
     nodes.forEach((nd, i) => { nd.i = i; });
     return {
-      nodes: nodes.map((n) => ({ x: n.x, y: n.y, z: n.z, wall: n.wall, pf: n.pf, p: n.p, br: n.br })),
+      nodes: nodes.map((n) => ({ x: n.x, y: n.y, z: n.z, wall: n.wall, wx: n.wx, wz: n.wz, dc: n.dc, pf: n.pf, p: n.p, br: n.br })),
       edges: edges.map((e) => ({ a: e.a.i, b: e.b.i, r: e.r, L: e.L, q: e.q, born: e.born, br: e.br, speed: e.speed })),
     };
   };
@@ -610,68 +648,172 @@ export function createTunnels(form, { cityHeight = null } = {}) {
 
   /* ---------- tuning ---------- */
   // The best of the networks grown is then improved by trial and error against the cooling itself: a small change is made, the flow and the cooling
-  // are worked out again, and the change is kept only if the floors are cooled better (networkScore). Two kinds of change, neither of which adds
-  // or removes a tube (so no dead ends appear and the volume stays the same): volume is moved from a tube that carries little air to one that
-  // carries much (the first made thinner, the other wider), and a point where tubes meet is moved a little (the tubes bend and lengthen with it).
-  let tuning = null; // { trials, kept, from, score, until, rng, adj, moved } while it runs
+  // are worked out again, and the change is kept if the floors are cooled better (networkScore), or sometimes if worse (see below).
+  // The winds it is tuned against are those of windSet (the main wind alone if there is no set), the score being the weighted sum of the score for
+  // each (see networkScore): so a network that suits only the prevailing wind, and is useless when it turns, does not win. The search is simulated
+  // annealing: a change that makes the score worse is sometimes kept too, less and less often as the time runs out, so that it can leave a
+  // local best; the best network met on the way is the one kept at the end. The changes (the first two keep the tubes and the volume as they are):
+  //  - volume moved from a tube that carries little air (averaged over the winds) to one that carries much,
+  //  - a point where tubes meet moved a little,
+  //  - an opening moved along the facade (a little, or to a quite different place: the tube is re-aimed at another wall),
+  //  - a link made between two tubes at different pressures (its volume taken from a tube that carries little),
+  //  - a link between two junctions removed (its volume given to a tube that carries much).
+  // Every change is refused if the tubes would then take more than 2% over the volume they had when the tuning began.
+  let tuning = null; // { trials, kept, from, score, best, snap, until, dur, rng, adj, winds, ps, hash, walls, cap, moved } while it runs
+  const T0 = 0.004; // the annealing temperature at the start, in score units (the score is between 0 and 1)
+  const volumeNow = () => { let v = 0; for (const e of edges) v += Math.PI * e.r * e.r * e.L; return v; };
   const startTuning = () => {
-    computeSpeeds(); // (in full, to start from)
+    // the main wind alone first (in full, to start from), to say what the tuning has done for it
+    setPressures(wind);
+    computeSpeeds();
+    const mainFrom = scoreOf(1);
     const adj = nodes.map(() => []);
     nodes.forEach((nd, i) => { nd.i = i; });
     for (const e of edges) { adj[e.a.i].push(e); adj[e.b.i].push(e); }
-    tuning = { trials: 0, kept: 0, from: 0, score: 0, until: performance.now() + TUNE_SECONDS * 1000, rng: 12345, adj };
-    tuning.from = tuning.score = networkScore(); // (the quick way, the same as for every trial after it)
+    const winds = windSet.length ? windSet : [{ dir: wind, weight: 1 }];
+    // the pressures of the last solution for each wind: the start of the next (so that one pass settles it)
+    const ps = winds.map((w) => {
+      setPressures(w.dir);
+      computeSpeeds(); // (in full)
+      return Float64Array.from(nodes, (nd) => nd.p);
+    });
+    const dur = (TUNE_SECONDS + TUNE_PER_WIND * (winds.length - 1)) * 1000; // (every wind makes a trial dearer)
+    tuning = { trials: 0, kept: 0, from: 0, score: 0, best: 0, snap: null, until: performance.now() + dur, dur, rng: 12345, adj, winds, ps, hash: null, walls: nodes.filter((nd) => nd.wall), cap: 1.02 * volumeNow(), mainFrom, windsUsed: winds.length };
+    tuning.from = tuning.score = tuning.best = networkScore(); // (the quick way, the same as for every trial after it)
+    tuning.snap = snapshot();
   };
   const rand = () => { tuning.rng = (tuning.rng * 1664525 + 1013904223) >>> 0; return tuning.rng / 4294967296; };
+  const useOf = (e) => e.use ?? e.speed ?? 0;
   const pickEdge = (best) => { // of a few edges at random, the one with the least (best false) or the most (best true) air
     let pick = null;
     for (let k = 0; k < 6; k++) {
       const e = edges[Math.floor(rand() * edges.length)];
-      if (!pick || (best ? (e.speed ?? 0) > (pick.speed ?? 0) : (e.speed ?? 0) < (pick.speed ?? 0))) pick = e;
+      if (!pick || (best ? useOf(e) > useOf(pick) : useOf(e) < useOf(pick))) pick = e;
     }
     return pick;
+  };
+  // Each move returns an undo function, or null if it could not be made (nothing has then been changed).
+  const moveVolume = () => {
+    const A = pickEdge(false), B = pickEdge(true);
+    if (A === B) return null;
+    const ra = A.r * Math.sqrt(0.75), dV = 0.25 * Math.PI * A.r * A.r * A.L, rb = Math.sqrt(B.r * B.r + dV / (Math.PI * B.L));
+    if (ra < R_MIN || rb > R_MAX * 1.4) return null;
+    const oa = A.r, ob = B.r;
+    A.r = ra; B.r = rb;
+    return () => { A.r = oa; B.r = ob; };
+  };
+  const moveNode = () => {
+    const T = tuning;
+    const nd = nodes[Math.floor(rand() * nodes.length)], inc = T.adj[nd.i];
+    if (nd.wall || inc.length < 2) return null;
+    const ang = rand() * Math.PI * 2, dy = (rand() - 0.5) * 1.2, x = nd.x + Math.cos(ang) * 1.5, z = nd.z + Math.sin(ang) * 1.5, y = nd.y + dy;
+    if (!inside(x, y, z, 0.5) || !sphereClear(x, y, z, 0.5)) return null;
+    for (const e of inc) { // the tubes at the new place: their middles must be inside the mass and clear of the spaces too
+      const o = e.a === nd ? e.b : e.a, mx = (o.x + x) / 2, my = (o.y + y) / 2, mz = (o.z + z) / 2;
+      if (!o.wall && !inside(mx, my, mz, 0.4)) return null;
+      if (!sphereClear(mx, my, mz, 0.4)) return null;
+    }
+    const ox = nd.x, oy = nd.y, oz = nd.z, oL = inc.map((e) => e.L);
+    nd.x = x; nd.y = y; nd.z = z;
+    for (const e of inc) e.L = Math.max(0.2, Math.hypot(e.a.x - e.b.x, e.a.y - e.b.y, e.a.z - e.b.z));
+    return () => { nd.x = ox; nd.y = oy; nd.z = oz; inc.forEach((e, k) => { e.L = oL[k]; }); };
+  };
+  const moveOpening = () => { // the way out of a tube moved to another place on the walls (and so its pressure, size of the loss and direction to the wind)
+    const T = tuning;
+    if (!T.walls.length || !facade.length) return null;
+    const wn = T.walls[Math.floor(rand() * T.walls.length)], inc = T.adj[wn.i];
+    if (inc.length !== 1) return null;
+    const e = inc[0], o = e.a === wn ? e.b : e.a;
+    if (o.wall) return null;
+    const reach = rand() < 0.7 ? 6 : 25, px = wn.x - wn.wx * WALL_OUT, pz = wn.z - wn.wz * WALL_OUT;
+    let f = null;
+    for (let k = 0; k < 16 && !f; k++) {
+      const g = facade[Math.floor(rand() * facade.length)], d = Math.hypot(g.x - px, g.y - wn.y, g.z - pz);
+      if (d > 1 && d < reach) f = g;
+    }
+    if (!f) return null;
+    const entry = { x: f.x - f.nx * 0.3, y: f.y, z: f.z - f.nz * 0.3 };
+    if (Math.hypot(entry.x - o.x, entry.z - o.z) > 30 || !runClear(o, entry)) return null;
+    const old = { x: wn.x, y: wn.y, z: wn.z, wx: wn.wx, wz: wn.wz, dc: wn.dc }, oL = e.L;
+    wn.x = f.x + f.nx * WALL_OUT; wn.y = f.y; wn.z = f.z + f.nz * WALL_OUT; wn.wx = f.nx; wn.wz = f.nz; wn.dc = cornerDist(f.x, f.z);
+    e.L = Math.max(0.2, Math.hypot(e.a.x - e.b.x, e.a.y - e.b.y, e.a.z - e.b.z));
+    return () => { Object.assign(wn, old); e.L = oL; };
+  };
+  const addLink = () => { // a link between two tubes of different branches that are at very different pressures (in some wind)
+    const T = tuning;
+    const nd = nodes[Math.floor(rand() * nodes.length)];
+    if (nd.wall) return null;
+    let pick = null, bg = 0;
+    near(T.hash, nd.x, nd.y, nd.z, 9, (o) => {
+      if (o === nd || o.br === nd.br || o.wall) return;
+      const d = Math.hypot(o.x - nd.x, o.y - nd.y, o.z - nd.z);
+      if (d < 3 || d > 9 || T.adj[nd.i].some((e) => e.a === o || e.b === o)) return;
+      let g = 0;
+      T.winds.forEach((w, k) => { g += w.weight * Math.abs(T.ps[k][nd.i] - T.ps[k][o.i]); });
+      if (g / d > bg) { bg = g / d; pick = o; }
+    });
+    if (!pick || !runClear(nd, pick)) return null;
+    const L = Math.max(0.2, Math.hypot(pick.x - nd.x, pick.y - nd.y, pick.z - nd.z)), dV = Math.PI * R_FLOOR * R_FLOOR * L;
+    let A = null;
+    for (let k = 0; k < 3 && !A; k++) { // the volume comes from a tube with little air that can spare it
+      const c = pickEdge(false);
+      if (c.r * c.r - dV / (Math.PI * c.L) >= R_MIN * R_MIN) A = c;
+    }
+    if (!A) return null;
+    const oa = A.r, link = { a: nd, b: pick, r: R_FLOOR, L, q: 0, born: iteration, br: -1, speed: 0, use: 0 };
+    A.r = Math.sqrt(A.r * A.r - dV / (Math.PI * A.L));
+    edges.push(link); T.adj[nd.i].push(link); T.adj[pick.i].push(link);
+    return () => { edges.pop(); T.adj[nd.i].pop(); T.adj[pick.i].pop(); A.r = oa; };
+  };
+  const removeLink = () => { // a tube between two junctions (so that nothing is left hanging) that carries little air
+    const T = tuning;
+    let pick = null;
+    for (let k = 0; k < 8; k++) {
+      const e = edges[Math.floor(rand() * edges.length)];
+      if (e.a.wall || e.b.wall || T.adj[e.a.i].length < 3 || T.adj[e.b.i].length < 3) continue;
+      if (!pick || useOf(e) < useOf(pick)) pick = e;
+    }
+    if (!pick) return null;
+    const B = pickEdge(true);
+    if (B === pick) return null;
+    const dV = Math.PI * pick.r * pick.r * pick.L, rb = Math.sqrt(B.r * B.r + dV / (Math.PI * B.L)), ob = B.r;
+    if (rb > R_MAX * 1.4) return null;
+    const idx = edges.indexOf(pick), ia = T.adj[pick.a.i], ib = T.adj[pick.b.i];
+    edges.splice(idx, 1);
+    ia.splice(ia.indexOf(pick), 1); ib.splice(ib.indexOf(pick), 1);
+    B.r = rb;
+    return () => { edges.splice(idx, 0, pick); ia.push(pick); ib.push(pick); B.r = ob; };
   };
   const trial = () => {
     const T = tuning;
     T.trials++;
-    const saved = edges.map((e) => [e.speed, e.q]);
-    let undo = null;
-    if (rand() < 0.5) {
-      const A = pickEdge(false), B = pickEdge(true);
-      if (A === B) return;
-      const ra = A.r * Math.sqrt(0.75), dV = 0.25 * Math.PI * A.r * A.r * A.L, rb = Math.sqrt(B.r * B.r + dV / (Math.PI * B.L));
-      if (ra < R_MIN || rb > R_MAX * 1.4) return;
-      const oa = A.r, ob = B.r;
-      A.r = ra; B.r = rb;
-      undo = () => { A.r = oa; B.r = ob; };
-    } else {
-      const nd = nodes[Math.floor(rand() * nodes.length)], inc = T.adj[nd.i];
-      if (nd.wall || inc.length < 2) return;
-      const ang = rand() * Math.PI * 2, dy = (rand() - 0.5) * 1.2, x = nd.x + Math.cos(ang) * 1.5, z = nd.z + Math.sin(ang) * 1.5, y = nd.y + dy;
-      if (!inside(x, y, z, 0.5) || !sphereClear(x, y, z, 0.5)) return;
-      for (const e of inc) { // the tubes at the new place: their middles must be inside the mass and clear of the spaces too
-        const o = e.a === nd ? e.b : e.a, mx = (o.x + x) / 2, my = (o.y + y) / 2, mz = (o.z + z) / 2;
-        if (!o.wall && !inside(mx, my, mz, 0.4)) return;
-        if (!sphereClear(mx, my, mz, 0.4)) return;
-      }
-      const ox = nd.x, oy = nd.y, oz = nd.z, oL = inc.map((e) => e.L);
-      nd.x = x; nd.y = y; nd.z = z;
-      for (const e of inc) e.L = Math.max(0.2, Math.hypot(e.a.x - e.b.x, e.a.y - e.b.y, e.a.z - e.b.z));
-      undo = () => { nd.x = ox; nd.y = oy; nd.z = oz; inc.forEach((e, k) => { e.L = oL[k]; }); };
+    const saved = edges.map((e) => [e.speed, e.q, e.use]);
+    const r = rand();
+    const undo = r < 0.25 ? moveVolume() : r < 0.5 ? moveNode() : r < 0.75 ? moveOpening() : r < 0.9 ? addLink() : removeLink();
+    if (!undo) return;
+    const revert = () => { undo(); edges.forEach((e, k) => { e.speed = saved[k][0]; e.q = saved[k][1]; e.use = saved[k][2]; }); };
+    if (volumeNow() > T.cap) return revert();
+    const s = networkScore(), d = s - T.score, frac = 1 - (T.until - performance.now()) / T.dur;
+    const temp = frac < 0.75 ? T0 * (1 - frac / 0.75) ** 2 : 0; // (cooling down; the last quarter only accepts better)
+    if (d > 1e-5 || (temp > 0 && d < 0 && rand() < Math.exp(d / temp))) {
+      T.score = s; T.kept++; T.moved = true;
+      if (s > T.best + 1e-5) { T.best = s; T.snap = snapshot(); }
+      return;
     }
-    const s = networkScore();
-    if (s > T.score + 1e-5) { T.score = s; T.kept++; T.moved = true; return; }
-    undo();
-    edges.forEach((e, k) => { e.speed = saved[k][0]; e.q = saved[k][1]; });
+    revert();
   };
   const tuneBatch = () => {
     const T = tuning, t0 = performance.now();
-    while (performance.now() - t0 < 40) trial();
-    if (T.moved) { T.moved = false; networkVolume = 0; for (const e of edges) networkVolume += Math.PI * e.r * e.r * e.L; version++; }
+    T.hash = buildHash(); // (the points have moved a little)
+    while (performance.now() - t0 < 40 && performance.now() < T.until) trial();
+    if (T.moved) { T.moved = false; networkVolume = volumeNow(); version++; }
     if (performance.now() < T.until) return false;
-    tuneResult = { trials: T.trials, kept: T.kept, from: T.from, to: T.score };
+    const { trials, kept, from, best, mainFrom, windsUsed } = T;
+    restore(T.snap); // the best network met on the way
     tuning = null;
-    computeSpeeds();
+    setPressures(wind);
+    computeSpeeds(); // (for the main wind, as shown)
+    tuneResult = { trials, kept, from, to: best, winds: windsUsed, mainFrom, mainTo: scoreOf(1) };
     voxelise();
     version++;
     finished = true;
@@ -721,6 +863,14 @@ export function createTunnels(form, { cityHeight = null } = {}) {
       wind = [dir[0], dir[1]];
       reset();
     },
+    // The winds the finished network is judged and tuned against: [{ dir: [ux, uz], weight }] (the weights are scaled to add up to 1), the main
+    // wind (setWind) being the one the network is grown for and shown for. An empty list, or one wind, tunes for the main wind alone.
+    // (Set it after setWind, which starts the tunnels again; it does not start them again itself.)
+    setWindSet(list) {
+      const total = list.reduce((s, w) => s + Math.max(0, w.weight), 0) || 1;
+      windSet = list.map((w) => ({ dir: [w.dir[0], w.dir[1]], weight: Math.max(0, w.weight) / total }));
+    },
+    get windSet() { return windSet; },
     reset,
 
     // One round: the flow is solved through the tubes, they take the radius it calls for (the weak ones go), channels grow on and branch, and

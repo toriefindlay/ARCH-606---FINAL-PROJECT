@@ -2,10 +2,10 @@
 // `el` is the empty #exterior-panel container in index.html. Call notifyCutsChanged() from
 // erosion/combine.js after any control changes the cuts, and registerPersist() to save settings.
 import { registerPersist } from "../../core/persist.js";
-import { coolingGradient, COOLING_RAMP, COOLED_AT } from "./coolingView.js";
+import { coolingGradient, COOLING_RAMP, COOLING_MAX, COOLED_AT } from "./coolingView.js";
 
 // Read each frame by index.js. `speed` is simulated seconds per real second.
-export const settings = { playing: true, speed: 4, erode: 2, erodeWind: false, erodeSun: false, erodeTunnels: false, tunnelVolume: 40, tunnelStack: 4, tunnelWind: -1, xray: false, coolingData: false, flowDebug: false, flowHeight: 2 };
+export const settings = { playing: true, speed: 4, erode: 2, erodeWind: false, erodeSun: false, erodeTunnels: false, tunnelVolume: 8, tunnelStack: 4, tunnelWind: -1, tunnelMulti: true, xray: false, coolingData: false, flowDebug: false, flowHeight: 2 };
 
 const $ = (id) => document.getElementById(id);
 let onClearErosion = () => {};
@@ -28,12 +28,13 @@ export function mountPanel(el, hooks = {}) {
     <label title="Stack effect: how much warmer the air inside is than outside, in degrees. Warm air rises, so the tunnels also draw air in low and out high, which matters most in tall masses and in weak wind. 0 turns it off.">Warm-air rise (indoor warmer by) <output id="tunnel-stack-out"></output>
       <input type="range" id="tunnel-stack" min="0" max="10" step="1">
     </label>
+    <label title="On: the tunnels are tuned for the main wind directions of the warm season together (each weighted by its hours and speed), so they still cool when the wind turns. Off: tuned for the main wind alone."><input type="checkbox" id="tunnel-multi"> Tune for all main wind directions</label>
     <label title="Draws the mass faint so that only the wind tunnels stay solid."><input type="checkbox" id="xray"> X-ray (mass faint, tunnels solid)</label>
     <label title="Needs X-ray. Inside the faint mass, every storey gets a floor plan shaded by how well the wind tunnels cool that part of the floor." style="margin-left:18px"><input type="checkbox" id="cooling-data"> Cooling data (shade the floors by cooling)</label>
     <div id="cool-legend" style="display:none;margin:4px 0 8px 18px">
       <div style="height:22px;border-radius:4px;border:1px solid #bbb;background:${coolingGradient()}"></div>
-      <div style="position:relative;height:20px;font-size:11px;color:#555">${COOLING_RAMP.map(([p]) => `<span style="position:absolute;left:${p}%;transform:translateX(${p === 0 ? "0" : p === 100 ? "-100%" : "-50%"})">${p}%</span>`).join("")}</div>
-      <div style="font-size:11px;color:#555;line-height:1.35">Cooling just above the floor: 100% = as much as right beside a tunnel carrying the open wind, fading to 0% three metres away. <b>${COOLED_AT}% and above counts as fully cooled; less counts in proportion.</b> Red: little or none; blue: fully cooled.</div>
+      <div style="position:relative;height:20px;font-size:11px;color:#555">${COOLING_RAMP.map(([p]) => `<span style="position:absolute;left:${(100 * p) / COOLING_MAX}%;transform:translateX(${p === 0 ? "0" : p === COOLING_MAX ? "-100%" : "-50%"})">${p}${p === COOLING_MAX ? "%+" : "%"}</span>`).join("")}</div>
+      <div style="font-size:11px;color:#555;line-height:1.35">Cooling just above the floor: 100% = as much as right beside a tunnel carrying the open wind, fading to 0% three metres away. <b>${COOLED_AT}% and above counts as fully cooled; less counts in proportion.</b> Red: little or none; blue: fully cooled. (The colour scale stops at ${COOLING_MAX}%: anything above is the darkest blue.)</div>
     </div>
     <p id="tunnel-note" class="hint" style="margin:0 0 6px"></p>
     <details id="floor-data" open style="margin:0 0 8px">
@@ -76,6 +77,7 @@ export function mountPanel(el, hooks = {}) {
   $("xray").addEventListener("change", (e) => { settings.xray = e.target.checked; syncControls(); });
   $("cooling-data").addEventListener("change", (e) => { settings.coolingData = e.target.checked; syncControls(); });
   $("tunnel-stack").addEventListener("input", (e) => { settings.tunnelStack = Number(e.target.value); syncControls(); });
+  $("tunnel-multi").addEventListener("change", (e) => { settings.tunnelMulti = e.target.checked; syncControls(); });
   $("tunnel-wind").addEventListener("change", (e) => { settings.tunnelWind = Number(e.target.value); syncControls(); });
   $("erode-wind").addEventListener("change", exclusive("erodeWind"));
   $("erode-sun").addEventListener("change", exclusive("erodeSun"));
@@ -93,6 +95,7 @@ export function syncControls() {
   $("erode-sun").checked = settings.erodeSun;
   $("erode-tunnels").checked = settings.erodeTunnels;
   $("tunnel-wind").value = String(settings.tunnelWind);
+  $("tunnel-multi").checked = settings.tunnelMulti;
   $("tunnel-stack").value = settings.tunnelStack;
   $("tunnel-stack-out").textContent = settings.tunnelStack ? `${settings.tunnelStack} K` : "off";
   $("xray").checked = settings.xray;
