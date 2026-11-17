@@ -29,6 +29,7 @@ const R_START = 0.4, R_MIN = 0.2, R_MAX = 1.1; // metres: the radius of a new tu
 const R_FLOOR = 0.35; // metres: the least radius of a tube that carries air
 const REL_PRUNE = 0.002; // a tube that carries less than this part of the flow near it is removed
 const GROW_ROUNDS = 120, SETTLE_ROUNDS = 30;
+const TRUNK_GAP = 6; // metres: the trunks start at least this far apart (twice REACH, so that they cover the floor between them)
 const TRUNK_ROUNDS = 45; // rounds in which only the straight trunks grow, before any branch sprouts
 const VARIANTS = 3; // networks grown from different random starts, of which the best is kept
 const JUNCTION = 0.5, FRICTION = 0.04, PICARD = 3; // losses where a tube starts, friction along it (per diameter), and the rounds of settling the flow
@@ -63,6 +64,16 @@ export function createTunnels(form, { cityHeight = null } = {}) {
     bz0 = Math.min(bz0, vox.z0 + j * c); bz1 = Math.max(bz1, vox.z0 + (j + 1) * c);
   }
   const yFloor = vox.ye[1]; // the ground layer is never opened
+  // the floor area of every storey (the mass cells at its middle layer): the trunks and the volume are shared out by it
+  const stArea = new Float64Array(storeys);
+  for (let s = 0; s < storeys; s++) {
+    const l = Math.min(ny - 1, s * perStorey + (perStorey >> 1));
+    for (let col = 0; col < nxz; col++) if (placed[l * nxz + col] === MASS) stArea[s] += c * c;
+  }
+  let stAreaSum = 0;
+  for (const a of stArea) stAreaSum += a;
+  const stShare = (s) => 0.5 * stArea[s] / (stAreaSum || 1) + 0.5 / storeys; // half by floor area, half equal, so that a small top floor is not starved
+  const stOf = (e) => Math.max(0, Math.min(storeys - 1, Math.floor((e.a.y + e.b.y) / 2 / STOREY)));
 
   // The columns round the corners of the mass (a column with open sides both ways, and the ones within CLEAR of it): never opened.
   const isMass = (i, j) => i >= 0 && j >= 0 && i < nx && j < nz && roof[j * nx + i] >= 0;
@@ -81,18 +92,35 @@ export function createTunnels(form, { cityHeight = null } = {}) {
 
   // The walls of the mass as points the tubes can end at: { x, y, z, nx, nz } (the way out). Not at the corners.
   const facade = [];
+  const hasAt = (i, j, l) => i >= 0 && j >= 0 && i < nx && j < nz && roof[j * nx + i] >= l; // is there mass in this column at layer l?
+  const cornerNear = (i, j, l) => {
+    const r = Math.max(1, Math.ceil(CLEAR / c));
+    for (let dj = -r; dj <= r; dj++) {
+      for (let di = -r; di <= r; di++) {
+        const a = i + di, b = j + dj;
+        if (!hasAt(a, b, l)) continue;
+        if ((!hasAt(a - 1, b, l) || !hasAt(a + 1, b, l)) && (!hasAt(a, b - 1, l) || !hasAt(a, b + 1, l))) return true;
+      }
+    }
+    return false;
+  };
   for (let j = 0; j < nz; j++) {
     for (let i = 0; i < nx; i++) {
       const col = j * nx + i;
       if (roof[col] < 0 || prot[col]) continue;
-      let ox = 0, oz = 0;
-      if (!isMass(i - 1, j)) ox -= 1;
-      if (!isMass(i + 1, j)) ox += 1;
-      if (!isMass(i, j - 1)) oz -= 1;
-      if (!isMass(i, j + 1)) oz += 1;
-      if (!ox && !oz) continue;
-      const len = Math.hypot(ox, oz), x = vox.x0 + (i + 0.5) * c + (ox / len) * (c / 2), z = vox.z0 + (j + 0.5) * c + (oz / len) * (c / 2);
-      for (let l = 1; l < roof[col]; l++) facade.push({ x, y: yc[l], z, nx: ox / len, nz: oz / len });
+      // layer by layer: a face is a wall wherever the next column has no mass at that height (so the walls of an upper part that stands over a
+      // lower one count too, not only the walls at the edge of the footprint)
+      for (let l = 1; l < roof[col]; l++) {
+        let ox = 0, oz = 0;
+        if (!hasAt(i - 1, j, l)) ox -= 1;
+        if (!hasAt(i + 1, j, l)) ox += 1;
+        if (!hasAt(i, j - 1, l)) oz -= 1;
+        if (!hasAt(i, j + 1, l)) oz += 1;
+        if (!ox && !oz) continue;
+        if (cornerNear(i, j, l)) continue; // corners at this height are kept clear too
+        const len = Math.hypot(ox, oz), x = vox.x0 + (i + 0.5) * c + (ox / len) * (c / 2), z = vox.z0 + (j + 0.5) * c + (oz / len) * (c / 2);
+        facade.push({ x, y: yc[l], z, nx: ox / len, nz: oz / len });
+      }
     }
   }
 
@@ -314,6 +342,7 @@ export function createTunnels(form, { cityHeight = null } = {}) {
       const target = e.rel < REL_PRUNE ? 0 : Math.max(R_FLOOR, k * R_MAX * e.rel ** MURRAY);
       e.r += 0.4 * (target - e.r);
     }
+    // If the tubes are over the volume allowed, the ones with the least flow go first.
     let total = 0;
     for (const e of edges) total += Math.PI * e.r * e.r * e.L;
     if (total > 1.05 * budget) {
@@ -425,12 +454,16 @@ export function createTunnels(form, { cityHeight = null } = {}) {
     // the same number on every storey, so that every floor is reached (the trunks are not all at the foot of the walls)
     const bySt = new Map();
     for (const f of order) { const s = Math.floor(f.y / STOREY); if (!bySt.has(s)) bySt.set(s, []); bySt.get(s).push(f); }
-    const each = Math.max(2, Math.ceil(wanted / bySt.size)), chosen = [];
-    for (const list of bySt.values()) {
+    const chosen = [];
+    for (const [s, list] of bySt) {
+      // (extra trunks on the top storey were tried: they did not cool it better, and took cooling from the lower floors)
+      // Core-first: on every storey a trunk wherever the spacing allows (about every TRUNK_GAP), so that every part of the floor, the middle too,
+      // has a through-tunnel within reach (the 3 m of REACH) instead of only the edges near the windward wall. (`wanted` is now only the least.)
+      const each = Math.max(2, Math.ceil(wanted / bySt.size), 40), gap = TRUNK_GAP;
       let count = 0;
       for (const f of list) {
         if (count >= each) break;
-        if (chosen.some((o) => Math.hypot(o.x - f.x, o.y - f.y, o.z - f.z) < 5)) continue;
+        if (chosen.some((o) => Math.hypot(o.x - f.x, o.y - f.y, o.z - f.z) < gap)) continue;
         if (!sphereClear(f.x - f.nx * 1.5, f.y, f.z - f.nz * 1.5, 0.6)) continue;
         chosen.push(f);
         count++;

@@ -5,7 +5,7 @@ import { registerPersist } from "../../core/persist.js";
 import { coolingGradient, COOLING_RAMP, COOLED_AT } from "./coolingView.js";
 
 // Read each frame by index.js. `speed` is simulated seconds per real second.
-export const settings = { playing: true, speed: 4, erode: 2, erodeWind: false, erodeSun: false, erodeTunnels: false, tunnelVolume: 20, tunnelWind: -1, xray: false, coolingData: false, flowDebug: false, flowHeight: 2 };
+export const settings = { playing: true, speed: 4, erode: 2, erodeWind: false, erodeSun: false, erodeTunnels: false, tunnelVolume: 28, tunnelWind: -1, xray: false, coolingData: false, flowDebug: false, flowHeight: 2 };
 
 const $ = (id) => document.getElementById(id);
 let onClearErosion = () => {};
@@ -23,7 +23,7 @@ export function mountPanel(el, hooks = {}) {
       <select id="tunnel-wind"><option value="-1">Whole warm season</option></select>
     </label>
     <label title="The most of the mass the tunnels may carve away. The wind keeps widening them until they reach this.">Tunnel volume <output id="tunnel-volume-out"></output>
-      <input type="range" id="tunnel-volume" min="2" max="30" step="1">
+      <input type="range" id="tunnel-volume" min="2" max="40" step="1">
     </label>
     <label title="Draws the mass faint so that only the wind tunnels stay solid."><input type="checkbox" id="xray"> X-ray (mass faint, tunnels solid)</label>
     <label title="Needs X-ray. Inside the faint mass, every storey gets a floor plan shaded by how well the wind tunnels cool that part of the floor." style="margin-left:18px"><input type="checkbox" id="cooling-data"> Cooling data (shade the floors by cooling)</label>
