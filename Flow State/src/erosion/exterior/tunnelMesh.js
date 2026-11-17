@@ -101,7 +101,7 @@ export function createMeshView(uniforms, empty) {
             const tri = [triTable[t], triTable[t + 1], triTable[t + 2]];
             // only what lies inside the mass: the ends of the tunnels that reach out of a wall are left open
             const cx = ox + ((pt[tri[0]][0] + pt[tri[1]][0] + pt[tri[2]][0]) / 3 + 0.5) * fc, cy = ((pt[tri[0]][1] + pt[tri[1]][1] + pt[tri[2]][1]) / 3 + 0.5) * fc, cz = oz + ((pt[tri[0]][2] + pt[tri[1]][2] + pt[tri[2]][2]) / 3 + 0.5) * fc;
-            if (tunnels.heightAt(cx, cz) < cy - 0.1) continue;
+            if (tunnels.heightAt(cx, cz) < cy - 0.1 || cy < 0.2) continue; // (and nothing below the ground)
             for (const e of tri) {
               position.push(ox + (pt[e][0] + 0.5) * fc, (pt[e][1] + 0.5) * fc, oz + (pt[e][2] + 0.5) * fc);
               const len = Math.hypot(nrm[e][0], nrm[e][1], nrm[e][2]) || 1;

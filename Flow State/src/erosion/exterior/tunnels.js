@@ -29,8 +29,10 @@ const R_START = 0.4, R_MIN = 0.2, R_MAX = 1.1; // metres: the radius of a new tu
 const R_FLOOR = 0.35; // metres: the least radius of a tube that carries air
 const REL_PRUNE = 0.002; // a tube that carries less than this part of the flow near it is removed
 const GROW_ROUNDS = 120, SETTLE_ROUNDS = 30;
+const ALIGN = 0.4, FLAT = 0.4; // how strongly a branch is turned along the wind, and how much its up-and-down is damped
 const TRUNK_GAP = 6; // metres: the trunks start at least this far apart (twice REACH, so that they cover the floor between them)
 const TRUNK_ROUNDS = 45; // rounds in which only the straight trunks grow, before any branch sprouts
+const TUNE_SECONDS = 20; // (40 s gave about 4.4% more cooling score on the test slab, 10 s about 2.4%) // (30 s gave only about 1.5% more cooling score than this slice of trials: about 300 trials, each re-solving the whole network) // how long the best network is tuned for (see startTuning)
 const VARIANTS = 3; // networks grown from different random starts, of which the best is kept
 const JUNCTION = 0.5, FRICTION = 0.04, PICARD = 3; // losses where a tube starts, friction along it (per diameter), and the rounds of settling the flow
 const MAX_GROWING = 90; // channels growing at once at most (each is a tube that carries nothing yet, and costs volume) // rounds in which the network grows, and rounds after that in which it only adapts
@@ -226,6 +228,9 @@ export function createTunnels(form, { cityHeight = null } = {}) {
     const jitter = (s) => hash(t.br * 7919 + iteration * 131 + s) - 0.5;
     const wob = g.jit ?? 0.5; // (a trunk wobbles little)
     want[0] += jitter(1) * wob; want[1] += jitter(2) * wob * 0.4; want[2] += jitter(3) * wob;
+    // Branches run with the wind and keep to their floor: the air moves along the wind, so a branch across it or steeply up or down is longer than
+    // it needs to be (more friction, slower air) for the same cooling. (The trunks are straight already.)
+    if (!g.noPull) { want[0] += wind[0] * ALIGN; want[2] += wind[1] * ALIGN; want[1] *= FLAT; }
     const hHere = form.heightAt(t.x, t.z); // keep off the roof and the floor
     if (hHere - t.y < 3) want[1] -= 1.2;
     if (t.y - yFloor < 1.8) want[1] += 1.2;
@@ -274,7 +279,7 @@ export function createTunnels(form, { cityHeight = null } = {}) {
     nodes.forEach((nd, i) => { if (nd.wall) { fixed[i] = 1; p[i] = nd.pf; mean += nd.pf; nf++; } else p[i] = nd.p || 0; });
     mean = nf ? mean / nf : 0;
     const leak = 1e-9;
-    for (let pass = 0; pass < PICARD; pass++) {
+    for (let pass = 0; pass < (tuning ? 1 : PICARD); pass++) { // (while tuning: once, from the last solution, which is near enough to tell better from worse)
       const g = edges.map((e, k) => C[k] / Math.sqrt(Math.abs(p[e.a.i] - p[e.b.i]) + 1e-3));
       const diag = new Float64Array(n), adj = Array.from({ length: n }, () => []);
       edges.forEach((e, k) => { diag[e.a.i] += g[k]; diag[e.b.i] += g[k]; adj[e.a.i].push([e.b.i, g[k]]); adj[e.b.i].push([e.a.i, g[k]]); });
@@ -298,7 +303,7 @@ export function createTunnels(form, { cityHeight = null } = {}) {
           const alpha = rz / dad;
           let rr = 0, rz2 = 0;
           for (let i = 0; i < n; i++) { if (fixed[i]) continue; p[i] += alpha * d[i]; r[i] -= alpha * ad[i]; z[i] = r[i] / (diag[i] + leak); rz2 += r[i] * z[i]; rr += r[i] * r[i]; }
-          if (Math.sqrt(rr / r0) < 1e-6) break;
+          if (Math.sqrt(rr / r0) < (tuning ? 1e-4 : 1e-6)) break;
           const beta = rz2 / rz;
           rz = rz2;
           for (let i = 0; i < n; i++) if (!fixed[i]) d[i] = z[i] + beta * d[i];
@@ -483,7 +488,7 @@ export function createTunnels(form, { cityHeight = null } = {}) {
     nodes = []; edges = []; growing.clear();
     iteration = 0; finished = false; branchCount = 0; version++; epoch++; networkVolume = 0;
     uncovered = []; attractors = null;
-    variant = 0; best = null; salt = 0;
+    variant = 0; best = null; salt = 0; tuning = null; tuneResult = null;
     flowResult = null; flowVersion = -1; mapKey = ""; map = null;
   };
 
@@ -524,7 +529,7 @@ export function createTunnels(form, { cityHeight = null } = {}) {
   // The cooling at every voxel from the network (see cooling()): every voxel takes the strongest cooling of any tube within REACH metres, that tube's
   // air speed fading to nothing at REACH. Index (layer * nx * nz + column).
   const isTunnel = (k) => placed[k] === MASS && cells[k] === AIR;
-  const coolField = () => {
+  const coolField = (stride = 1) => { // (stride 2 or more: only every stride-th voxel each way is worked out, for the tuning)
     const cool = new Float32Array(hiLayer * nxz);
     for (const e of edges) {
       const v0 = e.speed ?? 0;
@@ -534,11 +539,11 @@ export function createTunnels(form, { cityHeight = null } = {}) {
       const j0 = Math.max(0, Math.floor((Math.min(a.z, b.z) - REACH - vox.z0) / c)), j1 = Math.min(nz - 1, Math.floor((Math.max(a.z, b.z) + REACH - vox.z0) / c));
       let l0 = vox.layerAt(Math.max(0, Math.min(a.y, b.y) - REACH)), l1 = vox.layerAt(Math.max(a.y, b.y) + REACH);
       l0 = Math.max(0, l0); l1 = l1 < 0 ? hiLayer - 1 : Math.min(hiLayer - 1, l1);
-      for (let l = l0; l <= l1; l++) {
+      for (let l = l0 + ((stride - (l0 % stride)) % stride); l <= l1; l += stride) {
         const y = yc[l];
-        for (let j = j0; j <= j1; j++) {
+        for (let j = j0 + ((stride - (j0 % stride)) % stride); j <= j1; j += stride) {
           const z = vox.z0 + (j + 0.5) * c;
-          for (let i = i0; i <= i1; i++) {
+          for (let i = i0 + ((stride - (i0 % stride)) % stride); i <= i1; i += stride) {
             const x = vox.x0 + (i + 0.5) * c;
             const u = Math.max(0, Math.min(1, ((x - a.x) * sx + (y - a.y) * sy + (z - a.z) * sz) / len2));
             const d = Math.hypot(x - (a.x + sx * u), y - (a.y + sy * u), z - (a.z + sz * u));
@@ -553,12 +558,13 @@ export function createTunnels(form, { cityHeight = null } = {}) {
   };
   // How well the floors are cooled, from the cooling at every voxel: { coverage: [per storey], avg: [per storey], mean, evenness } (see cooling()).
   // solid(k) says whether a voxel counts as floor.
-  const coolStats = (cool, solid) => {
+  const coolStats = (cool, solid, stride = 1) => {
     const total = new Array(storeys).fill(0), nearW = new Array(storeys).fill(0), sum1 = new Array(storeys).fill(0);
     let acc = 0, count = 0;
-    for (let l = 0; l < hiLayer; l++) {
+    for (let l = 0; l < hiLayer; l += stride) {
       const s = Math.min(storeys - 1, Math.floor(l / perStorey));
       for (let col = 0; col < nxz; col++) {
+        if (stride > 1 && ((col % nx) % stride || Math.floor(col / nx) % stride)) continue;
         const k = l * nxz + col;
         if (placed[k] !== MASS || !solid(k)) continue;
         const v = cool[k], w = dz[l];
@@ -577,8 +583,9 @@ export function createTunnels(form, { cityHeight = null } = {}) {
 
   // How good the network as it is now is: the part of the floor it cools, weighted towards cooling all the floors alike.
   const networkScore = () => {
+    const stride = tuning ? 2 : 1; // (the tuning looks at an eighth of the voxels: the same picture of the floors, much quicker)
     computeSpeeds();
-    const st = coolStats(coolField(), () => true);
+    const st = coolStats(coolField(stride), () => true, stride);
     return st.covered * (0.5 + 0.5 * st.evenness);
   };
 
@@ -598,7 +605,80 @@ export function createTunnels(form, { cityHeight = null } = {}) {
     for (const e of edges) networkVolume += Math.PI * e.r * e.r * e.L;
   };
 
+  /* ---------- tuning ---------- */
+  // The best of the networks grown is then improved by trial and error against the cooling itself: a small change is made, the flow and the cooling
+  // are worked out again, and the change is kept only if the floors are cooled better (networkScore). Two kinds of change, neither of which adds
+  // or removes a tube (so no dead ends appear and the volume stays the same): volume is moved from a tube that carries little air to one that
+  // carries much (the first made thinner, the other wider), and a point where tubes meet is moved a little (the tubes bend and lengthen with it).
+  let tuning = null; // { trials, kept, from, score, until, rng, adj, moved } while it runs
+  const startTuning = () => {
+    computeSpeeds(); // (in full, to start from)
+    const adj = nodes.map(() => []);
+    nodes.forEach((nd, i) => { nd.i = i; });
+    for (const e of edges) { adj[e.a.i].push(e); adj[e.b.i].push(e); }
+    tuning = { trials: 0, kept: 0, from: 0, score: 0, until: performance.now() + TUNE_SECONDS * 1000, rng: 12345, adj };
+    tuning.from = tuning.score = networkScore(); // (the quick way, the same as for every trial after it)
+  };
+  const rand = () => { tuning.rng = (tuning.rng * 1664525 + 1013904223) >>> 0; return tuning.rng / 4294967296; };
+  const pickEdge = (best) => { // of a few edges at random, the one with the least (best false) or the most (best true) air
+    let pick = null;
+    for (let k = 0; k < 6; k++) {
+      const e = edges[Math.floor(rand() * edges.length)];
+      if (!pick || (best ? (e.speed ?? 0) > (pick.speed ?? 0) : (e.speed ?? 0) < (pick.speed ?? 0))) pick = e;
+    }
+    return pick;
+  };
+  const trial = () => {
+    const T = tuning;
+    T.trials++;
+    const saved = edges.map((e) => [e.speed, e.q]);
+    let undo = null;
+    if (rand() < 0.5) {
+      const A = pickEdge(false), B = pickEdge(true);
+      if (A === B) return;
+      const ra = A.r * Math.sqrt(0.75), dV = 0.25 * Math.PI * A.r * A.r * A.L, rb = Math.sqrt(B.r * B.r + dV / (Math.PI * B.L));
+      if (ra < R_MIN || rb > R_MAX * 1.4) return;
+      const oa = A.r, ob = B.r;
+      A.r = ra; B.r = rb;
+      undo = () => { A.r = oa; B.r = ob; };
+    } else {
+      const nd = nodes[Math.floor(rand() * nodes.length)], inc = T.adj[nd.i];
+      if (nd.wall || inc.length < 2) return;
+      const ang = rand() * Math.PI * 2, dy = (rand() - 0.5) * 1.2, x = nd.x + Math.cos(ang) * 1.5, z = nd.z + Math.sin(ang) * 1.5, y = nd.y + dy;
+      if (!inside(x, y, z, 0.5) || !sphereClear(x, y, z, 0.5)) return;
+      for (const e of inc) { // the tubes at the new place: their middles must be inside the mass and clear of the spaces too
+        const o = e.a === nd ? e.b : e.a, mx = (o.x + x) / 2, my = (o.y + y) / 2, mz = (o.z + z) / 2;
+        if (!o.wall && !inside(mx, my, mz, 0.4)) return;
+        if (!sphereClear(mx, my, mz, 0.4)) return;
+      }
+      const ox = nd.x, oy = nd.y, oz = nd.z, oL = inc.map((e) => e.L);
+      nd.x = x; nd.y = y; nd.z = z;
+      for (const e of inc) e.L = Math.max(0.2, Math.hypot(e.a.x - e.b.x, e.a.y - e.b.y, e.a.z - e.b.z));
+      undo = () => { nd.x = ox; nd.y = oy; nd.z = oz; inc.forEach((e, k) => { e.L = oL[k]; }); };
+    }
+    const s = networkScore();
+    if (s > T.score + 1e-5) { T.score = s; T.kept++; T.moved = true; return; }
+    undo();
+    edges.forEach((e, k) => { e.speed = saved[k][0]; e.q = saved[k][1]; });
+  };
+  const tuneBatch = () => {
+    const T = tuning, t0 = performance.now();
+    while (performance.now() - t0 < 40) trial();
+    if (T.moved) { T.moved = false; networkVolume = 0; for (const e of edges) networkVolume += Math.PI * e.r * e.r * e.L; version++; }
+    if (performance.now() < T.until) return false;
+    tuneResult = { trials: T.trials, kept: T.kept, from: T.from, to: T.score };
+    tuning = null;
+    computeSpeeds();
+    voxelise();
+    version++;
+    finished = true;
+    return true;
+  };
+  let tuneResult = null;
+
   const tunnels = {
+    get tuning() { return tuning ? { trials: tuning.trials, kept: tuning.kept } : null; },
+    get tuneResult() { return tuneResult; },
     id: ++serial, // tells one set of tunnels from another
     vox,
     builtOn: form.version, // the form version the voxels were built from: if the form changes, the tunnels are built afresh
@@ -643,6 +723,7 @@ export function createTunnels(form, { cityHeight = null } = {}) {
       const mine = epoch;
       await tick();
       if (mine !== epoch) return false;
+      if (tuning) return tuneBatch();
       const budget = limit * massVolume * Math.min(1, (iteration + 1) / RAMP_ROUNDS);
       if (iteration === 0) { attractors = makeAttractors(); seed(); }
       const qmax = nodes.length ? solvePressure() : 0;
@@ -741,10 +822,9 @@ export function createTunnels(form, { cityHeight = null } = {}) {
           return false;
         }
         restore(best); // the best of them
-        computeSpeeds();
-        voxelise();
+        startTuning();
         version++;
-        finished = true;
+        return false;
       }
       return finished;
     },
