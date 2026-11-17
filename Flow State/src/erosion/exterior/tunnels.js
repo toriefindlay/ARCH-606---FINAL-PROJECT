@@ -36,7 +36,8 @@ const TRUNK_GAP = 9; // metres: the trunks start at least this far apart (about 
 const TRUNK_ROUNDS = 45; // rounds in which only the straight trunks grow, before any branch sprouts
 const TUNE_SECONDS = 14; // (40 s gave about 4.4% more cooling score on the test slab, 10 s about 2.4%) // (30 s gave only about 1.5% more cooling score than this slice of trials: about 300 trials, each re-solving the whole network) // how long the best network is tuned for (see startTuning)
 const TUNE_PER_WIND = 4; // seconds more tuning for every wind after the first that the network is judged against (see startTuning)
-const VARIANTS = 2; // networks grown from different random starts, of which the best is kept
+const VARIANTS = 1; // (one network, so that the tunnels are never wiped to grow another; the tuning does the improving)
+const TUNE_SHOW_MS = 900; // while tuning, the drawn network is brought up to date at most this often (a change at a time would twitch) // networks grown from different random starts, of which the best is kept
 const JUNCTION = 0.8, BEND = 0.05, FRICTION = 0.04, PICARD = 3; // losses at a point where a tube ends or tubes meet (the opening, a junction), at a point where one simply carries on (a slight bend), friction along it (per diameter), and the rounds of settling the flow
 const MAX_GROWING = 50; // channels growing at once at most (each is a tube that carries nothing yet, and costs volume) // rounds in which the network grows, and rounds after that in which it only adapts
 const RAMP_ROUNDS = 80; // rounds over which the volume allowed rises to the limit
@@ -292,7 +293,8 @@ export function createTunnels(form, { cityHeight = null } = {}) {
     nodes.forEach((nd, i) => { if (nd.wall) { const pw = nd.pf - buoyancy * nd.y; fixed[i] = 1; p[i] = pw; mean += pw; nf++; } else p[i] = nd.p || 0; });
     mean = nf ? mean / nf : 0;
     const leak = 1e-9;
-    for (let pass = 0; pass < (tuning ? 1 : PICARD); pass++) { // (while tuning: once, from the last solution, which is near enough to tell better from worse)
+    const quick = !tuning && !finished && iteration < GROW_ROUNDS; // (while the tunnels grow the flow need not be exact: a rough one is quicker and serves)
+    for (let pass = 0; pass < (tuning ? 1 : quick ? 2 : PICARD); pass++) { // (while tuning: once, from the last solution, which is near enough to tell better from worse)
       const g = edges.map((e, k) => C[k] / Math.sqrt(Math.abs(p[e.a.i] - p[e.b.i]) + 1e-3));
       const diag = new Float64Array(n), adj = Array.from({ length: n }, () => []);
       edges.forEach((e, k) => { diag[e.a.i] += g[k]; diag[e.b.i] += g[k]; adj[e.a.i].push([e.b.i, g[k]]); adj[e.b.i].push([e.a.i, g[k]]); });
@@ -316,7 +318,7 @@ export function createTunnels(form, { cityHeight = null } = {}) {
           const alpha = rz / dad;
           let rr = 0, rz2 = 0;
           for (let i = 0; i < n; i++) { if (fixed[i]) continue; p[i] += alpha * d[i]; r[i] -= alpha * ad[i]; z[i] = r[i] / (diag[i] + leak); rz2 += r[i] * z[i]; rr += r[i] * r[i]; }
-          if (Math.sqrt(rr / r0) < (tuning ? 1e-4 : 1e-6)) break;
+          if (Math.sqrt(rr / r0) < (tuning || quick ? 1e-4 : 1e-6)) break;
           const beta = rz2 / rz;
           rz = rz2;
           for (let i = 0; i < n; i++) if (!fixed[i]) d[i] = z[i] + beta * d[i];
@@ -806,7 +808,7 @@ export function createTunnels(form, { cityHeight = null } = {}) {
     const T = tuning, t0 = performance.now();
     T.hash = buildHash(); // (the points have moved a little)
     while (performance.now() - t0 < 40 && performance.now() < T.until) trial();
-    if (T.moved) { T.moved = false; networkVolume = volumeNow(); version++; }
+    if (T.moved && performance.now() - (T.shown ?? 0) > TUNE_SHOW_MS) { T.moved = false; T.shown = performance.now(); networkVolume = volumeNow(); version++; }
     if (performance.now() < T.until) return false;
     const { trials, kept, from, best, mainFrom, windsUsed } = T;
     restore(T.snap); // the best network met on the way

@@ -13,7 +13,8 @@ import { createFlowView } from "./flowView.js";
 import { createTunnels, REACH } from "./tunnels.js";
 import { setActiveTunnels } from "./tunnelCut.js";
 import { renderPreview, createFormView, createTunnelView, setXray } from "./view.js";
-import { mountPanel, settings, syncControls, setWindNote, setSunNote, setFlowNote, setTunnelNote, setFloorRows, setWindOptions } from "./panel.js";
+import { mountPanel, settings, syncControls, setWindNote, setSunNote, setFlowNote, setTunnelNote, setFloorRows, setWindOptions, setParticleNote, setParticleWindOptions } from "./panel.js";
+import { createWindParticles } from "./windParticles.js";
 import { createCoolingView } from "./coolingView.js";
 import { getSpaces, spacesSignature } from "../interior/spaces.js";
 import { getWind, getWarmWind, getWarmPeriods, requestWind, setWindObstacle, downwind } from "../../site/wind.js";
@@ -34,7 +35,7 @@ let tunnelShown = ""; // which tunnels, and which state of them, the view and th
 let tunnelBusy = false; // a step of the tunnels (a solve) is running
 let tunnelWorking = false; // the tunnels are being worn: the cut offered to the pipeline waits for the end
 let skinClock = 0; // simulated seconds since the tunnels were finished (the skin softens with it)
-const SKIN_SECONDS = 600, SKIN_STEPS = 8; // how long the skin takes to soften fully (at the erosion speed), and in how many steps
+const SKIN_SECONDS = 150, SKIN_STEPS = 5; // how long the skin takes to soften fully (at the erosion speed), and in how many steps
 let tunnelWinds = null; // the wind of the whole structure, as last worked out by tunnelFrame
 let tunnelStats = null; // the air speed in the tunnels and the cooling, in the last solution
 let tunnels = null; // the persistent voxel mass the wind tunnels are carved from (tunnels.js), built from the form when first wanted
@@ -45,6 +46,7 @@ let windBuilding = false; // it is being worked out
 let windClock = 0; // simulated seconds of wind not yet applied
 let windTick = 0;
 let flowTimer = 0;
+let particles = null; // the wind particles flowing through the finished tunnels
 let flowView = null; // the airflow slice (test view)
 let flowVox = null; // the voxel mass the airflow was solved on
 let flowResult = null; // the airflow
@@ -105,6 +107,7 @@ function stopForm() {
   setActiveForm(null);
   formView?.clear();
   flowView?.clear();
+  particles?.clear();
   flowVox = flowResult = null;
   flowKey = "";
   tunnels = null;
@@ -395,6 +398,24 @@ function flowFrame() {
   if (flowResult) flowView.update(layers.model, flowVox, flowResult, settings.flowHeight);
 }
 
+// The wind particles: once the tunnels are finished, small particles follow the airflow through and round them, for the wind of the time of
+// year chosen in the panel (by default the one the tunnels were worn for).
+function particleFrame(dt) {
+  if (!settings.windParticles) { particles.clear(); return setParticleNote(""); }
+  const t = tunnels && form && tunnels.builtOn === form.version ? tunnels : null;
+  if (!t || !getMassInfo()) { particles.clear(); return setParticleNote("Wear wind tunnels into the mass first."); }
+  requestWind();
+  if (!getWind()) return setParticleNote("Loading wind data…");
+  if (!t.done) { particles.clear(); return setParticleNote("Waiting for the tunnels to finish."); }
+  const periods = getWarmPeriods(4);
+  setParticleWindOptions(periods);
+  const sel = settings.particleWind;
+  const base = sel >= 0 && periods[sel] ? periods[sel] : sel === -1 ? getWarmWind() : tunnelWinds ?? getWarmWind();
+  const wind = base ?? getWind();
+  const note = particles.update(layers.model, t, wind, { dt, pace: settings.particleSpeed });
+  setParticleNote(note || `Wind from ${wind.from.toFixed(0)}°, ${wind.mean.toFixed(1)} m/s${wind.label ? ` (${wind.label})` : ""}. Colour: blue slower, red faster than the open wind.`);
+}
+
 function startForm() {
   const info = getMassInfo();
   if (!info || !layers.model) return;
@@ -407,6 +428,7 @@ function startForm() {
 export function mountExterior() {
   formView = createFormView();
   flowView = createFlowView();
+  particles = createWindParticles();
   tunnelView = createTunnelView();
   coolingView = createCoolingView();
   registerCutProvider("exterior", provideCuts);
@@ -449,6 +471,7 @@ export function mountExterior() {
     setXray(layers.model, settings.xray);
     coolingFrame();
     flowFrame();
+    particleFrame(dt);
   });
 }
 

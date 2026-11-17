@@ -5,7 +5,7 @@ import { registerPersist } from "../../core/persist.js";
 import { coolingGradient, COOLING_RAMP, COOLING_MAX, COOLED_AT } from "./coolingView.js";
 
 // Read each frame by index.js. `speed` is simulated seconds per real second.
-export const settings = { playing: true, speed: 4, erode: 2, erodeWind: false, erodeSun: false, erodeTunnels: false, tunnelVolume: 8, tunnelStack: 4, tunnelWind: -1, tunnelMulti: true, skinSoften: 70, xray: false, coolingData: false, flowDebug: false, flowHeight: 2 };
+export const settings = { playing: true, speed: 4, erode: 2, erodeWind: false, erodeSun: false, erodeTunnels: false, tunnelVolume: 8, tunnelStack: 4, tunnelWind: -1, tunnelMulti: true, skinSoften: 70, xray: false, coolingData: false, flowDebug: false, flowHeight: 2, windParticles: false, particleWind: -2, particleSpeed: 2 };
 
 const $ = (id) => document.getElementById(id);
 let onClearErosion = () => {};
@@ -56,6 +56,14 @@ export function mountPanel(el, hooks = {}) {
       <input type="range" id="erode" min="0.5" max="8" step="0.5">
     </label>
     <button type="button" class="tool" id="erode-clear" style="width:100%;margin-bottom:8px">Clear erosion</button>
+    <label title="Once the tunnels are finished, shows the wind as small flowing particles that enter and leave the tunnels and curve round the structure. Turn on X-ray to see them inside the mass."><input type="checkbox" id="wind-particles"> Wind particles (through the tunnels)</label>
+    <label title="The time of year whose wind direction and speed the particles follow. Changing it solves the airflow for that wind (a few seconds) and then turns the particles smoothly to it.">Wind for the particles
+      <select id="particle-wind"><option value="-2">Same as the tunnels</option><option value="-1">Whole warm season</option></select>
+    </label>
+    <label title="How fast the particles drift, relative to the real wind speed of that time of year (exaggerated so the motion is easy to see).">Particle speed <output id="particle-speed-out"></output>
+      <input type="range" id="particle-speed" min="0.5" max="6" step="0.5">
+    </label>
+    <p id="particle-note" class="hint" style="margin:0 0 6px"></p>
     <label title="Test view for the wind tunnels: solves how the prevailing wind flows round and through the mass and the buildings, and shows the air speed on a horizontal slice (blue slower, red faster than the open wind). Does not change the mass."><input type="checkbox" id="flow-debug"> Airflow slice (test)</label>
     <label>Slice height <output id="flow-height-out"></output>
       <input type="range" id="flow-height" min="0" max="60" step="0.5">
@@ -69,6 +77,9 @@ export function mountPanel(el, hooks = {}) {
   $("erode").addEventListener("input", (e) => { settings.erode = Number(e.target.value); syncControls(); });
   $("flow-debug").addEventListener("change", (e) => (settings.flowDebug = e.target.checked));
   $("flow-height").addEventListener("input", (e) => { settings.flowHeight = Number(e.target.value); syncControls(); });
+  $("wind-particles").addEventListener("change", (e) => { settings.windParticles = e.target.checked; syncControls(); });
+  $("particle-wind").addEventListener("change", (e) => { settings.particleWind = Number(e.target.value); syncControls(); });
+  $("particle-speed").addEventListener("input", (e) => { settings.particleSpeed = Number(e.target.value); syncControls(); });
   // One kind of erosion works at a time, all on the same form: switching one on switches the other off.
   const exclusive = (key) => (e) => {
     settings[key] = e.target.checked;
@@ -110,6 +121,10 @@ export function syncControls() {
   $("cool-legend").style.display = settings.xray && settings.coolingData ? "block" : "none";
   $("tunnel-volume").value = settings.tunnelVolume;
   $("tunnel-volume-out").textContent = `${settings.tunnelVolume}%`;
+  $("wind-particles").checked = settings.windParticles;
+  $("particle-wind").value = String(settings.particleWind);
+  $("particle-speed").value = settings.particleSpeed;
+  $("particle-speed-out").textContent = `${settings.particleSpeed}×`;
   $("flow-debug").checked = settings.flowDebug;
   $("flow-height").value = settings.flowHeight;
   $("flow-height-out").textContent = `${settings.flowHeight} m`;
@@ -124,6 +139,16 @@ export const setSunNote = setNote("sun-erode-note");
 export const setWindNote = setNote("wind-erode-note");
 export const setFlowNote = setNote("flow-note");
 export const setTunnelNote = setNote("tunnel-note");
+export const setParticleNote = setNote("particle-note");
+// Lists the parts of the warm season the particles can follow (like setWindOptions, for the particle view's own choice).
+export function setParticleWindOptions(periods) {
+  const el = $("particle-wind"), list = periods.map((p) => p.label).join(",");
+  if (!el || el.dataset.periods === list) return;
+  el.dataset.periods = list;
+  el.innerHTML = `<option value="-2">Same as the tunnels</option><option value="-1">Whole warm season</option>` + periods.map((p, i) => `<option value="${i}">${p.label}</option>`).join("");
+  if (settings.particleWind >= periods.length) settings.particleWind = -2;
+  el.value = String(settings.particleWind);
+}
 // The floor data table: one collapsible row per pair of floors. `rows`: [{ b, title, summary, fields: [[label, value], ...] }] in floor order.
 // Rows are kept (and stay open or shut) between calls; only text that changed is written.
 const floorRows = new Map(); // band number -> { details, summary, body, labels }
