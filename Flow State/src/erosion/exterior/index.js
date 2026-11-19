@@ -183,7 +183,7 @@ function tunnelFrame() {
   const growing = !t.done;
   const solving = t.done && t.stale(wind.dir);
   tunnelWorking = growing && settings.playing;
-  const head = failed ? "Stopped (see the console)" : growing ? (settings.playing ? (t.refining ? `Refining the tunnels from the real airflow (round ${t.refining.round}; weakest floor ${(100 * t.refining.floor).toFixed(1)}% average cooling, aiming for ${(100 * t.refining.goal).toFixed(0)}%)` : t.tuning ? `Tuning the best network for cooling (${t.tuning.kept} of ${t.tuning.trials} changes kept)` : `Wearing the tunnels into the stone (network ${t.variant + 1} of ${t.variants}; the best is kept)`) : "Paused") : solving ? "Working out the airflow" : "Settled";
+  const head = failed ? "Stopped (see the console)" : growing ? (settings.playing ? (t.refining ? `Refining the tunnels from the real airflow (round ${t.refining.round}; weakest floor ${(100 * t.refining.floor).toFixed(1)}% average cooling, aiming for ${(100 * t.refining.goal).toFixed(0)}%${t.refining.coverGoal ? `; ${(100 * t.refining.cover).toFixed(0)}% of the weakest floor cooled, aiming for ${(100 * t.refining.coverGoal).toFixed(0)}%` : ""})` : t.tuning ? `Tuning the best network for cooling (${t.tuning.kept} of ${t.tuning.trials} changes kept)` : `Wearing the tunnels into the stone (network ${t.variant + 1} of ${t.variants}; the best is kept)`) : "Paused") : solving ? "Working out the airflow" : "Settled";
   setTunnelNote(`${head} (limit ${settings.tunnelVolume}% of the mass, ${(100 * t.share).toFixed(1)}% worn away)`);
   setFloorRows([floorRow(t, wind)]);
   if (tunnelBusy || failed || !settings.playing || (!growing && !solving)) return;
@@ -207,7 +207,7 @@ function floorRow(t, w) {
       fields.push(["Cooling score", `all winds ${pct(tr.from)} → ${pct(tr.to)}; main wind ${pct(tr.mainFrom)} → ${pct(tr.mainTo)}`]);
     }
     const rr = t.refineResult;
-    if (rr) fields.push(["Airflow refinement", `measured cooling score ${pct(rr.from)} → ${pct(rr.to)} (round ${rr.kept} of ${rr.rounds}); weakest floor ${pct(rr.floorFrom)} → ${pct(rr.floorTo)} average cooling, ${rr.goalMet ? "goal reached" : "goal not reached"}`]);
+    if (rr) fields.push(["Airflow refinement", `measured cooling score ${pct(rr.from)} → ${pct(rr.to)} (round ${rr.kept} of ${rr.rounds}); weakest floor ${pct(rr.floorFrom)} → ${pct(rr.floorTo)} average cooling, ${rr.goalMet ? "goal reached" : `goal not reached (stopped: ${rr.reason})`}; ${rr.tubes} tubes, ${rr.openings} wall openings, ${(100 * rr.share).toFixed(1)}% of the mass`]);
     cool.avg.forEach((v, i) => fields.push([`Floor ${i + 1}`, `average cooling ${pct(v)}, ${pct(cool.coverage[i])} cooled by moving air within ${REACH} m`]));
     fields.push(["Evenness", `${pct(cool.evenness)} (the weakest floor over the strongest)`]);
   }
