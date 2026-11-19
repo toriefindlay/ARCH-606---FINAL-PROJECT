@@ -1030,7 +1030,7 @@ export function createTunnels(form, { cityHeight = null } = {}) {
     for (let i = 0; i <= m; i++) {
       const u = i / m, x = p.x + (q.x - p.x) * u, z = p.z + (q.z - p.z) * u;
       for (const e of edges) {
-        if ((own instanceof Set ? own.has(e.br) : e.br === own) || Math.abs((e.a.y + e.b.y) / 2 - y) > 1.5) continue;
+        if ((own instanceof Set ? own.has(e.br) : e.br === own) || (Math.abs((e.a.y + e.b.y) / 2 - y) > 1.5 && e.kind !== "riser")) continue;
         if (distToTube(x, y, z, e) < DUCT_SEP - 0.05) return false;
       }
     }
@@ -1214,6 +1214,68 @@ export function createTunnels(form, { cityHeight = null } = {}) {
     return false;
   };
 
+  // A riser: a vertical tube at (a0, b0) joining a run of the floor above (or below) to a run of this floor, to cool where the floor has no tubes of its
+  // own (behind an occupied space, say): a 45-degree jog from a run of the next floor to the point, straight down (or up) to this floor, and a 45-degree jog
+  // from there to a run of this floor. Everything is parallel, perpendicular or at 45 degrees. Returns whether one was made.
+  const runsOnFloor = (y) => {
+    const out = [];
+    for (const e of edges) {
+      if (e.y !== y || !RUN.includes(e.kind)) continue;
+      const ea = aOf(e.a.x, e.a.z), eb = aOf(e.b.x, e.b.z);
+      out.push({ e, b: bOf(e.a.x, e.a.z), lo: Math.min(ea, eb) + 1.5, hi: Math.max(ea, eb) - 1.5 });
+    }
+    return out;
+  };
+  const verticalOk = (x, z, y0, y1, rad, own) => {
+    const lo = Math.min(y0, y1), hi = Math.max(y0, y1), m = Math.max(2, Math.ceil((hi - lo) / 0.75));
+    for (let i = 0; i <= m; i++) {
+      const y = lo + ((hi - lo) * i) / m;
+      if (!inside(x, y, z, rad) || !sphereClear(x, y, z, rad)) return false;
+      for (const e of edges) if (!own.has(e.br) && distToTube(x, y, z, e) < DUCT_SEP - 0.05) return false;
+    }
+    return true;
+  };
+  const addRiser = (s, a0, b0) => {
+    const pa = Math.round(a0 / DUCT_STEP) * DUCT_STEP, pb = Math.round(b0 / DUCT_STEP) * DUCT_STEP, ys = stY(s), rad = radFor(2, a0 + 7 * b0), [px, pz] = xzOf(pa, pb);
+    if (!inside(px, ys, pz, rad) || !sphereClear(px, ys, pz, rad)) return false;
+    // the jogs that can reach the point from a run of a floor at height y: [{ r, sg, a }] (the run, which way along it, where on it the jog starts)
+    const jogs = (y) => {
+      const out = [];
+      const runs = runsOnFloor(y).map((r) => ({ r, d: Math.abs(pb - r.b) })).filter((o) => o.d >= 1.5 && o.d <= 12).sort((p, q) => p.d - q.d).slice(0, 4);
+      for (const { r, d } of runs) {
+        for (const sg of [1, -1]) {
+          const a = pa - sg * d;
+          if (a < r.lo || a > r.hi) continue;
+          const pts = [[a, r.b], [pa, pb]];
+          if (pathOk(pts, y, rad) && apartPath(pts, y, new Set([r.e.br]))) out.push({ r, a, pts });
+        }
+      }
+      return out;
+    };
+    const lowerOk = jogs(ys); // (from a run of this floor to the point: the same jogs, looked at from the other end)
+    if (!lowerOk.length) return false;
+    for (const dirS of [1, -1]) {
+      const s2 = s + dirS;
+      if (s2 < 0 || s2 >= storeys) continue;
+      const y2 = stY(s2);
+      for (const up of jogs(y2)) {
+        for (const lo of lowerOk) {
+          const own = new Set([up.r.e.br, lo.r.e.br]);
+          if (!verticalOk(px, pz, y2, ys, rad, own)) continue;
+          const len = Math.hypot(pa - up.a, pb - up.r.b) + Math.abs(y2 - ys) + Math.hypot(lo.a - pa, lo.r.b - pb);
+          if (!roomFor(len, rad)) continue;
+          const br = ++branchCount, [xu, zu] = xzOf(up.a, up.r.b), [xl, zl] = xzOf(lo.a, lo.r.b);
+          const Ju = splitEdge(up.r.e, xu, y2, zu), Pu = addNode(px, y2, pz, { br }), Pl = addNode(px, ys, pz, { br }), Jl = splitEdge(lo.r.e, xl, ys, zl);
+          addEdge(Ju, Pu, rad, { br, kind: "jog", gen: 9, y: y2 });
+          addEdge(Pu, Pl, rad, { br, kind: "riser", gen: 9, y: (y2 + ys) / 2 });
+          addEdge(Pl, Jl, rad, { br, kind: "jog", gen: 9, y: ys });
+          return true;
+        }
+      }
+    }
+    return false;
+  };
+
   // A cross branch: from the outermost run on one side, a wye towards that side wall and then a run along the cross axis (90 degrees to the runs) to
   // the wall, if the wind blows on that wall. This is how the walls beside the main wind get their openings, without crossing any other run.
   const tryCross = (e, a0, side, y) => {
@@ -1271,7 +1333,9 @@ export function createTunnels(form, { cityHeight = null } = {}) {
     }
     if (pick < 0) return false;
     const pi = pick % nx, pj = Math.floor(pick / nx), x = vox.x0 + (pi + 0.5) * c, z = vox.z0 + (pj + 0.5) * c, a0 = aOf(x, z), b0 = bOf(x, z);
-    let made = addRung(s, a0, b0) || addCross(s, a0, b0) || addBranch(s, a0, b0); // (links first: they need no opening)
+    // (rungs first, they need no opening; near an occupied space a riser is tried before the rest, to cool what is behind it)
+    const shadow = obstacles.some((o) => Math.hypot(x - o.x, z - o.z) < o.r + 8 && Math.abs(stY(s) - o.y) < o.r + 4);
+    let made = addRung(s, a0, b0) || (shadow && addRiser(s, a0, b0)) || addCross(s, a0, b0) || addBranch(s, a0, b0) || addRiser(s, a0, b0);
     if (!made) {
       const b1 = Math.round(b0 / DUCT_STEP) * DUCT_STEP;
       for (const k of [0, 1, -1, 2, -2, 3, -3, 4, -4, 6, -6]) if (addTrunk(s, b1 + k * DUCT_STEP)) { made = true; break; }
