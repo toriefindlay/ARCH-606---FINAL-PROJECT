@@ -503,7 +503,7 @@ export function createTunnels(form, { cityHeight = null } = {}) {
     nodes = []; edges = []; growing.clear();
     iteration = 0; finished = false; branchCount = 0; version++; epoch++; networkVolume = 0;
     uncovered = []; attractors = null;
-    variant = 0; best = null; salt = 0; tuning = null; tuneResult = null;
+    variant = 0; best = null; salt = 0; tuning = null; tuneResult = null; refining = null; refineResult = null;
     flowResult = null; flowVersion = -1; mapKey = ""; map = null;
   };
 
@@ -816,16 +816,193 @@ export function createTunnels(form, { cityHeight = null } = {}) {
     setPressures(wind);
     computeSpeeds(); // (for the main wind, as shown)
     tuneResult = { trials, kept, from, to: best, winds: windsUsed, mainFrom, mainTo: scoreOf(1) };
-    voxelise();
+    refining = { round: 0, best: null, bestScore: -1, bestRound: 0, from: 0, flow: null, cap: 1.02 * volumeNow() };
+    version++;
+    return false; // (not finished: the refinement from the real airflow follows, see refineStep)
+  };
+  let tuneResult = null;
+
+  /* ---------- refinement from the real airflow ---------- */
+  // The tuning above judges the network by the pipe model (solvePressure), which is only an approximation of the air that really moves through the
+  // carved voxels (the airflow the particles show). So, after the tuning, the network is refined against that airflow, a few rounds:
+  //  - the network is cut into the voxels and the potential flow is solved through them (voxelFlow.js, the main wind),
+  //  - every tube is given the air speed measured along it in that flow (this replaces the pipe model's speed, so the cooling score is the real one),
+  //  - the slowest tubes are thinned (and removed when they get too thin), which frees volume,
+  //  - beside each of the fastest wall-to-wall tunnels a copy is made, a little to either side, with the freed volume (as long as the volume cap holds).
+  // The best round (by the measured cooling score) is the one kept.
+  const REFINE_ROUNDS = 4; // the least rounds
+  const REFINE_GOAL = 0.10; // every floor's average cooling (coolStats avg) should reach this
+  const REFINE_MAX = 40, REFINE_PATIENCE = 8, REFINE_SECONDS = 300; // ...but no more than this many rounds, or this many rounds without a better score, or this long
+  const REFINE_CLONES = 4; // fastest tunnels copied each round
+  const REFINE_THIN = 0.2; // the part of the tube length with the slowest air that is thinned each round
+  const REFINE_OFFSETS = [4, -4, 6.5, -6.5]; // metres to the side that a copy is tried at
+  let refining = null, refineResult = null;
+
+  const recarve = () => { cells.set(placed); vox.version++; voxelise(); };
+
+  // Every tube takes the mean air speed (relative to the open wind) of the voxels along it, from a solved flow.
+  const measureSpeeds = (flow) => {
+    for (const e of edges) {
+      const m = Math.max(2, Math.ceil(e.L / (c / 2)));
+      let s = 0, n = 0;
+      for (let i = 0; i <= m; i++) {
+        const u = i / m, k = vox.at(e.a.x + (e.b.x - e.a.x) * u, e.a.y + (e.b.y - e.a.y) * u, e.a.z + (e.b.z - e.a.z) * u);
+        if (k < 0 || !flow.open[k]) continue;
+        s += flow.speed[k]; n++;
+      }
+      e.speed = n ? Math.min(2, s / n) : 0;
+    }
+  };
+
+  // The wall-to-wall chains of tubes (a tunnel that starts and ends at a wall): [{ list: edges in order, speed: mean along it, len }].
+  const wallChains = () => {
+    const by = new Map();
+    for (const e of edges) { if (e.br > 0) { if (!by.has(e.br)) by.set(e.br, []); by.get(e.br).push(e); } }
+    const out = [];
+    for (const [br, list] of by) {
+      const next = new Map(list.map((e) => [e.a, e]));
+      const ends = new Set(list.map((e) => e.b));
+      const start = list.find((e) => !ends.has(e.a));
+      if (!start || !start.a.wall) continue;
+      const ordered = [];
+      for (let e = start; e && ordered.length <= list.length; e = next.get(e.b)) ordered.push(e);
+      if (ordered.length !== list.length || !ordered[ordered.length - 1].b.wall) continue;
+      let len = 0, sp = 0;
+      for (const e of ordered) { len += e.L; sp += (e.speed ?? 0) * e.L; }
+      if (len >= 6) out.push({ br, list: ordered, len, speed: sp / len });
+    }
+    return out;
+  };
+
+  // Tries to make a copy of a tunnel chain, off to the side by `off` metres. Returns true if it was made.
+  const cloneChain = (ch, off, h) => {
+    const pts = [ch.list[0].a, ...ch.list.map((e) => e.b)], n = pts.length;
+    const dx = pts[n - 1].x - pts[0].x, dz = pts[n - 1].z - pts[0].z, dl = Math.hypot(dx, dz);
+    if (dl < 1) return false;
+    const px = (-dz / dl) * off, pz = (dx / dl) * off;
+    // the two openings: the facade point nearest the shifted old one that faces the same way
+    const opening = (nd) => {
+      const x = nd.x - nd.wx * WALL_OUT + px, z = nd.z - nd.wz * WALL_OUT + pz;
+      let best = null, bd = 3.5 * 3.5;
+      for (const f of facade) {
+        if (f.nx * nd.wx + f.nz * nd.wz < 0.7) continue;
+        const d = (f.x - x) ** 2 + (f.z - z) ** 2 + (f.y - nd.y) ** 2;
+        if (d < bd) { bd = d; best = f; }
+      }
+      return best;
+    };
+    const f0 = opening(pts[0]), f1 = opening(pts[n - 1]);
+    if (!f0 || !f1) return false;
+    const mid = [];
+    for (let i = 1; i < n - 1; i++) {
+      const x = pts[i].x + px, y = pts[i].y, z = pts[i].z + pz;
+      if (!inside(x, y, z, 0.5) || !sphereClear(x, y, z, 0.5)) return false;
+      let crowded = false;
+      near(h, x, y, z, 2.5, (o) => { if (!o.wall && o.br !== ch.br && Math.hypot(o.x - x, o.y - y, o.z - z) < 2.2) crowded = true; });
+      if (crowded) return false;
+      mid.push({ x, y, z });
+    }
+    const entry = (f) => ({ x: f.x - f.nx * 0.3, y: f.y, z: f.z - f.nz * 0.3 });
+    const run = [entry(f0), ...mid, entry(f1)];
+    for (let i = 0; i + 1 < run.length; i++) if (!runClear(run[i], run[i + 1])) return false;
+    let dV = 0;
+    ch.list.forEach((e, i) => { dV += Math.PI * e.r * e.r * Math.hypot(run[i + 1].x - run[i].x, run[i + 1].y - run[i].y, run[i + 1].z - run[i].z); });
+    if (volumeNow() + dV > refining.cap) return false;
+    const br = ++branchCount, made = [wallNodeAt(f0.x, f0.y, f0.z, f0.nx, f0.nz)];
+    for (const m of mid) made.push(addNode(m.x, m.y, m.z, { br }));
+    made.push(wallNodeAt(f1.x, f1.y, f1.z, f1.nx, f1.nz));
+    made.forEach((nd, i) => { if (!nd.wall) nd.p = pts[i].p; });
+    ch.list.forEach((e, i) => addEdge(made[i], made[i + 1], e.r, { br, speed: e.speed }));
+    return true;
+  };
+
+  // Removes the stubs: a tube that ends in the stone (a point inside the mass with only one tube at it) carries no air, so it goes, and so on back
+  // along the tunnel until what is left joins walls at both ends or a junction. Then the points that no tube uses.
+  const pruneDeadEnds = () => {
+    for (let again = true; again;) {
+      again = false;
+      const deg = new Map();
+      for (const e of edges) { deg.set(e.a, (deg.get(e.a) ?? 0) + 1); deg.set(e.b, (deg.get(e.b) ?? 0) + 1); }
+      const keep = edges.filter((e) => (e.a.wall || deg.get(e.a) > 1) && (e.b.wall || deg.get(e.b) > 1));
+      if (keep.length !== edges.length) { edges = keep; again = true; }
+    }
+    const used = new Set();
+    for (const e of edges) { used.add(e.a); used.add(e.b); }
+    nodes = nodes.filter((nd) => used.has(nd));
+  };
+
+  const refineModify = (weak) => {
+    // the tunnels on the weakest floor are copied first, then the fastest of the rest
+    const onWeak = (ch) => (stOf(ch.list[0]) === weak ? 1 : 0);
+    const chains = wallChains().sort((a, b) => onWeak(b) - onWeak(a) || b.speed - a.speed);
+    const top = chains.slice(0, REFINE_CLONES), protectedBr = new Set(top.map((ch) => ch.br));
+    // thin the slowest tubes (not the ones about to be copied)
+    let totalLen = 0;
+    for (const e of edges) totalLen += e.L;
+    // (a whole tunnel at a time, so that no half of one is left: its tubes are thinned together, and it goes entirely or not at all)
+    const groups = new Map();
+    edges.forEach((e, i) => { const key = e.br > 0 ? e.br : -1 - i; if (!groups.has(key)) groups.set(key, []); groups.get(key).push(e); });
+    const slow = [...groups.entries()].filter(([key]) => !protectedBr.has(key)).map(([, list]) => {
+      let len = 0, sp = 0;
+      for (const e of list) { len += e.L; sp += (e.speed ?? 0) * e.L; }
+      return { list, len, speed: sp / len };
+    }).sort((a, b) => a.speed - b.speed);
+    let thinned = 0;
+    const gone = new Set();
+    for (const g of slow) {
+      if (thinned >= REFINE_THIN * totalLen) break;
+      thinned += g.len;
+      if (g.list.reduce((s, e) => s + e.r, 0) / g.list.length * 0.8 < R_MIN) g.list.forEach((e) => gone.add(e));
+      else g.list.forEach((e) => { e.r = Math.max(R_MIN, e.r * 0.8); });
+    }
+    edges = edges.filter((e) => !gone.has(e));
+    pruneDeadEnds();
+    // copy the fastest tunnels beside themselves
+    for (const ch of top) {
+      if (!ch.list.every((e) => edges.includes(e))) continue;
+      const h = buildHash();
+      for (const off of REFINE_OFFSETS) if (cloneChain(ch, off, h)) break;
+    }
+    networkVolume = volumeNow();
+  };
+
+  const refineStep = async () => {
+    const R = refining, mine = epoch;
+    recarve();
+    const flow = await solveFlow(vox, { dir: wind, previous: R.flow });
+    if (mine !== epoch) return false;
+    R.flow = flow;
+    measureSpeeds(flow);
+    const stats = coolStats(coolField(1), () => true), score = stats.covered * (0.5 + 0.5 * stats.evenness);
+    let weak = 0, floor = Infinity;
+    stats.avg.forEach((v, s) => { if (stArea[s] > 0 && v < floor) { floor = v; weak = s; } });
+    R.floor = floor;
+    if (R.round === 0) { R.from = score; R.startedAt = performance.now(); R.floorFrom = floor; }
+    const met = floor >= REFINE_GOAL;
+    if (met && R.round >= REFINE_ROUNDS) { R.met = true; R.best = snapshot(); R.bestScore = score; R.bestRound = R.round; } // (the round that reaches the goal is the one kept)
+    else if (!R.met && score > R.bestScore) { R.bestScore = score; R.best = snapshot(); R.bestRound = R.round; R.bestAt = R.round; }
+    const stop = R.met || R.round >= REFINE_MAX || R.round - (R.bestAt ?? 0) >= REFINE_PATIENCE + REFINE_ROUNDS || performance.now() - R.startedAt > REFINE_SECONDS * 1000;
+    if (!stop) {
+      refineModify(weak);
+      R.round++;
+      version++;
+      return false;
+    }
+    restore(R.best); // the best round (its tubes carry the speeds measured for them)
+    pruneDeadEnds(); // (no stubs left in the stone)
+    recarve();
+    refineResult = { from: R.from, to: R.bestScore, rounds: R.round, kept: R.bestRound, goalMet: !!R.met, floorFrom: R.floorFrom, floorTo: coolStats(coolField(1), () => true).avg.filter((_, s) => stArea[s] > 0).reduce((m, v) => Math.min(m, v), Infinity) };
+    refining = null;
     version++;
     finished = true;
     return true;
   };
-  let tuneResult = null;
 
   const tunnels = {
     get tuning() { return tuning ? { trials: tuning.trials, kept: tuning.kept } : null; },
     get tuneResult() { return tuneResult; },
+    get refining() { return refining ? { round: refining.round, floor: refining.floor ?? 0, goal: REFINE_GOAL } : null; },
+    get refineResult() { return refineResult; },
     id: ++serial, // tells one set of tunnels from another
     vox,
     builtOn: form.version, // the form version the voxels were built from: if the form changes, the tunnels are built afresh
@@ -899,6 +1076,7 @@ export function createTunnels(form, { cityHeight = null } = {}) {
       await tick();
       if (mine !== epoch) return false;
       if (tuning) return tuneBatch();
+      if (refining) return refineStep();
       const budget = limit * massVolume * Math.min(1, (iteration + 1) / RAMP_ROUNDS);
       if (iteration === 0) { attractors = makeAttractors(); seed(); }
       const qmax = nodes.length ? solvePressure() : 0;

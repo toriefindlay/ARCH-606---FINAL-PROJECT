@@ -99,7 +99,7 @@ function addTunnelCells(t, field) {
         const solid = (open[k - 1] ? 0 : 1) + (open[k + 1] ? 0 : 1) + (open[k - nx] ? 0 : 1) + (open[k + nx] ? 0 : 1) + (open[k - nxz] ? 0 : 1) + (l < ny - 1 && !open[k + nxz] ? 1 : 0);
         if (solid < 3) continue;
         const s = Math.hypot(field.vx[k], field.vy[k], field.vz[k]);
-        if (s < 0.15) continue; // dead air: no stream there
+        if (s < 0.03) continue; // dead air: no stream there
         cells.push(k); speeds.push(s);
         if (s > fastest) fastest = s;
       }
@@ -222,8 +222,7 @@ export function createWindParticles() {
   const tunnelSeed = (i, t, first, pathSpeed, R) => {
     const f = fieldB, { vox } = t, { nx, nz, c, x0, z0, ye, dz } = vox, nxz = nx * nz;
     if (!f?.cells?.length) return false;
-    let q = 0;
-    for (let a = 0; a < 6; a++) { q = (Math.random() * f.cells.length) | 0; if (Math.random() * f.fastest <= f.cellSpeed[q]) break; }
+    const q = (Math.random() * f.cells.length) | 0; // every tunnel cell is equally likely, so a slow tunnel gets as many particles per metre as a fast one
     const k = f.cells[q], l = Math.floor(k / nxz), j = Math.floor((k - l * nxz) / nx), ci = k - l * nxz - j * nx;
     let x = x0 + (ci + Math.random()) * c, z = z0 + (j + Math.random()) * c, y = ye[l] + Math.random() * dz[l];
     const step = 0.6 * c, limit = first ? Math.floor(Math.random() * 160) : 160;
