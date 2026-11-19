@@ -816,7 +816,7 @@ export function createTunnels(form, { cityHeight = null } = {}) {
     setPressures(wind);
     computeSpeeds(); // (for the main wind, as shown)
     tuneResult = { trials, kept, from, to: best, winds: windsUsed, mainFrom, mainTo: scoreOf(1) };
-    refining = { round: 0, best: null, bestScore: -1, bestRound: 0, from: 0, flow: null, cap: 1.02 * volumeNow() };
+    refining = { round: 0, best: null, bestScore: -1, bestRound: 0, from: 0, flow: null, cap: 1.02 * volumeNow(), stuck: 0, tabu: new Set() };
     version++;
     return false; // (not finished: the refinement from the real airflow follows, see refineStep)
   };
@@ -966,6 +966,168 @@ export function createTunnels(form, { cityHeight = null } = {}) {
     networkVolume = volumeNow();
   };
 
+  /* ---------- ducts: a rational network, like ductwork ---------- */
+  // Every floor has its own network, drawn in the axes of the building (the footprint's), at the middle of the storey:
+  //  - trunks: straight runs along the main axis (the one most along the wind) from a wall to the wall on the other side, on lattice lines
+  //    (the lattice step is DUCT_STEP), at least DUCT_SEP from one another,
+  //  - branches: a wye off a trunk (45 degrees towards downwind, a short diagonal) and then a bend of 45 degrees into a run along the cross axis to a side
+  //    wall, so that every angle in the network is 0, 45 or 90 degrees,
+  //  - sizes: a trunk is DUCT_R_TRUNK wide, a branch DUCT_R_BRANCH.
+  // It starts with trunks every DUCT_SEED_PITCH on every floor and then grows: every round the floors that are under the goal each get a branch or a
+  // trunk where their floor is cooled least (see ductModify), until every floor reaches the goal (or the volume limit, or the other limits of the refinement).
+  const DUCTS = true; // false: the free-growing vein network (growth, annealing and refinement above) instead
+  const DUCT_MAX_ROUNDS = 60, DUCT_SECONDS = 900; // the most rounds, and seconds, the ducts may grow for
+  const DUCT_STEP = 1.5, DUCT_SEP = 3, DUCT_SEED_PITCH = 9, DUCT_R_TRUNK = 1.0, DUCT_R_BRANCH = 0.7, DUCT_BRANCH_REACH = 10, DUCT_MAX_SHARE = 0.4;
+  let frame = null; // the axes: { A (main, downwind), B (cross), aMin, aMax, bMin, bMax }
+  const aOf = (x, z) => x * frame.A[0] + z * frame.A[1], bOf = (x, z) => x * frame.B[0] + z * frame.B[1];
+  const xzOf = (a, b) => [a * frame.A[0] + b * frame.B[0], a * frame.A[1] + b * frame.B[1]];
+  const stY = (s) => (s + 0.5) * STOREY;
+
+  const makeFrame = () => {
+    // the building's axes: the footprint's walls mostly face in four directions 90 degrees apart (the mean of 4 x the angle of the wall normals)
+    let sx = 0, sz = 0;
+    for (const f of facade) { const ph = Math.atan2(f.nz, f.nx); sx += Math.cos(4 * ph); sz += Math.sin(4 * ph); }
+    const th = facade.length ? Math.atan2(sz, sx) / 4 : 0, e1 = [Math.cos(th), Math.sin(th)], e2 = [-Math.sin(th), Math.cos(th)];
+    let A = e1;
+    for (const q of [e1, [-e1[0], -e1[1]], e2, [-e2[0], -e2[1]]]) if (q[0] * wind[0] + q[1] * wind[1] > A[0] * wind[0] + A[1] * wind[1]) A = q;
+    frame = { A, B: [-A[1], A[0]], aMin: Infinity, aMax: -Infinity, bMin: Infinity, bMax: -Infinity };
+    for (let col = 0; col < nxz; col++) {
+      if (roof[col] < 0) continue;
+      const x = vox.x0 + ((col % nx) + 0.5) * c, z = vox.z0 + (Math.floor(col / nx) + 0.5) * c, a = aOf(x, z), b = bOf(x, z);
+      frame.aMin = Math.min(frame.aMin, a); frame.aMax = Math.max(frame.aMax, a); frame.bMin = Math.min(frame.bMin, b); frame.bMax = Math.max(frame.bMax, b);
+    }
+  };
+
+  // Walks from a point inside the mass along d (xz, unit) at height y until the mass ends. Returns the wall there { x, z (the first point outside),
+  // nx, nz (the way out) }, or null if something is in the way first (a space, a corner) or the wall is met at a slant.
+  const marchOut = (x, y, z, d, rad) => {
+    const step = 0.5;
+    for (let s = 0; s < 400; s += step) {
+      const px = x + d[0] * s, pz = z + d[1] * s;
+      if (form.heightAt(px, pz) < y + rad + 0.4) {
+        const e = 0.6, gx = form.heightAt(px - e, pz) - form.heightAt(px + e, pz), gz = form.heightAt(px, pz - e) - form.heightAt(px, pz + e), gl = Math.hypot(gx, gz);
+        const nxw = gl > 1e-6 ? gx / gl : d[0], nzw = gl > 1e-6 ? gz / gl : d[1];
+        return nxw * d[0] + nzw * d[1] > 0.8 && s > 0 ? { x: px, z: pz, nx: nxw, nz: nzw } : null;
+      }
+      if (!inside(px, y, pz, rad) || !sphereClear(px, y, pz, rad)) return null;
+    }
+    return null;
+  };
+  const ductWall = (w, y, d) => { // the node outside the wall, on the line of the run
+    const dc = cornerDist(w.x, w.z);
+    return addNode(w.x + d[0] * WALL_OUT, y, w.z + d[1] * WALL_OUT, { wall: true, wx: w.nx, wz: w.nz, dc, pf: wallPressure(w.nx, w.nz, y, dc) });
+  };
+  const distToTube = (x, y, z, e) => {
+    const sx = e.b.x - e.a.x, sy = e.b.y - e.a.y, sz = e.b.z - e.a.z, l2 = sx * sx + sy * sy + sz * sz || 1;
+    const u = Math.max(0, Math.min(1, ((x - e.a.x) * sx + (y - e.a.y) * sy + (z - e.a.z) * sz) / l2));
+    return Math.hypot(x - (e.a.x + sx * u), y - (e.a.y + sy * u), z - (e.a.z + sz * u));
+  };
+  // Is the straight run p to q (points { x, z }) at height y at least DUCT_SEP from every tube on the floor, except those of branch `own`?
+  const apart = (p, q, y, own) => {
+    const len = Math.hypot(q.x - p.x, q.z - p.z), m = Math.max(1, Math.ceil(len));
+    for (let i = 0; i <= m; i++) {
+      const u = i / m, x = p.x + (q.x - p.x) * u, z = p.z + (q.z - p.z) * u;
+      for (const e of edges) {
+        if (e.br === own || Math.abs((e.a.y + e.b.y) / 2 - y) > 1.5) continue;
+        if (distToTube(x, y, z, e) < DUCT_SEP - 0.05) return false;
+      }
+    }
+    return true;
+  };
+  const roomFor = (len, r) => volumeNow() + Math.PI * r * r * len <= DUCT_MAX_SHARE * massVolume;
+
+  const splitEdge = (e, x, y, z) => {
+    const J = addNode(x, y, z, { br: e.br });
+    addEdge(J, e.b, e.r, { br: e.br, kind: e.kind, y: e.y, speed: e.speed });
+    e.b = J;
+    e.L = Math.max(0.2, Math.hypot(e.a.x - x, e.a.y - y, e.a.z - z));
+    return J;
+  };
+
+  // A trunk of floor s on the lattice line b: a wall-to-wall run along A. Returns whether it was made.
+  const addTrunk = (s, b) => {
+    const y = stY(s), d = frame.A, back = [-d[0], -d[1]];
+    for (let a = frame.aMin; a <= frame.aMax; a += 2) {
+      const [x, z] = xzOf(a, b);
+      if (!inside(x, y, z, DUCT_R_TRUNK) || !sphereClear(x, y, z, DUCT_R_TRUNK)) continue;
+      const to = marchOut(x, y, z, d, DUCT_R_TRUNK), from = marchOut(x, y, z, back, DUCT_R_TRUNK);
+      if (!to || !from) continue;
+      const len = Math.hypot(to.x - from.x, to.z - from.z);
+      if (!apart(from, to, y, -999) || !roomFor(len, DUCT_R_TRUNK)) return false;
+      const br = ++branchCount;
+      addEdge(ductWall(from, y, back), ductWall(to, y, d), DUCT_R_TRUNK, { br, kind: "trunk", y });
+      return true;
+    }
+    return false;
+  };
+
+  // A branch of floor s off the trunk nearest to (a0, b0), on the side of b0: a wye (a diagonal of n lattice steps, 45 degrees to the trunk, towards
+  // downwind) and then a bend of 45 degrees into a run parallel to the trunk, n steps off it, to the downwind wall. (It starts upwind of a0 so that
+  // the run passes the point.) Trunks and branches are all parallel, and every turn is 45 degrees.
+  const addBranch = (s, a0, b0) => {
+    const y = stY(s);
+    let piece = null, pb = Infinity;
+    for (const e of edges) {
+      if (e.kind !== "trunk" || e.y !== y) continue;
+      const d = Math.abs(bOf(e.a.x, e.a.z) - b0), lo = aOf(e.a.x, e.a.z) + 3, hi = aOf(e.b.x, e.b.z) - 3;
+      if (d < pb && hi > lo && a0 > lo) { pb = d; piece = e; }
+    }
+    if (!piece || pb > DUCT_BRANCH_REACH) return false;
+    const bt = bOf(piece.a.x, piece.a.z), side = b0 >= bt ? 1 : -1;
+    const n = Math.max(2, Math.min(5, Math.round(pb / DUCT_STEP))); // (the run is n steps off the trunk, at least DUCT_SEP)
+    const lo = aOf(piece.a.x, piece.a.z) + 3, hi = aOf(piece.b.x, piece.b.z) - 3;
+    const aJ = Math.min(hi, Math.max(lo, a0 - n * DUCT_STEP));
+    const aS = Math.round(aJ / DUCT_STEP) * DUCT_STEP;
+    if (aS < lo || aS > hi) return false;
+    const J = xzOf(aS, bt), D = xzOf(aS + n * DUCT_STEP, bt + side * n * DUCT_STEP), dir = frame.A;
+    const Jp = { x: J[0], y, z: J[1] }, Dp = { x: D[0], y, z: D[1] };
+    if (!inside(D[0], y, D[1], DUCT_R_BRANCH) || !sphereClear(D[0], y, D[1], DUCT_R_BRANCH) || !runClear(Jp, Dp)) return false;
+    const wall = marchOut(D[0], y, D[1], dir, DUCT_R_BRANCH);
+    if (!wall) return false;
+    if (!apart({ x: J[0], z: J[1] }, { x: D[0], z: D[1] }, y, piece.br) || !apart({ x: D[0], z: D[1] }, wall, y, piece.br)) return false;
+    if (!roomFor(Math.hypot(wall.x - J[0], wall.z - J[1]), DUCT_R_BRANCH)) return false;
+    const br = ++branchCount, Jn = splitEdge(piece, J[0], y, J[1]), Dn = addNode(D[0], y, D[1], { br });
+    addEdge(Jn, Dn, DUCT_R_BRANCH, { br, kind: "branch", y });
+    addEdge(Dn, ductWall(wall, y, dir), DUCT_R_BRANCH, { br, kind: "branch", y });
+    return true;
+  };
+
+  const ductSeed = () => {
+    makeFrame();
+    for (let s = 0; s < storeys; s++) {
+      for (let b = Math.ceil(frame.bMin / DUCT_SEED_PITCH) * DUCT_SEED_PITCH; b <= frame.bMax; b += DUCT_SEED_PITCH) addTrunk(s, b);
+    }
+    networkVolume = volumeNow();
+  };
+
+  // Adds one branch or trunk on floor s where its floor is cooled least. Returns whether something was added.
+  const ductAdd = (s, cool, R) => {
+    const l = s * perStorey + (perStorey >> 1);
+    let pick = -1, bv = Infinity;
+    for (let col = 0; col < nxz; col++) {
+      const k = l * nxz + col;
+      if (placed[k] !== MASS || prot[col] || R.tabu.has(s * nxz + col)) continue;
+      const key = cool[k] + hash(col * 13 + R.round * 97) * 0.02; // (the least cooled, at random among the uncooled)
+      if (key < bv) { bv = key; pick = col; }
+    }
+    if (pick < 0) return false;
+    const x = vox.x0 + ((pick % nx) + 0.5) * c, z = vox.z0 + (Math.floor(pick / nx) + 0.5) * c, a0 = aOf(x, z), b0 = bOf(x, z);
+    if (addBranch(s, a0, b0)) return true;
+    const b1 = Math.round(b0 / DUCT_STEP) * DUCT_STEP;
+    for (const k of [0, 1, -1, 2, -2, 3, -3]) if (addTrunk(s, b1 + k * DUCT_STEP)) return true;
+    R.tabu.add(s * nxz + pick);
+    return false;
+  };
+  // The floors that are under the goal (the weakest three) each get something added. Returns whether anything was.
+  const ductModify = (stats, cool, R) => {
+    const low = stats.avg.map((v, s) => [v, s]).filter(([v, s]) => stArea[s] > 0 && v < REFINE_GOAL).sort((a, b) => a[0] - b[0]).slice(0, 3);
+    let added = 0;
+    for (const [, s] of low) for (let tries = 0; tries < 12 && !added; tries++) { if (ductAdd(s, cool, R)) { added++; break; } }
+    if (low.length > 1) for (const [, s] of low.slice(1)) for (let tries = 0; tries < 12; tries++) if (ductAdd(s, cool, R)) { added++; break; }
+    networkVolume = volumeNow();
+    return added > 0;
+  };
+
   const refineStep = async () => {
     const R = refining, mine = epoch;
     recarve();
@@ -973,17 +1135,22 @@ export function createTunnels(form, { cityHeight = null } = {}) {
     if (mine !== epoch) return false;
     R.flow = flow;
     measureSpeeds(flow);
-    const stats = coolStats(coolField(1), () => true), score = stats.covered * (0.5 + 0.5 * stats.evenness);
+    const cool = coolField(1), stats = coolStats(cool, () => true), score = stats.covered * (0.5 + 0.5 * stats.evenness);
     let weak = 0, floor = Infinity;
     stats.avg.forEach((v, s) => { if (stArea[s] > 0 && v < floor) { floor = v; weak = s; } });
     R.floor = floor;
     if (R.round === 0) { R.from = score; R.startedAt = performance.now(); R.floorFrom = floor; }
+    const minRounds = DUCTS ? 0 : REFINE_ROUNDS, maxRounds = DUCTS ? DUCT_MAX_ROUNDS : REFINE_MAX, maxSeconds = DUCTS ? DUCT_SECONDS : REFINE_SECONDS;
     const met = floor >= REFINE_GOAL;
-    if (met && R.round >= REFINE_ROUNDS) { R.met = true; R.best = snapshot(); R.bestScore = score; R.bestRound = R.round; } // (the round that reaches the goal is the one kept)
+    if (met && R.round >= minRounds) { R.met = true; R.best = snapshot(); R.bestScore = score; R.bestRound = R.round; } // (the round that reaches the goal is the one kept)
     else if (!R.met && score > R.bestScore) { R.bestScore = score; R.best = snapshot(); R.bestRound = R.round; R.bestAt = R.round; }
-    const stop = R.met || R.round >= REFINE_MAX || R.round - (R.bestAt ?? 0) >= REFINE_PATIENCE + REFINE_ROUNDS || performance.now() - R.startedAt > REFINE_SECONDS * 1000;
+    let stop = R.met || R.round >= maxRounds || R.round - (R.bestAt ?? 0) >= REFINE_PATIENCE + minRounds || performance.now() - R.startedAt > maxSeconds * 1000;
+    if (!stop && DUCTS) {
+      if (ductModify(stats, cool, R)) R.stuck = 0;
+      else if (++R.stuck >= 3) stop = true; // nothing more can be placed
+    }
     if (!stop) {
-      refineModify(weak);
+      if (!DUCTS) refineModify(weak);
       R.round++;
       version++;
       return false;
@@ -1077,6 +1244,13 @@ export function createTunnels(form, { cityHeight = null } = {}) {
       if (mine !== epoch) return false;
       if (tuning) return tuneBatch();
       if (refining) return refineStep();
+      if (DUCTS) { // the ducts: seeded once, then grown round by round in refineStep, each round measured in the real airflow
+        ductSeed();
+        refining = { round: 0, best: null, bestScore: -1, bestRound: 0, from: 0, flow: null, cap: Infinity, stuck: 0, tabu: new Set() };
+        iteration = 1;
+        version++;
+        return false;
+      }
       const budget = limit * massVolume * Math.min(1, (iteration + 1) / RAMP_ROUNDS);
       if (iteration === 0) { attractors = makeAttractors(); seed(); }
       const qmax = nodes.length ? solvePressure() : 0;
