@@ -1048,15 +1048,41 @@ export function createTunnels(form, { cityHeight = null } = {}) {
 
   // Is the polyline pts ([a, b] points) at height y clear for a tube of radius rad: inside the mass and clear of the spaces all along it? (The ends
   // may be outside the mass: the walls.)
+  // A tube keeps WALL_SKIN metres of mass between its surface and the outside along its whole length, except where it opens onto a wall: a run, jog or
+  // riser that came closer would leave a paper-thin skin, which shows as a bump or a slit on the facade. (The check is the ring of points a tube's
+  // radius plus WALL_SKIN round the axis: none may be outside the mass at this height. `skips` are directions to leave out, the way to an opening.)
+  const WALL_SKIN = 1.5;
+  const RING = Array.from({ length: 12 }, (_, k) => [Math.cos((k * Math.PI) / 6), Math.sin((k * Math.PI) / 6)]);
+  const skinOk = (x, y, z, rad, skips = null) => {
+    const R = rad + WALL_SKIN;
+    for (const [dx, dz] of RING) {
+      if (skips && skips.some((s) => dx * s[0] + dz * s[1] > 0.3)) continue;
+      if (form.heightAt(x + dx * R, z + dz * R) < y + rad + 0.4) return false;
+    }
+    return true;
+  };
+  const unitXZ = (da, db) => { const [x, z] = xzOf(da, db), l = Math.hypot(x, z) || 1; return [x / l, z / l]; };
   const pathOk = (pts, y, rad) => {
+    const last = pts.length - 2, zone = rad + WALL_SKIN + 0.5;
+    // an end is an opening if it is outside the mass (or at its wall): there the tube may come out, and the wall ahead is not counted against it
+    const wallEnd = (p) => { const [x, z] = xzOf(p[0], p[1]); return !inside(x, y, z, rad); };
+    const w0 = pts.length > 1 && wallEnd(pts[0]), w1 = pts.length > 1 && wallEnd(pts[last + 1]);
+    const toward0 = pts.length > 1 ? unitXZ(pts[0][0] - pts[1][0], pts[0][1] - pts[1][1]) : null; // (out of the first wall)
+    const toward1 = pts.length > 1 ? unitXZ(pts[last + 1][0] - pts[last][0], pts[last + 1][1] - pts[last][1]) : null; // (out of the last)
     for (let i = 0; i + 1 < pts.length; i++) {
       const [a0, b0] = pts[i], [a1, b1] = pts[i + 1], len = Math.hypot(a1 - a0, b1 - b0), m = Math.max(1, Math.ceil(len / 0.5));
       for (let k = 0; k <= m; k++) {
         const u = k / m, [x, z] = xzOf(a0 + (a1 - a0) * u, b0 + (b1 - b0) * u);
         if (!sphereClear(x, y, z, rad)) return false;
+        const ds = i === 0 ? k * len / m : Infinity, de = i === last ? (m - k) * len / m : Infinity;
         if (!inside(x, y, z, rad)) {
-          const nearEnd = (i === 0 && k * len / m < 1.5) || (i === pts.length - 2 && (m - k) * len / m < 1.5); // (the wall: the mass ends here)
+          const nearEnd = ds < 1.5 || de < 1.5; // (the wall: the mass ends here)
           if (!nearEnd) return false;
+        } else {
+          const skips = [];
+          if (w0 && ds < zone) skips.push(toward0);
+          if (w1 && de < zone) skips.push(toward1);
+          if (!skinOk(x, y, z, rad, skips.length ? skips : null)) return false;
         }
       }
     }
@@ -1230,14 +1256,14 @@ export function createTunnels(form, { cityHeight = null } = {}) {
     const lo = Math.min(y0, y1), hi = Math.max(y0, y1), m = Math.max(2, Math.ceil((hi - lo) / 0.75));
     for (let i = 0; i <= m; i++) {
       const y = lo + ((hi - lo) * i) / m;
-      if (!inside(x, y, z, rad) || !sphereClear(x, y, z, rad)) return false;
+      if (!inside(x, y, z, rad) || !sphereClear(x, y, z, rad) || !skinOk(x, y, z, rad)) return false;
       for (const e of edges) if (!own.has(e.br) && distToTube(x, y, z, e) < DUCT_SEP - 0.05) return false;
     }
     return true;
   };
   const addRiser = (s, a0, b0) => {
     const pa = Math.round(a0 / DUCT_STEP) * DUCT_STEP, pb = Math.round(b0 / DUCT_STEP) * DUCT_STEP, ys = stY(s), rad = radFor(2, a0 + 7 * b0), [px, pz] = xzOf(pa, pb);
-    if (!inside(px, ys, pz, rad) || !sphereClear(px, ys, pz, rad)) return false;
+    if (!inside(px, ys, pz, rad) || !sphereClear(px, ys, pz, rad) || !skinOk(px, ys, pz, rad)) return false;
     // the jogs that can reach the point from a run of a floor at height y: [{ r, sg, a }] (the run, which way along it, where on it the jog starts)
     const jogs = (y) => {
       const out = [];
