@@ -29,7 +29,7 @@ export function mountPanel(el, hooks = {}) {
       <input type="range" id="tunnel-stack" min="0" max="10" step="1">
     </label>
     <label title="On: the tunnels are tuned for the main wind directions of the warm season together (each weighted by its hours and speed), so they still cool when the wind turns. Off: tuned for the main wind alone."><input type="checkbox" id="tunnel-multi"> Tune for all main wind directions</label>
-    <label title="Once the tunnels are finished, the outside of the mass slowly softens: the corners round off, and the faces dish in round every opening so that the edge of each tunnel flows into the face. It only takes material away at the surface and never changes the tunnels or the cooling. 0 turns it off.">Soften the skin <output id="skin-soften-out"></output>
+    <label title="How soft the outside of the mass is once the tunnels are finished. At the rigid end (0) it is a flat, smooth facade with crisp round openings, each with a flared, angled reveal. Towards the soft end the corners round off, and the faces dish in round every opening and swell out between them, so that the edge of each tunnel flows into the face (the skin eases from rigid to the setting slowly). It only reshapes the surface and never changes the tunnels or the cooling.">Soften the skin (rigid to soft) <output id="skin-soften-out"></output>
       <input type="range" id="skin-soften" min="0" max="100" step="5">
     </label>
     <label title="Draws the mass faint so that only the wind tunnels stay solid."><input type="checkbox" id="xray"> X-ray (mass faint, tunnels solid)</label>
@@ -120,7 +120,7 @@ export function syncControls() {
   $("tunnel-wind").value = String(settings.tunnelWind);
   $("tunnel-multi").checked = settings.tunnelMulti;
   $("skin-soften").value = settings.skinSoften;
-  $("skin-soften-out").textContent = settings.skinSoften ? `${settings.skinSoften}%` : "off";
+  $("skin-soften-out").textContent = settings.skinSoften ? `${settings.skinSoften}%` : "rigid";
   $("tunnel-stack").value = settings.tunnelStack;
   $("tunnel-stack-out").textContent = settings.tunnelStack ? `${settings.tunnelStack} K` : "off";
   $("xray").checked = settings.xray;

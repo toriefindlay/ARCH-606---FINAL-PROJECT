@@ -1,4 +1,4 @@
-// MODEL (exterior erosion): the softened skin of the mass, once the wind tunnels are finished. No scene or DOM code; tunnelMesh.js draws what it makes.
+﻿// MODEL (exterior erosion): the softened skin of the mass, once the wind tunnels are finished. No scene or DOM code; tunnelMesh.js draws what it makes.
 //
 // The whole outside of the mass is ONE smooth implicit surface (a signed distance field on a fine grid: negative inside the stone), meshed with
 // marching cubes and shaded smoothly, which replaces the mass's own surface while it is shown. It is made from the mass as placed (and never changes
@@ -39,6 +39,23 @@ const SMOOTH_SIGMA = 1.0; // metres: the blur of the skin once pushed in and out
 const MAX_CELLS = 1.5e6; // cells of the grid at most (the skin is smooth: a grid of about half a metre is enough, and quick)
 const PAD = 3, BELOW = 3; // metres of grid beyond the mass, and below the ground (where the mass counts as solid, so that its foot is not rounded)
 const LIMIT = 8; // metres: distances are kept within this
+// THE RIGID END (the amount of softening 0): a flat, smooth facade with crisp round openings, each with a flared, angled reveal (a bell mouth, wider at the face
+// than at the throat, like the openings of a perforated concrete wall). Everything that is soft (the dish, the swelling, the waves, the rounding, the fillet)
+// goes down to nothing as the amount goes down to 0, and the flare comes up in its place: it is full at 0 and gone at 1.
+const RIGID_ROUND = 0; // metres: the blur of the mass's distance field at amount 0 (none: the corners and the roof edge are sharp)
+const RIGID_FILLET = 0; // metres: how softly the tunnels are subtracted at amount 0 (none: the rim of an opening is a sharp circle)
+const FLARE_ANGLE = (30 * Math.PI) / 180; // the reveal's angle to the axis of the opening (it is a straight cone): the smaller, the deeper it goes for its width
+const FLARE_GROW = [0.95, 0.55]; // the mouth's radius is the tube's radius plus (FLARE_GROW[0] x the radius + FLARE_GROW[1] metres) at full flare...
+const FLARE_MAX = 2.8; // ...but at most this (metres): openings are only 6 m apart, and two mouths must not run into one another
+// The radius of an opening's mouth at the face, for a tube of radius r, at rigidity `rigid` (0 to 1).
+const mouthRadius = (r, rigid) => Math.min(r + rigid * (FLARE_GROW[0] * r + FLARE_GROW[1]), Math.max(r + 0.3, FLARE_MAX));
+const FLARE_EXP = 1; // how the reveal curves: 1 is a straight cone, more is a trumpet that meets the tube tangentially
+// Where a vertex's smooth normal is further than this many degrees from its triangle's, the triangle's is used: a sharp edge stays sharp. The facade (the "skin"
+// part) is flat at the rigid end, so any tilt of its normals near an opening is an artefact of the smoothing and the limit is tight there (8 degrees at full
+// rigidity, 30 as it gets soft: a softer facade is gently wavy, and flat shading would show it in facets). The tubes and the reveals are curved (22 and 30).
+const CREASE_SKIN = [30, 8], CREASE_WALL = [30, 22]; // [at no rigidity, at full rigidity]
+const SNAP_FROM = 0.85; // the rims of the openings are snapped to exact circles (see snapRims) when the skin is this rigid (0 to 1) or more
+const REVEAL_BAND = 0.15; // metres: the part of the skin within this of a reveal counts as the tunnel's (for the x-ray mode), not the facade
 
 const clamp01 = (t) => Math.max(0, Math.min(1, t));
 const smooth = (t) => { t = clamp01(t); return t * t * (3 - 2 * t); };
@@ -69,6 +86,68 @@ function* blur(a, tmp, g, sigma) {
     boxAxis(a, tmp, ny, nx * nz, nx * nz, (l) => l, w);
     a.set(tmp);
     if (due()) { yield; fresh(); }
+  }
+}
+
+// The radius of an opening's reveal at the distance s along its way out from where the opening was put (negative inside the wall): the tube's radius r at the
+// throat (s = -D), widening to rOut at the face (s = 0), and on widening as a cone beyond it (see FLARE_EXP).
+function coneRadius(s, r, rOut, D) {
+  const mouth = ((rOut - r) * FLARE_EXP) / D;
+  return s > 0 ? rOut + s * mouth : r + (rOut - r) * Math.pow(Math.max(0, 1 + s / D), FLARE_EXP);
+}
+
+// The mesh's vertices cannot lie on the sharp edge where a reveal meets the face (or the tunnel): they are on the grid's cell edges, so the edge becomes a bevel
+// about a cell wide, and a small opening looks soft. The edge is known exactly (a circle of the mouth's radius, in the face), so every vertex within a cell of it is
+// moved onto it. (Equal positions move together, so the surface stays closed.) `parts` are the { position, normal } sets to treat alike.
+function snapRims(parts, openings, rigid, fc) {
+  const tol = 1.1 * fc;
+  for (const o of openings) {
+    const r = o.r, rOut = mouthRadius(r, rigid), D = (rOut - r) / Math.tan(FLARE_ANGLE), near2 = (rOut + 3) * (rOut + 3);
+    // where the face is: from the vertices on it, beside the mouth
+    const ss = [];
+    for (const part of parts) {
+      const p = part.position;
+      for (let i = 0; i < p.length; i += 3) {
+        const dx = p[i] - o.x, dy = p[i + 1] - o.y, dz = p[i + 2] - o.z;
+        if (dx * dx + dy * dy + dz * dz > near2) continue;
+        const s = dx * o.nx + dz * o.nz;
+        if (s < -1.5 || s > 1.5) continue;
+        const rho = Math.hypot(dx - s * o.nx, dy, dz - s * o.nz);
+        if (rho > rOut + 0.8 && rho < rOut + 2.5) ss.push(s);
+      }
+    }
+    if (ss.length < 6) continue;
+    ss.sort((a, b) => a - b);
+    const rimS = ss[ss.length >> 1], rimR = coneRadius(rimS, r, rOut, D);
+    for (const part of parts) {
+      const p = part.position;
+      for (let i = 0; i < p.length; i += 3) {
+        const dx = p[i] - o.x, dy = p[i + 1] - o.y, dz = p[i + 2] - o.z;
+        if (dx * dx + dy * dy + dz * dz > near2) continue;
+        const s = dx * o.nx + dz * o.nz, rx = dx - s * o.nx, rz = dz - s * o.nz, rho = Math.hypot(rx, dy, rz);
+        if (rho < 1e-6 || Math.hypot(rho - rimR, s - rimS) >= tol) continue;
+        p[i] = o.x + rimS * o.nx + (rx / rho) * rimR; p[i + 1] = o.y + (dy / rho) * rimR; p[i + 2] = o.z + rimS * o.nz + (rz / rho) * rimR;
+      }
+    }
+  }
+}
+
+// Gives every vertex whose smooth normal is far (see CREASE) from the normal of its triangle that triangle's normal. { position, normal } are flat arrays of
+// triangles (9 numbers each).
+function sharpen({ position: p, normal: n }, degrees) {
+  const CREASE = Math.cos((degrees * Math.PI) / 180);
+  for (let t = 0; t + 8 < p.length; t += 9) {
+    const ux = p[t + 3] - p[t], uy = p[t + 4] - p[t + 1], uz = p[t + 5] - p[t + 2], vx = p[t + 6] - p[t], vy = p[t + 7] - p[t + 1], vz = p[t + 8] - p[t + 2];
+    let fx = uy * vz - uz * vy, fy = uz * vx - ux * vz, fz = ux * vy - uy * vx;
+    const fl = Math.hypot(fx, fy, fz);
+    if (fl < 1e-12) continue;
+    fx /= fl; fy /= fl; fz /= fl;
+    // (the face normal on the side the smooth normals are on)
+    const side = (n[t] + n[t + 3] + n[t + 6]) * fx + (n[t + 1] + n[t + 4] + n[t + 7]) * fy + (n[t + 2] + n[t + 5] + n[t + 8]) * fz < 0 ? -1 : 1;
+    fx *= side; fy *= side; fz *= side;
+    for (let v = 0; v < 9; v += 3) {
+      if (n[t + v] * fx + n[t + v + 1] * fy + n[t + v + 2] * fz < CREASE) { n[t + v] = fx; n[t + v + 1] = fy; n[t + v + 2] = fz; }
+    }
   }
 }
 
@@ -165,24 +244,26 @@ export function createSkinShell() {
       }
       if (due()) { yield; fresh(); }
     }
-    cache = { key, g, phi, delta, deltaF, deltaM, tun, env: new Float32Array(N), tmp, sh: new Float32Array(N) };
+    cache = { key, g, phi, delta, deltaF, deltaM, tun, openings, fun: new Float32Array(N), env: new Float32Array(N), tmp, sh: new Float32Array(N) };
     return cache;
   }
 
   return {
     clear() { cache = null; },
 
-    // The skin for `amount` (0 to 1) of full strength, a slice at a time (a generator): at the end { skin, wall }, each { position, normal } (flat arrays of
-    // triangles), the part on the tunnels being `wall`. Null if there is nothing to make it from.
+    // The skin for `amount` (0 to 1) of softening, a slice at a time (a generator): 0 is the rigid end (see RIGID_ROUND), 1 the softest. At the end { skin, wall },
+    // each { position, normal } (flat arrays of triangles), the part on the tunnels being `wall`. Null if there is nothing to make it from.
     *build(tunnels, amount) {
       const c = yield* prepare(tunnels);
-      if (!c || amount <= 0) return null;
-      const { g, phi, delta, deltaF, deltaM, tun, env, tmp, sh } = c, { ox, oy, oz, fc, nx, nz, ny } = g;
+      if (!c) return null;
+      amount = clamp01(amount);
+      const rigid = 1 - amount;
+      const { g, phi, delta, deltaF, deltaM, tun, openings, fun, env, tmp, sh } = c, { ox, oy, oz, fc, nx, nz, ny } = g;
       const at = (a, m, b) => (m * nz + b) * nx + a;
 
       // 1. the rounding: the mass's distance field blurred
       env.set(phi);
-      yield* blur(env, tmp, g, ROUND_SIGMA * amount);
+      yield* blur(env, tmp, g, ROUND_SIGMA * amount + RIGID_ROUND * rigid);
 
       // 2. the walls pushed in near the openings and out between them (then evened out a little more)
       for (let m = 0; m < ny; m++) {
@@ -206,12 +287,45 @@ export function createSkinShell() {
         if (due()) { yield; fresh(); }
       }
       yield* blur(sh, tmp, g, SMOOTH_SIGMA * amount);
-      // 3. the tunnels taken out softly: the soft maximum of the skin and the inside of the tunnels
+      // 2b. the flared reveal of every opening (more of it the more rigid): a bell mouth along the way out, from the tube's radius at depth D inside the wall to a
+      // wider mouth at the face. `fun` is its distance field (negative inside), joined to the tunnels' below.
+      fun.fill(99);
+      if (rigid > 0.02) {
+        const tanA = Math.tan(FLARE_ANGLE);
+        for (const o of openings) {
+          const r = o.r, rOut = mouthRadius(r, rigid), D = (rOut - r) / tanA, reach = rOut + D + 1;
+          const a0 = Math.max(0, Math.floor((o.x - reach - ox) / fc)), a1 = Math.min(nx - 1, Math.floor((o.x + reach - ox) / fc));
+          const b0 = Math.max(0, Math.floor((o.z - reach - oz) / fc)), b1 = Math.min(nz - 1, Math.floor((o.z + reach - oz) / fc));
+          const m0 = Math.max(0, Math.floor((o.y - rOut - 1 - oy) / fc)), m1 = Math.min(ny - 1, Math.floor((o.y + rOut + 1 - oy) / fc));
+          for (let m = m0; m <= m1; m++) {
+            const dy = oy + (m + 0.5) * fc - o.y;
+            for (let b = b0; b <= b1; b++) {
+              const dz = oz + (b + 0.5) * fc - o.z;
+              for (let a = a0; a <= a1; a++) {
+                const dx = ox + (a + 0.5) * fc - o.x, s = dx * o.nx + dz * o.nz; // (s: how far out of the face, along the way out)
+                if (s < -D - 0.5 || s > 1.5) continue;
+                const rho = Math.hypot(dx - s * o.nx, dy, dz - s * o.nz), t = Math.min(1, Math.max(0, -s) / D), u = 1 - t;
+                // (out beyond the face the cone goes on widening: where the skin's wall is a little out from where the opening was put, the cut then
+                // still meets it as a cone, not as a step)
+                const mouth = (((rOut - r) * FLARE_EXP) / D);
+                const R = s > 0 ? rOut + s * mouth : r + (rOut - r) * Math.pow(u, FLARE_EXP), slope = s > 0 ? mouth : mouth * Math.pow(u, FLARE_EXP - 1);
+                const val = (rho - R) / Math.sqrt(1 + slope * slope), k = at(a, m, b);
+                if (val < fun[k]) fun[k] = val;
+              }
+            }
+          }
+          if (due()) { yield; fresh(); }
+        }
+      }
+      // 3. the tunnels (and their reveals) taken out: the soft maximum of the skin and the inside of the tunnels, softly the more it is softened, crisp at the rigid end
+      const fillet = RIGID_FILLET * rigid + FILLET * amount;
       for (let k0 = 0; k0 < g.N; k0 += 100000) {
         const k1 = Math.min(g.N, k0 + 100000);
         for (let k = k0; k < k1; k++) {
-          const v = sh[k], t = -tun[k], h = Math.max(FILLET - Math.abs(v - t), 0) / FILLET;
-          sh[k] = Math.max(v, t) + h * h * FILLET * 0.25;
+          const v = sh[k], t = -Math.min(tun[k], fun[k]);
+          if (fillet < 1e-4) { sh[k] = Math.max(v, t); continue; } // (no fillet: a hard cut, and a sharp edge)
+          const h = Math.max(fillet - Math.abs(v - t), 0) / fillet;
+          sh[k] = Math.max(v, t) + h * h * fillet * 0.25;
         }
         if (due()) { yield; fresh(); }
       }
@@ -221,9 +335,20 @@ export function createSkinShell() {
       yield* march(sh, g, 0, LIMIT, (ca, cm, cb) => {
         if (oy + (cm + 0.5) * fc < 0.12) return null; // nothing below the ground
         const ia = Math.max(0, Math.min(nx - 1, Math.round(ca))), im = Math.max(0, Math.min(ny - 1, Math.round(cm))), ib = Math.max(0, Math.min(nz - 1, Math.round(cb)));
-        return tun[at(ia, im, ib)] < 0.7 ? out.wall : out.skin; // (on or beside a tunnel's surface, or on the skin)
+        const kk = at(ia, im, ib);
+        return tun[kk] < 0.7 || fun[kk] < REVEAL_BAND ? out.wall : out.skin; // (on or beside a tunnel's surface, or on a reveal, or on the skin)
       });
+      // Sharp edges: the normals come from the gradient of the field, which smooths an edge over a cell or two. Where a vertex's normal is more than 30 degrees from
+      // the normal of its own triangle (a corner, the rim of an opening, the throat of a reveal), the triangle's is used instead. (Not at the soft end, which
+      // is left as it was.)
+      if (rigid > SNAP_FROM) snapRims([out.skin, out.wall], openings, rigid, fc); // (only where the rim really is sharp: with a softened lip it would leave shards)
+      if (amount < 0.95) {
+        const k = rigid * rigid;
+        sharpen(out.skin, CREASE_SKIN[0] + (CREASE_SKIN[1] - CREASE_SKIN[0]) * k);
+        sharpen(out.wall, CREASE_WALL[0] + (CREASE_WALL[1] - CREASE_WALL[0]) * k);
+      }
       return out;
     },
   };
 }
+

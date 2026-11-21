@@ -64,9 +64,8 @@ export function createMeshView(uniforms, empty) {
   // What a redraw makes, a slice at a time: { kind: "skin", built } for the softened skin (amount above 0), or { kind: "tunnels", ... } for the tunnels alone.
   function* compute(tunnels, skin) {
     fresh();
-    const amount = skin?.amount ?? 0;
-    if (amount > 0) {
-      const built = yield* shell.build(tunnels, amount);
+    if (skin) { // (once the tunnels are done: the skin, from the rigid end (amount 0) to the softest (1))
+      const built = yield* shell.build(tunnels, skin.amount ?? 0);
       if (built) return { kind: "skin", built };
     }
     const { massBox } = tunnels, { edges } = tunnels.network();
@@ -148,12 +147,13 @@ export function createMeshView(uniforms, empty) {
     },
     // Shows the tunnels of `tunnels` (tunnels.js) under `parent`. Cheap to call every frame: a redraw is started when they have changed (not sooner than
     // MIN_INTERVAL after the last), and one slice of it is done at every call.
-    // `skin` ({ amount: 0 to 1 }, optional) softens the outside of the mass once the tunnels are done (see skinShell.js).
+    // `skin` ({ amount: 0 to 1 }, optional) gives the outside of the mass its skin once the tunnels are done (see skinShell.js): amount 0 is the rigid end (a
+    // flat, smooth facade with crisp round openings and angled reveals), 1 the softest. Without it the mass's own surface is kept, with the raw openings.
     update(parent, tunnels, skin = null) {
       if (!parent || !tunnels || !tunnels.carved) return clear();
       if (job && job.parent !== parent) job = null;
       if (!job) {
-        const key = `${tunnels.id}|${parent.id}|${tunnels.version}|${tunnels.done ? skin?.amount ?? 0 : 0}`;
+        const key = `${tunnels.id}|${parent.id}|${tunnels.version}|${tunnels.done && skin ? `skin${skin.amount ?? 0}` : "raw"}`;
         if (key === lastKey && group?.parent === parent) return;
         if (group?.parent === parent && performance.now() - lastTime < MIN_INTERVAL) return;
         job = { key, parent, gen: compute(tunnels, tunnels.done ? skin : null) };

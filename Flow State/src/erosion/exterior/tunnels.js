@@ -111,9 +111,10 @@ export function createTunnels(form, { cityHeight = null } = {}) {
           }
           continue; // (a corner's own direction is not a wall's)
         }
-        // the way the wall here faces: out of the mass, from the slope of the mass over a window of 5 x 5 pixels
+        // the way the wall here faces: out of the mass, from the slope of the mass over a round window (a Gaussian, 7 x 7 pixels: a square window would lean
+        // the answer towards the axes)
         let gx = 0, gz = 0;
-        for (let dj = -2; dj <= 2; dj++) for (let di = -2; di <= 2; di++) { const v = pix(i + di, j + dj); gx += di * v; gz += dj * v; }
+        for (let dj = -3; dj <= 3; dj++) for (let di = -3; di <= 3; di++) { const w = Math.exp(-(di * di + dj * dj) / 4.5), v = pix(i + di, j + dj) * w; gx += di * v; gz += dj * v; }
         if (gx * gx + gz * gz < 1e-9) continue;
         const ph = Math.atan2(-gz, -gx);
         sx += Math.cos(4 * ph); sz += Math.sin(4 * ph); walls++;
@@ -1083,7 +1084,9 @@ export function createTunnels(form, { cityHeight = null } = {}) {
   const skinOk = (x, y, z, rad, skips = null) => {
     const R = rad + WALL_SKIN;
     for (const [dx, dz] of RING) {
-      if (skips && skips.some((s) => dx * s[0] + dz * s[1] > 0.3)) continue;
+      // (near an opening the samples ahead and to the sides are left out, not only those ahead: a wall a few degrees off square to the tube would else
+      // put the sample at the side just outside the mass, and turn down every trunk that meets it)
+      if (skips && skips.some((s) => dx * s[0] + dz * s[1] > -0.3)) continue;
       if (form.heightAt(x + dx * R, z + dz * R) < y + rad + 0.4) return false;
     }
     return true;
