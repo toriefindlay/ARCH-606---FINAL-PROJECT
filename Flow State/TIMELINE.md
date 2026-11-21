@@ -105,3 +105,5 @@ Earlier entries (before 2026-11-20) were written up afterwards from what was ask
 | 2026-11-20 | Renamed the Exterior erosion panel to Passive cooling, and stopped saving its settings so it opens at its defaults. |
 | 2026-11-20 | Set the Passive cooling panel's opening state to the screenshot's settings (skin rigid, 12x speed, Tunnels shown, Circulation hidden, particle speed 0.5x). |
 | 2026-11-20 | Made every side-panel section start collapsed whenever the site is opened, and stopped remembering which were open. |
+| 2026-11-21 | Fixed grooves and dents in the skin beside the openings when Circulation was on: hallways that only meet the skin inside a tunnel's reveal are no longer cut. |
+| 2026-11-21 | Added a Cost savings panel that estimates the yearly and 10 and 25 year saving against air-conditioning electricity, from the building's floor area, the site's climate, and the region's currency and electricity price. |

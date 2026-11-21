@@ -171,6 +171,21 @@ export function getWarmWind() {
   return windState.warm;
 }
 
+// How much cooling the site's climate asks for, from last year's hourly temperatures: { cdh, hours, mean, year } where cdh is the cooling degree-hours above `base`
+// (the sum, over the year's hours, of how far each is above it, in K·h), hours the number of hours above it, and mean the annual mean temperature (°C).
+// Null until the wind data has loaded (or if it has no temperatures). See erosion/cost.
+export function getCoolingHours(base = 18) {
+  if (!windState?.raw.temp) return null;
+  const { temp, year } = windState.raw;
+  let cdh = 0, hours = 0, sum = 0, n = 0;
+  for (const t of temp) {
+    if (t == null) continue;
+    sum += t; n++;
+    if (t > base) { cdh += t - base; hours++; }
+  }
+  return n ? { cdh, hours, mean: sum / n, year } : null;
+}
+
 // The warm part of the year cut into up to `count` consecutive periods that carry about the same warmth (hours above the base
 // temperature, as in warmStats), each with its own wind rose: [{ months, label, share, ...warmStats }], in calendar order. The
 // first period starts after the coldest month, so a warm season that runs over the new year (southern hemisphere) stays whole.

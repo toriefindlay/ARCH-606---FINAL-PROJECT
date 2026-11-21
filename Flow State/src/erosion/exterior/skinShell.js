@@ -378,7 +378,11 @@ export function createSkinShell() {
           let lo = Infinity, hi = -Infinity;
           for (let m = im0; m <= im1; m++) for (let b = ib0; b <= ib1; b++) for (let a = ia0; a <= ia1; a++) {
             if (dist(a, m, b) > fc * 0.5) continue; // (only the cells in the box)
-            const v = sh[at(a, m, b)];
+            const kk = at(a, m, b);
+            // (the cells in or beside a tunnel's reveal are already open: a hallway that only meets the skin there would be cut into a slot that runs on behind the
+            // facade, and a hallway kept back from the wall is only ever near the skin at a reveal, so it is left alone)
+            if (fun[kk] < 1.2 || tun[kk] < 0.5) continue;
+            const v = sh[kk];
             if (v < lo) lo = v;
             if (v > hi) hi = v;
           }

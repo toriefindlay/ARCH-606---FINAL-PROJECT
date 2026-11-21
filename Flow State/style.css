@@ -178,6 +178,7 @@ button.primary:hover { background: var(--accent); }
 .tone-exterior { --tone: #0f766e; }
 .tone-interior { --tone: #7a4f8f; }
 .tone-circulation { --tone: #b4691f; }
+.tone-cost { --tone: #2f6f4f; }
 .tone-sun { --tone: #b08a1e; }
 .tone-wind { --tone: #4f86a6; }
 .tone-layers { --tone: #6f8a4a; }
