@@ -25,6 +25,10 @@ src/
     combine.js         collects cuts from both sides
     exterior/          EXTERIOR EROSION: rules.js (model), view.js, panel.js (controller)
     interior/          INTERIOR EROSION: rules.js (model), view.js, panel.js (controller)
+    circulation/       HALLWAYS, STAIRS AND LIFTS for people, planned in the spaces the finished tunnels leave:
+                       rules.js (model: plans from a plain graph of the tunnels), reroute.js (moves the tubes round the main cores), view.js,
+                       panel.js, index.js. "Scattered" mode never changes the tunnels; "main cores" mode does, only through tunnels.applyRoute
+                       (and puts them back with restoreRoute)
 ```
 
 ## Ownership

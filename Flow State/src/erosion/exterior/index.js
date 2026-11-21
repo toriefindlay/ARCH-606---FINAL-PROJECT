@@ -232,6 +232,7 @@ function tunnelShowFrame(dt = 0, force = false) {
   if (!t || !t.done) skinClock = 0;
   else if (settings.playing) skinClock += dt * settings.speed;
   const skinAmount = t && t.done ? (Math.round(Math.min(1, skinClock / SKIN_SECONDS) * SKIN_STEPS) / SKIN_STEPS) * (settings.skinSoften / 100) : 0;
+  tunnelView.setVisible(settings.showTunnels);
   if (t) tunnelView.update(layers.model, t, { amount: Math.round(skinAmount * 100) / 100 });
   else tunnelView.clear();
 }
@@ -425,6 +426,11 @@ function startForm() {
   if (!form) return;
   setActiveForm(form);
   formView.setForm(form, layers.model, info.object);
+}
+
+// The finished tunnels, read-only, for the hallways (erosion/circulation): null until the tunnels are done and fit the form.
+export function getFinishedTunnels() {
+  return tunnels && form && tunnels.builtOn === form.version && tunnels.done ? tunnels : null;
 }
 
 export function mountExterior() {

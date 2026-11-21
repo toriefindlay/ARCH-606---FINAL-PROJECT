@@ -5,7 +5,7 @@ import { registerPersist } from "../../core/persist.js";
 import { coolingGradient, COOLING_RAMP, COOLING_MAX, COOLED_AT } from "./coolingView.js";
 
 // Read each frame by index.js. `speed` is simulated seconds per real second.
-export const settings = { playing: true, speed: 4, erode: 2, erodeWind: false, erodeSun: false, erodeTunnels: false, tunnelVolume: 8, tunnelStack: 4, tunnelWind: -1, tunnelMulti: true, skinSoften: 70, xray: false, coolingData: false, flowDebug: false, flowHeight: 2, windParticles: false, particleWind: -2, particleSpeed: 2 };
+export const settings = { playing: true, speed: 4, erode: 2, erodeWind: false, erodeSun: false, erodeTunnels: false, tunnelVolume: 8, tunnelStack: 4, tunnelWind: -1, tunnelMulti: true, skinSoften: 70, xray: false, showTunnels: true, showCirculation: true, coolingData: false, flowDebug: false, flowHeight: 2, windParticles: false, particleWind: -2, particleSpeed: 2 };
 
 const $ = (id) => document.getElementById(id);
 let onClearErosion = () => {};
@@ -33,6 +33,8 @@ export function mountPanel(el, hooks = {}) {
       <input type="range" id="skin-soften" min="0" max="100" step="5">
     </label>
     <label title="Draws the mass faint so that only the wind tunnels stay solid."><input type="checkbox" id="xray"> X-ray (mass faint, tunnels solid)</label>
+    <label title="Shows the wind tunnels. Turn it off, with Circulation on, to see only the hallways and stairs." style="margin-left:18px"><input type="checkbox" id="show-tunnels"> Tunnels</label>
+    <label title="Shows the hallways, stairs and lifts (planned under Circulation, once the tunnels are finished). Turn it off to see only the tunnels." style="margin-left:18px"><input type="checkbox" id="show-circulation"> Circulation (hallways and stairs)</label>
     <label title="Needs X-ray. Inside the faint mass, every storey gets a floor plan shaded by how well the wind tunnels cool that part of the floor." style="margin-left:18px"><input type="checkbox" id="cooling-data"> Cooling data (shade the floors by cooling)</label>
     <div id="cool-legend" style="display:none;margin:4px 0 8px 18px">
       <div style="height:22px;border-radius:4px;border:1px solid #bbb;background:${coolingGradient()}"></div>
@@ -89,6 +91,8 @@ export function mountPanel(el, hooks = {}) {
   $("erode-tunnels").addEventListener("change", exclusive("erodeTunnels"));
   $("tunnel-volume").addEventListener("input", (e) => { settings.tunnelVolume = Number(e.target.value); syncControls(); });
   $("xray").addEventListener("change", (e) => { settings.xray = e.target.checked; syncControls(); });
+  $("show-tunnels").addEventListener("change", (e) => { settings.showTunnels = e.target.checked; syncControls(); });
+  $("show-circulation").addEventListener("change", (e) => { settings.showCirculation = e.target.checked; syncControls(); });
   $("cooling-data").addEventListener("change", (e) => { settings.coolingData = e.target.checked; syncControls(); });
   $("tunnel-stack").addEventListener("input", (e) => { settings.tunnelStack = Number(e.target.value); syncControls(); });
   $("skin-soften").addEventListener("input", (e) => { settings.skinSoften = Number(e.target.value); syncControls(); });
@@ -116,6 +120,8 @@ export function syncControls() {
   $("tunnel-stack").value = settings.tunnelStack;
   $("tunnel-stack-out").textContent = settings.tunnelStack ? `${settings.tunnelStack} K` : "off";
   $("xray").checked = settings.xray;
+  $("show-tunnels").checked = settings.showTunnels;
+  $("show-circulation").checked = settings.showCirculation;
   $("cooling-data").checked = settings.coolingData;
   $("cooling-data").disabled = !settings.xray; // the cooling data is drawn inside the x-rayed mass
   $("cool-legend").style.display = settings.xray && settings.coolingData ? "block" : "none";

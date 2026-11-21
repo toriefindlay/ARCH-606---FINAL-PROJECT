@@ -22,6 +22,7 @@ export function createMeshView(uniforms, empty) {
   let skinMesh = null; // the softened outside of the mass (see skinShell.js), while it is shown: it replaces the mass's own surface
   let wall = null, skinMaterial = null, matched = false, lastKey = "", lastTime = 0;
   let job = null; // the redraw in progress: { key, parent, gen }
+  let visible = true; // are the tunnels' walls shown? (the mass's own surface and the softened skin are not affected)
   const shell = createSkinShell();
 
   const dropSkin = () => {
@@ -54,6 +55,7 @@ export function createMeshView(uniforms, empty) {
       group?.parent?.remove(group);
       group = new THREE.Group();
       group.userData.solid = true; // the x-ray mode (view.js) leaves the tunnels as they are
+      group.visible = visible;
       parent.add(group);
     }
     if (mesh) { group.remove(mesh); mesh.geometry.dispose(); mesh = null; }
@@ -139,6 +141,11 @@ export function createMeshView(uniforms, empty) {
 
   return {
     clear,
+    // Shows or hides the tunnels' walls (cheap to call every frame). Hidden, they are still worked out, so showing them again is instant.
+    setVisible(on) {
+      visible = !!on;
+      if (group) group.visible = visible;
+    },
     // Shows the tunnels of `tunnels` (tunnels.js) under `parent`. Cheap to call every frame: a redraw is started when they have changed (not sooner than
     // MIN_INTERVAL after the last), and one slice of it is done at every call.
     // `skin` ({ amount: 0 to 1 }, optional) softens the outside of the mass once the tunnels are done (see skinShell.js).

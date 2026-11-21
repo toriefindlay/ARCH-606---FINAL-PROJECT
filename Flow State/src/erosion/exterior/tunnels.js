@@ -139,6 +139,7 @@ export function createTunnels(form, { cityHeight = null } = {}) {
   let variant = 0, best = null; // the variant being grown, and the best finished so far
   let buoyancy = 0; // the stack effect, per metre of height (see setBuoyancy)
   let iteration = 0, finished = false, version = 0, epoch = 0, branchCount = 0;
+  let routeSaved = null, routeBaseVersion = 0, routeBaseVox = 0; // the network as it was before the cores moved the tubes (see applyRoute), and the versions it had
   let uncovered = []; // the points of the mass no tunnel cools yet
   let attractors = null; // sample points in the mass
   let flowResult = null, flowVersion = -1, flowDir = null, mapKey = "", map = null, networkVolume = 0;
@@ -504,6 +505,7 @@ export function createTunnels(form, { cityHeight = null } = {}) {
     iteration = 0; finished = false; branchCount = 0; version++; epoch++; networkVolume = 0;
     uncovered = []; attractors = null;
     variant = 0; best = null; salt = 0; tuning = null; tuneResult = null; refining = null; refineResult = null;
+    routeSaved = null;
     flowResult = null; flowVersion = -1; mapKey = ""; map = null;
   };
 
@@ -1468,6 +1470,41 @@ export function createTunnels(form, { cityHeight = null } = {}) {
 
     // The tubes: { nodes: [{ x, y, z, wall }], edges: [{ a, b, r }] } (a and b are nodes), as they are now.
     network: () => ({ nodes, edges }),
+
+    // Read-only, for the hallways (erosion/circulation): the axes the ducts are drawn in ({ A, B }, unit vectors in x and z; null before the tunnels start),
+    // and the occupied spaces (spheres) they went round. Nothing here changes the tunnels.
+    get frame() { return frame ? { A: [frame.A[0], frame.A[1]], B: [frame.B[0], frame.B[1]] } : null; },
+    // The network as a plain graph { nodes: [{ x, y, z, wall, ... }], edges: [{ a, b, r, ... }] } (a and b are indices into nodes), as it was before any
+    // applyRoute: this is what the hallways are planned from. Read-only (a copy).
+    baseGraph() {
+      const snap = routeSaved ?? snapshot();
+      return { nodes: snap.nodes.map((n) => ({ ...n })), edges: snap.edges.map((e) => ({ ...e })) };
+    },
+    // The only way the hallways change the tunnels, and only for the main cores (see circulation/reroute.js): the tubes are replaced by `graph` (the same
+    // kind of graph as baseGraph, with the tubes moved a little round the cores), the first time keeping the network as it was so that restoreRoute can
+    // put it back. Applying again replaces the last route (it does not add to it). Only once the tunnels are finished.
+    applyRoute(graph) {
+      if (!finished) return false;
+      if (!routeSaved) { routeSaved = snapshot(); routeBaseVersion = version; routeBaseVox = vox.version; }
+      restore({ nodes: graph.nodes, edges: graph.edges });
+      recarve();
+      version++;
+      return true;
+    },
+    restoreRoute() { // the network as it was before applyRoute
+      if (!routeSaved) return false;
+      const snap = routeSaved;
+      routeSaved = null;
+      restore(snap);
+      recarve();
+      version++;
+      return true;
+    },
+    get rerouted() { return !!routeSaved; },
+    // The versions of the network before applyRoute (the current ones if it was not applied), which do not change when a route is applied or replaced.
+    get baseVersion() { return routeSaved ? routeBaseVersion : version; },
+    get baseVoxVersion() { return routeSaved ? routeBaseVox : vox.version; },
+    get spaces() { return obstacles.map((s) => ({ ...s })); },
 
     // The occupied spaces to keep out of: a list of spheres { x, y, z, r } in world metres. The tunnels start again.
     setObstacles(list) {
