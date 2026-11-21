@@ -9,12 +9,12 @@ const LIFT = 2.4; // m: the lift's side
 const SLAB = 0.15; // m: a floor slab's thickness (also a flight of stairs)
 
 export function createCirculationView() {
-  let group = null, owner = null, shownKey = "";
+  let group = null, owner = null, shownKey = "", parts = null, showAccessible = true, showCutoff = true;
 
   const clear = () => {
     group?.traverse((o) => { o.geometry?.dispose(); [o.material].flat().filter(Boolean).forEach((m) => m.dispose()); });
     group?.parent?.remove(group);
-    group = owner = null;
+    group = owner = parts = null;
     shownKey = "";
   };
 
@@ -24,7 +24,7 @@ export function createCirculationView() {
     const world = (i, j, y) => { const a = a0 + i * g, b = b0 + j * g; return [a * A[0] + b * B[0], y, a * A[1] + b * B[1]]; };
     const quad = (out, p, q, r, s) => out.push(...p, ...q, ...r, ...p, ...r, ...s);
     const geometry = (pos) => { const geo = new THREE.BufferGeometry(); geo.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3)); geo.computeVertexNormals(); return geo; };
-    const out = [];
+    const out = { mask: new THREE.Group(), detached: new THREE.Group() }; // (each can be shown or hidden on its own: see setParts)
     // the hallways joined to an entrance, and (grey) the ones the tunnels leave no way down from
     for (const [which, floorColour, wallColour] of [["mask", FLOOR_COLOUR, WALL_COLOUR], ["detached", APART_FLOOR_COLOUR, APART_WALL_COLOUR]]) {
       const floorPos = [], wallPos = [];
@@ -47,12 +47,12 @@ export function createCirculationView() {
       if (floorPos.length) {
         const mesh = new THREE.Mesh(geometry(floorPos), new THREE.MeshLambertMaterial({ color: floorColour, side: THREE.DoubleSide }));
         mesh.renderOrder = 7;
-        out.push(mesh);
+        out[which].add(mesh);
       }
       if (wallPos.length) {
         const mesh = new THREE.Mesh(geometry(wallPos), new THREE.MeshLambertMaterial({ color: wallColour, side: THREE.DoubleSide, transparent: true, opacity: 0.5, depthWrite: false }));
         mesh.renderOrder = 8;
-        out.push(mesh);
+        out[which].add(mesh);
       }
     }
     return out;
@@ -88,7 +88,16 @@ export function createCirculationView() {
     }
     // the stair: in the rest of the length, one flight up and one back for each storey (side by side)
     const xA = -Lx / 2 + wall + (lift ? lift + 0.2 : 0), xB = Lx / 2 - wall, run = xB - xA, fw = Math.max(0.6, (Lz - 3 * wall) / 2);
-    if (run > 1) {
+    if (run > 1 && c.narrow) { // a straight single flight for each storey, the way it goes alternating (it is only 2 m wide)
+      const mat = new THREE.MeshLambertMaterial({ color: STAIR_COLOUR });
+      for (let s = c.s0; s < c.s1; s++) {
+        const dir = (s - c.s0) % 2 ? -1 : 1, yb = s * plan.storey, x0 = dir > 0 ? xA : xB, x1 = dir > 0 ? xB : xA, dx = x1 - x0, dy = plan.storey, len = Math.hypot(dx, dy);
+        const flight = new THREE.Mesh(new THREE.BoxGeometry(len, SLAB, Math.max(0.6, Lz - 2 * wall)), mat);
+        flight.position.set((x0 + x1) / 2, yb + dy / 2, 0);
+        flight.rotation.z = Math.atan2(dy, dx);
+        gr.add(flight);
+      }
+    } else if (run > 1) {
       const mat = new THREE.MeshLambertMaterial({ color: STAIR_COLOUR });
       for (let s = c.s0; s < c.s1; s++) {
         const yb = s * plan.storey, ym = yb + plan.storey / 2, yt = yb + plan.storey;
@@ -134,10 +143,18 @@ export function createCirculationView() {
       owner = plan;
       group = new THREE.Group();
       group.userData.solid = true; // the x-ray mode leaves this as it is
-      for (const mesh of hallways(plan)) group.add(mesh);
+      parts = hallways(plan);
+      group.add(parts.mask, parts.detached);
       for (const c of plan.cores) group.add(core(plan, c));
       for (const e of plan.entrances) group.add(door(plan, e));
+      parts.mask.visible = showAccessible; parts.detached.visible = showCutoff;
       parent.add(group);
+    },
+    // Shows or hides the hallways joined to an exit (amber) and the ones cut off from every exit (grey), each on its own. (The cores and the exits stay.)
+    // Cheap to call every frame, and kept for when the plan is drawn again.
+    setParts(accessible, cutoff) {
+      showAccessible = !!accessible; showCutoff = !!cutoff;
+      if (parts) { parts.mask.visible = showAccessible; parts.detached.visible = showCutoff; }
     },
     get plan() { return owner; },
   };

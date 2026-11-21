@@ -2,7 +2,7 @@
 // The hallways and cores are planned once the wind tunnels are finished (see index.js); a control that changes the plan makes it again.
 import { registerPersist } from "../../core/persist.js";
 
-export const settings = { enabled: false, mode: "scattered", width: 2.0, serve: 10, cores: 0, loops: 3, lift: false };
+export const settings = { enabled: false, mode: "scattered", width: 2.0, serve: 10, cores: 0, loops: 3, lift: false, fill: true, extraCores: 0 };
 
 const $ = (id) => document.getElementById(id);
 let mounted = false;
@@ -16,6 +16,16 @@ export function mountPanel(el, { save = null } = {}) {
       <select id="circ-mode">
         <option value="scattered">Scattered stairs (tunnels untouched)</option>
         <option value="main">Main cores: 2 stairs + a lift (tunnels move round them)</option>
+      </select>
+    </label>
+    <label title="On: hallways in every part of the floors that has room for them. Extra stairs are added wherever one can join a part to the rest, and parts that no stair can reach get hallways of their own (drawn grey), and an exit if they touch the ground floor and have a way to a wall. The walk to a hallway is then at most 4 m. Off: hallways only as far as the reach below, and only where a stair joins them to the rest."><input type="checkbox" id="circ-fill"> Fill every space that has room</label>
+    <label title="Main cores only. Hallways the tunnels cut off from every exit (grey-blue) can only be reached by a stair that fits between them and the rest, and often none does. A core may move the tunnels, so each extra stair core is a full-height stair placed where the most cut-off hallway is, and kept only if it makes more hallway reachable. More of the tunnels are moved.">Extra stair cores (main cores only)
+      <select id="circ-extra">
+        <option value="0">None</option>
+        <option value="1">1</option>
+        <option value="2">2</option>
+        <option value="3">3</option>
+        <option value="4">4</option>
       </select>
     </label>
     <label>Hallway width <output id="circ-width-out"></output>
@@ -49,11 +59,13 @@ export function mountPanel(el, { save = null } = {}) {
   };
   $("circ-enabled").addEventListener("change", (e) => { settings.enabled = e.target.checked; });
   $("circ-lift").addEventListener("change", (e) => { settings.lift = e.target.checked; });
+  $("circ-fill").addEventListener("change", (e) => { settings.fill = e.target.checked; });
   bind("circ-width", "width", (t) => t.valueAsNumber, "circ-width-out", (v) => `${v.toFixed(1)} m`);
   bind("circ-serve", "serve", (t) => t.valueAsNumber, "circ-serve-out", (v) => `${v} m`);
   bind("circ-loops", "loops", (t) => t.valueAsNumber, "circ-loops-out", (v) => `${v}`);
   $("circ-cores").addEventListener("change", (e) => { settings.cores = Number(e.target.value); });
   $("circ-mode").addEventListener("change", (e) => { settings.mode = e.target.value; syncControls(); });
+  $("circ-extra").addEventListener("change", (e) => { settings.extraCores = Number(e.target.value); });
   syncControls();
 }
 
@@ -61,7 +73,10 @@ export function syncControls() {
   if (!mounted) return;
   $("circ-enabled").checked = settings.enabled;
   $("circ-lift").checked = settings.lift;
+  $("circ-fill").checked = settings.fill;
   $("circ-mode").value = settings.mode;
+  $("circ-extra").value = String(settings.extraCores);
+  $("circ-extra").disabled = settings.mode !== "main";
   $("circ-lift").disabled = settings.mode === "main"; // (the main cores have a lift core of their own)
   $("circ-width").value = settings.width;
   $("circ-width-out").textContent = `${settings.width.toFixed(1)} m`;

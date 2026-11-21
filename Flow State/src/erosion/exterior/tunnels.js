@@ -81,20 +81,46 @@ export function createTunnels(form, { cityHeight = null } = {}) {
   const stShare = (s) => 0.5 * stArea[s] / (stAreaSum || 1) + 0.5 / storeys; // half by floor area, half equal, so that a small top floor is not starved
   const stOf = (e) => Math.max(0, Math.min(storeys - 1, Math.floor((e.a.y + e.b.y) / 2 / STOREY)));
 
-  // The columns round the corners of the mass (a column with open sides both ways, and the ones within CLEAR of it): never opened.
+  // The corners of the mass, and the columns round them (the one the corner is in, and the ones within CLEAR of it): never opened.
+  // A corner is a place where the outline turns sharply outwards. It is found on the height map of the form (not on the voxel faces, which on a wall that is
+  // not along the axes are a staircase of tiny corners): at each point of the mass's edge, how much of two rings round it (a small one and a bigger one) lies
+  // outside the mass. Along a straight wall that is about a half, whatever the direction of the wall; at a right-angled corner three quarters.
+  // The same walk gives the direction the walls face (see footprintAngle), for the axes the ducts are drawn in.
   const isMass = (i, j) => i >= 0 && j >= 0 && i < nx && j < nz && roof[j * nx + i] >= 0;
   const prot = new Uint8Array(nxz);
+  const cornerPoints = []; // [x, z] of the corners' places on the edge of the mass
+  let footprintAngle = 0; // radians: the direction the footprint's walls face, modulo a quarter turn (0 if the mass has no walls to look at)
+  const columnAt = (x, z) => { const i = Math.floor((x - vox.x0) / c), j = Math.floor((z - vox.z0) / c); return i < 0 || j < 0 || i >= nx || j >= nz ? -1 : j * nx + i; };
   {
     const r = Math.max(1, Math.ceil(CLEAR / c));
-    for (let j = 0; j < nz; j++) {
-      for (let i = 0; i < nx; i++) {
-        if (!isMass(i, j)) continue;
-        if (!((!isMass(i - 1, j) || !isMass(i + 1, j)) && (!isMass(i, j - 1) || !isMass(i, j + 1)))) continue;
-        for (let dj = -r; dj <= r; dj++) for (let di = -r; di <= r; di++) if (i + di >= 0 && j + dj >= 0 && i + di < nx && j + dj < nz) prot[(j + dj) * nx + i + di] = 1;
+    const cu = form.cx, cv = form.cz, R1 = Math.max(1.5 * Math.max(cu, cv), 2), R2 = 2 * R1, RING = 24, CORNER = 0.62;
+    const massAt = (x, z) => form.heightAt(x, z) > 0.5;
+    const outFrac = (x, z, R) => { let n = 0; for (let k = 0; k < RING; k++) { const a = (2 * Math.PI * (k + 0.5)) / RING; if (!massAt(x + R * Math.cos(a), z + R * Math.sin(a))) n++; } return n / RING; };
+    const pix = (i, j) => (i >= 0 && j >= 0 && i < form.nx && j < form.nz && form.heights[j * form.nx + i] > 0.5 ? 1 : 0);
+    let sx = 0, sz = 0, walls = 0;
+    for (let j = 0; j < form.nz; j++) {
+      for (let i = 0; i < form.nx; i++) {
+        if (!pix(i, j) || (pix(i - 1, j) && pix(i + 1, j) && pix(i, j - 1) && pix(i, j + 1))) continue; // (only the mass's edge)
+        const x = form.x0 + (i + 0.5) * cu, z = form.z0 + (j + 0.5) * cv;
+        if (outFrac(x, z, R1) > CORNER && outFrac(x, z, R2) > CORNER) {
+          cornerPoints.push([x, z]);
+          const col = columnAt(x, z);
+          if (col >= 0) {
+            const ci = col % nx, cj = (col - ci) / nx;
+            for (let dj = -r; dj <= r; dj++) for (let di = -r; di <= r; di++) if (ci + di >= 0 && cj + dj >= 0 && ci + di < nx && cj + dj < nz) prot[(cj + dj) * nx + ci + di] = 1;
+          }
+          continue; // (a corner's own direction is not a wall's)
+        }
+        // the way the wall here faces: out of the mass, from the slope of the mass over a window of 5 x 5 pixels
+        let gx = 0, gz = 0;
+        for (let dj = -2; dj <= 2; dj++) for (let di = -2; di <= 2; di++) { const v = pix(i + di, j + dj); gx += di * v; gz += dj * v; }
+        if (gx * gx + gz * gz < 1e-9) continue;
+        const ph = Math.atan2(-gz, -gx);
+        sx += Math.cos(4 * ph); sz += Math.sin(4 * ph); walls++;
       }
     }
+    if (walls) footprintAngle = Math.atan2(sz, sx) / 4;
   }
-  const columnAt = (x, z) => { const i = Math.floor((x - vox.x0) / c), j = Math.floor((z - vox.z0) / c); return i < 0 || j < 0 || i >= nx || j >= nz ? -1 : j * nx + i; };
 
   // The walls of the mass as points the tubes can end at: { x, y, z, nx, nz } (the way out). Not at the corners.
   const facade = [];
@@ -154,8 +180,7 @@ export function createTunnels(form, { cityHeight = null } = {}) {
     if (cd > -0.3) p -= 0.5 * Math.max(0, 1 - dc / 5);
     return p * height;
   };
-  const corners = []; // the corners of the mass
-  for (let j = 0; j < nz; j++) for (let i = 0; i < nx; i++) if (isMass(i, j) && (!isMass(i - 1, j) || !isMass(i + 1, j)) && (!isMass(i, j - 1) || !isMass(i, j + 1))) corners.push([vox.x0 + (i + 0.5) * c, vox.z0 + (j + 0.5) * c]);
+  const corners = cornerPoints; // the corners of the mass (found on its outline, see above)
   const cornerDist = (x, z) => { let d = Infinity; for (const q of corners) d = Math.min(d, Math.hypot(q[0] - x, q[1] - z)); return d; };  const windOf = (f) => f.nx * wind[0] + f.nz * wind[1];
 
   const sphereClear = (x, y, z, rad) => { // is the point at least rad (and a margin) from every occupied space?
@@ -988,10 +1013,9 @@ export function createTunnels(form, { cityHeight = null } = {}) {
   const stY = (s) => (s + 0.5) * STOREY;
 
   const makeFrame = () => {
-    // the building's axes: the footprint's walls mostly face in four directions 90 degrees apart (the mean of 4 x the angle of the wall normals)
-    let sx = 0, sz = 0;
-    for (const f of facade) { const ph = Math.atan2(f.nz, f.nx); sx += Math.cos(4 * ph); sz += Math.sin(4 * ph); }
-    const th = facade.length ? Math.atan2(sz, sx) / 4 : 0, e1 = [Math.cos(th), Math.sin(th)], e2 = [-Math.sin(th), Math.cos(th)];
+    // the building's axes: the footprint's walls mostly face in four directions 90 degrees apart (the mean of 4 x the angle of the wall normals, taken from
+    // the height map of the form: see footprintAngle)
+    const th = footprintAngle, e1 = [Math.cos(th), Math.sin(th)], e2 = [-Math.sin(th), Math.cos(th)];
     let A = e1;
     for (const q of [e1, [-e1[0], -e1[1]], e2, [-e2[0], -e2[1]]]) if (q[0] * wind[0] + q[1] * wind[1] > A[0] * wind[0] + A[1] * wind[1]) A = q;
     frame = { A, B: [-A[1], A[0]], aMin: Infinity, aMax: -Infinity, bMin: Infinity, bMax: -Infinity };
@@ -1009,7 +1033,8 @@ export function createTunnels(form, { cityHeight = null } = {}) {
     for (let s = 0; s < 400; s += step) {
       const px = x + d[0] * s, pz = z + d[1] * s;
       if (form.heightAt(px, pz) < y + rad + 0.4) {
-        const e = 0.6, gx = form.heightAt(px - e, pz) - form.heightAt(px + e, pz), gz = form.heightAt(px, pz - e) - form.heightAt(px, pz + e), gl = Math.hypot(gx, gz);
+        // (the way the wall faces, over a baseline of 2 m each side: closer, a wall that is not along the axes is a staircase and its slope jumps about)
+        const e = 2, gx = form.heightAt(px - e, pz) - form.heightAt(px + e, pz), gz = form.heightAt(px, pz - e) - form.heightAt(px, pz + e), gl = Math.hypot(gx, gz);
         const nxw = gl > 1e-6 ? gx / gl : d[0], nzw = gl > 1e-6 ? gz / gl : d[1];
         return nxw * d[0] + nzw * d[1] > 0.8 && s > 0 ? { x: px, z: pz, nx: nxw, nz: nzw } : null;
       }
@@ -1154,6 +1179,8 @@ export function createTunnels(form, { cityHeight = null } = {}) {
   };
   // Tubes (and so openings) differ in size: the size of a generation, between 0.75 and 1.35 times, by a hash of where it is.
   const radFor = (gen, key) => DUCT_R[gen] * (0.75 + 0.6 * hash(Math.round(key * 10) * 31 + gen * 7));
+  // (counters of why trunks were or were not made: for finding out why a mass gets no tunnels, see ductDebug)
+  const dbg = { stretches: 0, fromNull: 0, toNull: 0, short: 0, runNull: 0, apartFail: 0, roomFail: 0, openFail: 0, made: 0 };
   const addTrunk = (s, b) => {
     const y = stY(s), d = frame.A, back = [-d[0], -d[1]], rad = radFor(0, s * 1000 + b);
     let a = frame.aMin, made = false;
@@ -1164,13 +1191,22 @@ export function createTunnels(form, { cityHeight = null } = {}) {
       for (; a2 <= frame.aMax + 2; a2 += 0.5) { const [x2, z2] = xzOf(a2, b); if (!inside(x2, y, z2, rad)) break; }
       const [xe, ze] = xzOf(a2 - 0.5, b);
       const from = marchOut(x, y, z, back, rad, false), to = marchOut(xe, y, ze, d, rad, false);
+      dbg.stretches++;
+      if (!from) dbg.fromNull++;
+      if (!to) dbg.toNull++;
+      if (a2 - a <= 6) dbg.short++;
       if (from && to && a2 - a > 6) {
         const pts = runPoints(aOf(from.x, from.z), aOf(to.x, to.z), b, y, rad);
+        if (!pts) dbg.runNull++;
+        else if (!apartPath(pts, y, -999)) dbg.apartFail++;
+        else if (!roomFor(pathLen(pts), rad)) dbg.roomFail++;
+        else if (!openOk(from, y) || !openOk(to, y)) dbg.openFail++;
         if (pts && apartPath(pts, y, -999) && roomFor(pathLen(pts), rad) && openOk(from, y) && openOk(to, y)) {
           const br = ++branchCount;
           const ns = [ductWall(from, y, back), ...pts.slice(1, -1).map((p) => bendNode(p, y, br)), ductWall(to, y, d)];
           chain(ns, pts, rad, 0, br, "trunk");
           made = true;
+          dbg.made++;
         }
       }
       a = a2 + 1;
@@ -1501,6 +1537,13 @@ export function createTunnels(form, { cityHeight = null } = {}) {
       return true;
     },
     get rerouted() { return !!routeSaved; },
+    // For finding out why a mass gets few or no tunnels: how many columns of the mass there are, how many are protected (corners and the strip round them),
+    // how many wall points the tubes could open on, the axes the ducts were drawn in, and why trunks were turned down. Read-only.
+    get ductDebug() {
+      let massCols = 0, protCols = 0;
+      for (let col = 0; col < nxz; col++) { if (roof[col] >= 0) massCols++; if (prot[col] && roof[col] >= 0) protCols++; }
+      return { ...dbg, massCols, protCols, facade: facade.length, frame: frame ? { A: frame.A, B: frame.B } : null, cell: c };
+    },
     // The versions of the network before applyRoute (the current ones if it was not applied), which do not change when a route is applied or replaced.
     get baseVersion() { return routeSaved ? routeBaseVersion : version; },
     get baseVoxVersion() { return routeSaved ? routeBaseVox : vox.version; },

@@ -84,13 +84,13 @@ function frame() {
   }
   lastTunnels = t;
   // (the versions of the tunnels before they were moved, which do not change when the cores move them: or the plan would be made again for ever)
-  const key = `${t.id}|${t.baseVersion}|${t.baseVoxVersion}|${settings.mode}|${settings.width}|${settings.serve}|${settings.cores}|${settings.loops}|${settings.lift}`;
+  const key = `${t.id}|${t.baseVersion}|${t.baseVoxVersion}|${settings.mode}|${settings.width}|${settings.serve}|${settings.cores}|${settings.loops}|${settings.lift}|${settings.fill}|${settings.extraCores}`;
   if (key !== planKey) {
     if (key !== wantKey) { wantKey = key; wantSince = performance.now(); }
     setNote(wantMain ? "Planning the main cores and moving the tunnels round them…" : "Planning the hallways…");
     if (performance.now() - wantSince >= SETTLE) {
       try {
-        plan = planCirculation(snapshot(t), { mode: settings.mode, width: settings.width, serve: settings.serve, cores: settings.cores, loops: settings.loops, lift: settings.lift });
+        plan = planCirculation(snapshot(t), { mode: settings.mode, width: settings.width, serve: settings.serve, cores: settings.cores, loops: settings.loops, lift: settings.lift, fill: settings.fill, extraCores: settings.extraCores });
         if (plan.graph) t.applyRoute(plan.graph); // (the tunnels moved round the main cores)
         else if (t.rerouted) t.restoreRoute(); // (no main cores could be placed: the tunnels stay as they were)
         setReport(reportOf(plan));
@@ -104,6 +104,7 @@ function frame() {
       planKey = key;
     }
   }
+  view.setParts(exteriorSettings.showAccessible, exteriorSettings.showCutoff); // (which hallways: the amber ones, the grey ones, or both)
   view.update(layers.model, plan, planKey, exteriorSettings.showCirculation); // (shown or hidden with the checkbox under X-ray, in Exterior erosion)
 }
 
