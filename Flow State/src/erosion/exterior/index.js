@@ -8,12 +8,10 @@ import { provideCuts } from "./rules.js";
 import { createForm } from "./form.js";
 import { createWindErosion, setActiveForm } from "./windErode.js";
 import { createSunGrowth } from "./sunGrow.js";
-import { createVoxelMass, solveFlow } from "./voxelFlow.js";
-import { createFlowView } from "./flowView.js";
 import { createTunnels, REACH } from "./tunnels.js";
 import { setActiveTunnels } from "./tunnelCut.js";
 import { renderPreview, createFormView, createTunnelView, setXray } from "./view.js";
-import { mountPanel, settings, syncControls, setWindNote, setSunNote, setFlowNote, setTunnelNote, setFloorRows, setWindOptions, setParticleNote, setParticleWindOptions } from "./panel.js";
+import { mountPanel, settings, syncControls, setWindNote, setSunNote, setTunnelNote, setFloorRows, setWindOptions, setParticleNote, setParticleWindOptions } from "./panel.js";
 import { createWindParticles } from "./windParticles.js";
 import { createCoolingView } from "./coolingView.js";
 import { getSpaces, spacesSignature } from "../interior/spaces.js";
@@ -47,11 +45,6 @@ let windClock = 0; // simulated seconds of wind not yet applied
 let windTick = 0;
 let flowTimer = 0;
 let particles = null; // the wind particles flowing through the finished tunnels
-let flowView = null; // the airflow slice (test view)
-let flowVox = null; // the voxel mass the airflow was solved on
-let flowResult = null; // the airflow
-let flowKey = ""; // what the airflow was solved for: the mass, its form and the wind direction
-let flowBusy = false;
 let massVersion = 0; // changes whenever the mass does, so that slow set-up for an old mass is dropped
 let sunGrowth = null; // the sun's growth of the form as it was when the sun started, once worked out
 let sunBuilding = false;
@@ -106,10 +99,7 @@ function stopForm() {
   resetPhases();
   setActiveForm(null);
   formView?.clear();
-  flowView?.clear();
   particles?.clear();
-  flowVox = flowResult = null;
-  flowKey = "";
   tunnels = null;
   tunnelStats = null;
 }
@@ -351,56 +341,6 @@ function windFrame(dt) {
   if (windErosion.recompute()) formChanged();
 }
 
-// Solves the airflow round the form as it is now, in the prevailing wind, on a throwaway voxel mass built from the form, and the
-// slice shows the result once it is ready. (In the tunnels mode the tunnels solve their own, see tunnelFrame.)
-async function solveAirflow(key, rose) {
-  flowBusy = true;
-  setFlowNote("Solving the airflow…");
-  const version = massVersion;
-  try {
-    const vox = createVoxelMass(form, { cityHeight: cityHeights(state.site.radius, state.features?.buildings) });
-    const result = vox && (await solveFlow(vox, { dir: downwind(rose.from) }));
-    if (version !== massVersion) return;
-    flowKey = key;
-    flowVox = vox;
-    flowResult = result;
-    if (result) {
-      setFlowNote(
-        `Wind from ${rose.from.toFixed(0)}°: the air reaches up to ${result.maxSpeed.toFixed(2)}× the open wind speed ` +
-        `(${vox.nx}×${vox.nz}×${vox.ny} voxels of ${vox.c.toFixed(1)} m, ${result.iterations} passes${result.converged ? "" : ", not fully settled"}).`
-      );
-    }
-  } catch (e) {
-    flowKey = key; // do not retry until something changes
-    console.error("Airflow failed:", e);
-    setFlowNote("The airflow could not be solved (see the console).");
-  } finally {
-    flowBusy = false;
-  }
-}
-
-function flowFrame() {
-  if (!settings.flowDebug) {
-    if (flowResult) { flowView.clear(); flowVox = flowResult = null; flowKey = ""; }
-    return setFlowNote("");
-  }
-  if (!form || !getMassInfo()) return setFlowNote("Place a .3dm mass to test the airflow around it.");
-  const rose = getWind();
-  if (!rose) {
-    requestWind();
-    return setFlowNote("Loading wind data…");
-  }
-  if (settings.erodeTunnels) { // the tunnels' own airflow, which changes as they are carved
-    flowKey = "";
-    const t = tunnels;
-    if (t?.flow) flowView.update(layers.model, t.vox, t.flow, settings.flowHeight);
-    return setFlowNote(t?.flow ? "Showing the airflow through the tunnels (see the tunnel note for the wind it faces)." : "");
-  }
-  const key = `${massVersion}|${form.version}|${rose.from}`;
-  if (key !== flowKey && !flowBusy) solveAirflow(key, rose);
-  if (flowResult) flowView.update(layers.model, flowVox, flowResult, settings.flowHeight);
-}
-
 // The wind particles: once the tunnels are finished, small particles follow the airflow through and round them, for the wind of the time of
 // year chosen in the panel (by default the one the tunnels were worn for).
 function particleFrame(dt) {
@@ -443,7 +383,6 @@ export function getFinishedTunnels() {
 
 export function mountExterior() {
   formView = createFormView();
-  flowView = createFlowView();
   particles = createWindParticles();
   tunnelView = createTunnelView();
   coolingView = createCoolingView();
@@ -452,7 +391,6 @@ export function mountExterior() {
     clearErosion: () => {
       tunnels = null; // the tunnels are built afresh from the mass as placed
       tunnelStats = null;
-          flowKey = "";
       if (!form?.clear()) return;
       resetPhases(); // the sun and the wind start again from the mass as placed
       formView.update(form);
@@ -486,7 +424,6 @@ export function mountExterior() {
     tunnelShowFrame(dt);
     setXray(layers.model, settings.xray);
     coolingFrame();
-    flowFrame();
     particleFrame(dt);
   });
 }

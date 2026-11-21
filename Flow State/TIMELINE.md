@@ -100,3 +100,5 @@ Earlier entries (before 2026-11-20) were written up afterwards from what was ask
 | 2026-11-20 | Added a "Wall setback" slider (0 to 1.5 m) so hallways can run right up to the facade and cut windows. |
 | 2026-11-20 | Removed the Walk-to-a-hallway, Loops-per-floor, Extra-stair-cores, Wind-layer, Interior-erosion, Erosion-speed and Airflow-slice controls, keeping their defaults. |
 | 2026-11-20 | Started this timeline file and filled it in from the earlier sessions. |
+| 2026-11-20 | Removed the airflow slice (the blue and red test sheet) completely: its drawing code, its solver call and its saved setting. |
+| 2026-11-20 | Removed the Tunnel volume and Warm-air rise sliders, fixing them at 40% and 10 K. |
