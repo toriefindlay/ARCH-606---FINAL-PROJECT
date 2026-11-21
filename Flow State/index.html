@@ -1,4 +1,4 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
@@ -79,7 +79,7 @@
       <p id="save-status" class="hint"></p>
     </div>
     <div class="stats" id="stats"></div>
-    <details id="model-panel" class="section tone-model" open>
+    <details id="model-panel" class="section tone-model">
       <summary>Model</summary>
       <button type="button" id="model-import" class="tool">Import .3dm</button>
       <input type="file" id="model-file" accept=".3dm" hidden>
@@ -93,15 +93,15 @@
         </div>
       </div>
     </details>
-    <details class="section tone-exterior" open>
-      <summary>Exterior erosion</summary>
+    <details class="section tone-exterior">
+      <summary>Passive cooling</summary>
       <div id="exterior-panel"></div>
     </details>
-    <details class="section tone-circulation" open>
+    <details class="section tone-circulation">
       <summary>Circulation</summary>
       <div id="circulation-panel"></div>
     </details>
-    <details id="sun-panel" class="section tone-sun hidden" open>
+    <details id="sun-panel" class="section tone-sun hidden">
       <summary>Sun</summary>
       <label>Date <input type="date" id="sun-date"></label>
       <label>Solar time <output id="sun-time-out">12:00</output>
@@ -119,7 +119,7 @@
       </div>
       <p id="sun-readout" class="stats"></p>
     </details>
-    <details id="wind-panel" class="section tone-wind hidden" open>
+    <details id="wind-panel" class="section tone-wind hidden">
       <summary>Wind</summary>
       <label>Period
         <select id="wind-season">
@@ -132,7 +132,7 @@
       </label>
       <p id="wind-readout" class="stats"></p>
     </details>
-    <details class="section tone-layers" open>
+    <details class="section tone-layers">
       <summary>Layers</summary>
       <label><input type="checkbox" data-layer="sun"> Sun path &amp; shadows</label>
       <label><input type="checkbox" data-layer="model" checked> Model</label>

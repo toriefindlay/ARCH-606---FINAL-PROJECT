@@ -102,3 +102,6 @@ Earlier entries (before 2026-11-20) were written up afterwards from what was ask
 | 2026-11-20 | Started this timeline file and filled it in from the earlier sessions. |
 | 2026-11-20 | Removed the airflow slice (the blue and red test sheet) completely: its drawing code, its solver call and its saved setting. |
 | 2026-11-20 | Removed the Tunnel volume and Warm-air rise sliders, fixing them at 40% and 10 K. |
+| 2026-11-20 | Renamed the Exterior erosion panel to Passive cooling, and stopped saving its settings so it opens at its defaults. |
+| 2026-11-20 | Set the Passive cooling panel's opening state to the screenshot's settings (skin rigid, 12x speed, Tunnels shown, Circulation hidden, particle speed 0.5x). |
+| 2026-11-20 | Made every side-panel section start collapsed whenever the site is opened, and stopped remembering which were open. |

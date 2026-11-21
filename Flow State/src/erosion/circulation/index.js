@@ -79,7 +79,7 @@ function frame() {
     plan = null; planKey = ""; wantKey = "";
     setSkinCuts(null, "");
     view.clear();
-    setNote(settings.enabled ? "Waiting for the wind tunnels to finish (turn them on under Exterior erosion)." : "");
+    setNote(settings.enabled ? "Waiting for the wind tunnels to finish (turn them on under Passive cooling)." : "");
     setReport([]);
     return;
   }
@@ -109,7 +109,7 @@ function frame() {
   const cutsOn = !!plan && exteriorSettings.showCirculation;
   setSkinCuts(cutsOn ? { frame: { A: plan.grid.A, B: plan.grid.B }, rects: plan.paths ?? [] } : null, cutsOn ? planKey : "");
   view.setParts(exteriorSettings.showAccessible, exteriorSettings.showCutoff); // (which hallways: the amber ones, the grey ones, or both)
-  view.update(layers.model, plan, planKey, exteriorSettings.showCirculation); // (shown or hidden with the checkbox under X-ray, in Exterior erosion)
+  view.update(layers.model, plan, planKey, exteriorSettings.showCirculation); // (shown or hidden with the checkbox under X-ray, in Passive cooling)
 }
 
 export function mountCirculation() {

@@ -1,11 +1,10 @@
 // CONTROLLER (exterior erosion): the controls in the side panel.
 // `el` is the empty #exterior-panel container in index.html. Call notifyCutsChanged() from
 // erosion/combine.js after any control changes the cuts, and registerPersist() to save settings.
-import { registerPersist } from "../../core/persist.js";
 import { coolingGradient, COOLING_RAMP, COOLING_MAX, COOLED_AT } from "./coolingView.js";
 
 // Read each frame by index.js. `speed` is simulated seconds per real second.
-export const settings = { playing: true, speed: 4, erode: 2, erodeWind: false, erodeSun: false, erodeTunnels: false, tunnelVolume: 8, tunnelStack: 4, tunnelWind: -1, tunnelMulti: true, skinSoften: 70, xray: false, showTunnels: true, showCirculation: true, showAccessible: true, showCutoff: true, coolingData: false, windParticles: false, particleWind: -2, particleSpeed: 2 };
+export const settings = { playing: true, speed: 12, erode: 2, erodeWind: false, erodeSun: false, erodeTunnels: false, tunnelVolume: 40, tunnelStack: 10, tunnelWind: -1, tunnelMulti: false, skinSoften: 0, xray: false, showTunnels: true, showCirculation: false, showAccessible: true, showCutoff: true, coolingData: false, windParticles: false, particleWind: -2, particleSpeed: 0.5 };
 
 const $ = (id) => document.getElementById(id);
 let onClearErosion = () => {};
@@ -13,9 +12,6 @@ let onClearErosion = () => {};
 export function mountPanel(el, hooks = {}) {
   onClearErosion = hooks.clearErosion ?? onClearErosion;
   // (the erosion speed and the airflow slice no longer have controls: keep them at their defaults, whatever an old session saved)
-  settings.erode = 2;
-  // (the tunnel volume and the warm-air rise no longer have controls: fixed at the most, 40% and 10 K, whatever an old session saved)
-  settings.tunnelVolume = 40; settings.tunnelStack = 10;
   el.innerHTML = `
     <p class="hint" style="margin-top:0">Work on the mass with one of these at a time (none by default); each carries on from the shape the other left.</p>
     <label title="The mass grows towards the sun: the longer the sun hits a roof or wall, the more it grows. Runs while the Sun panel plays a day or the year."><input type="checkbox" id="erode-sun"> Sun (grows towards the sun)</label>
@@ -186,13 +182,7 @@ export function setWindOptions(periods) {
   if (settings.tunnelWind >= periods.length) settings.tunnelWind = -1;
   el.value = String(settings.tunnelWind);
 }
-registerPersist("exteriorErosion", {
-  capture: () => ({ ...settings }),
-  restore: (saved) => {
-    Object.assign(settings, saved);
-    syncControls();
-  },
-});
+// (This panel is not saved with the project: it always opens with the settings at the top of this file.)
 
 
 

@@ -13,7 +13,7 @@ export function mountPanel(el, { save = null } = {}) {
   el.innerHTML = `
     <p class="hint" style="margin-top:0">Hallways for people on every floor, with stairs and lifts between the floors, planned in the spaces the wind tunnels leave. It only reads the tunnels: it never changes them. Starts at an entrance on the ground floor.</p>
     <label title="Plans the hallways, stairs and lifts once the wind tunnels are finished."><input type="checkbox" id="circ-enabled"> Hallways and stairs (after the tunnels)</label>
-    <p class="hint" style="margin:0 0 6px 18px">To see inside the mass, turn on X-ray under Exterior erosion. There you can show the tunnels and the circulation separately.</p>
+    <p class="hint" style="margin:0 0 6px 18px">To see inside the mass, turn on X-ray under Passive cooling. There you can show the tunnels and the circulation separately.</p>
     <label title="Scattered: stairs wherever the gaps between the tunnels allow, and the tunnels are never touched. Main cores: two stair cores and a lift core, each one continuous line from the ground to the top, with the hallways branching from them and only a few extra stairs; to make room, the tunnels are moved a little to go round the cores (and put back when you switch to Scattered or turn this off).">Circulation type
       <select id="circ-mode">
         <option value="scattered">Scattered stairs (tunnels untouched)</option>
