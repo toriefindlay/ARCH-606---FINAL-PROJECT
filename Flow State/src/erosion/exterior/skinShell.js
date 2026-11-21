@@ -50,6 +50,11 @@ const FLARE_MAX = 2.8; // ...but at most this (metres): openings are only 6 m ap
 // The radius of an opening's mouth at the face, for a tube of radius r, at rigidity `rigid` (0 to 1).
 const mouthRadius = (r, rigid) => Math.min(r + rigid * (FLARE_GROW[0] * r + FLARE_GROW[1]), Math.max(r + 0.3, FLARE_MAX));
 const FLARE_EXP = 1; // how the reveal curves: 1 is a straight cone, more is a trumpet that meets the tube tangentially
+// What an opening's cut is made of: the radius r at its throat, the radius rOut at the face, and the depth D from the throat to the face (a cone).
+function revealOf(o, rigid) {
+  const r = o.r, rOut = mouthRadius(r, rigid);
+  return { r, rOut, D: (rOut - r) / Math.tan(FLARE_ANGLE) };
+}
 // Where a vertex's smooth normal is further than this many degrees from its triangle's, the triangle's is used: a sharp edge stays sharp. The facade (the "skin"
 // part) is flat at the rigid end, so any tilt of its normals near an opening is an artefact of the smoothing and the limit is tight there (8 degrees at full
 // rigidity, 30 as it gets soft: a softer facade is gently wavy, and flat shading would show it in facets). The tubes and the reveals are curved (22 and 30).
@@ -100,35 +105,54 @@ function coneRadius(s, r, rOut, D) {
 // about a cell wide, and a small opening looks soft. The edge is known exactly (a circle of the mouth's radius, in the face), so every vertex within a cell of it is
 // moved onto it. (Equal positions move together, so the surface stays closed.) `parts` are the { position, normal } sets to treat alike.
 function snapRims(parts, openings, rigid, fc) {
-  const tol = 1.1 * fc;
-  for (const o of openings) {
-    const r = o.r, rOut = mouthRadius(r, rigid), D = (rOut - r) / Math.tan(FLARE_ANGLE), near2 = (rOut + 3) * (rOut + 3);
-    // where the face is: from the vertices on it, beside the mouth
-    const ss = [];
-    for (const part of parts) {
-      const p = part.position;
-      for (let i = 0; i < p.length; i += 3) {
-        const dx = p[i] - o.x, dy = p[i + 1] - o.y, dz = p[i + 2] - o.z;
-        if (dx * dx + dy * dy + dz * dz > near2) continue;
-        const s = dx * o.nx + dz * o.nz;
-        if (s < -1.5 || s > 1.5) continue;
-        const rho = Math.hypot(dx - s * o.nx, dy, dz - s * o.nz);
-        if (rho > rOut + 0.8 && rho < rOut + 2.5) ss.push(s);
+  const tol = 1.1 * fc, CELL = 5;
+  // the vertices in buckets of CELL metres (there can be hundreds of openings and a few hundred thousand vertices)
+  const bucketKey = (x, y, z) => ((Math.floor(x / CELL) + 1000) * 2048 + (Math.floor(y / CELL) + 1000)) * 2048 + (Math.floor(z / CELL) + 1000);
+  const buckets = new Map();
+  parts.forEach((part, pi) => {
+    const p = part.position;
+    for (let i = 0; i < p.length; i += 3) {
+      const key = bucketKey(p[i], p[i + 1], p[i + 2]);
+      let list = buckets.get(key);
+      if (!list) buckets.set(key, (list = []));
+      list.push(pi, i);
+    }
+  });
+  const near = (o, radius, visit) => {
+    for (let kx = Math.floor((o.x - radius) / CELL); kx <= Math.floor((o.x + radius) / CELL); kx++) {
+      for (let ky = Math.floor((o.y - radius) / CELL); ky <= Math.floor((o.y + radius) / CELL); ky++) {
+        for (let kz = Math.floor((o.z - radius) / CELL); kz <= Math.floor((o.z + radius) / CELL); kz++) {
+          const list = buckets.get(((kx + 1000) * 2048 + (ky + 1000)) * 2048 + (kz + 1000));
+          if (list) for (let q = 0; q < list.length; q += 2) visit(parts[list[q]].position, list[q + 1]);
+        }
       }
     }
+  };
+  // (a rim that runs into another opening's mouth is left as it is: snapping it would drag points of the other opening's surface onto it, and leave shards)
+  const info = openings.map((o) => ({ o, ...revealOf(o, rigid) }));
+  for (const { o, r, rOut, D } of info) {
+    if (info.some((q) => q.o !== o && q.o.nx * o.nx + q.o.nz * o.nz > 0.5 && Math.hypot(q.o.x - o.x, q.o.y - o.y, q.o.z - o.z) < q.rOut + rOut - 0.1)) continue;
+    const near2 = (rOut + 3) * (rOut + 3);
+    // where the face is: from the vertices on it, beside the mouth
+    const ss = [];
+    near(o, rOut + 3, (p, i) => {
+      const dx = p[i] - o.x, dy = p[i + 1] - o.y, dz = p[i + 2] - o.z;
+      if (dx * dx + dy * dy + dz * dz > near2) return;
+      const s = dx * o.nx + dz * o.nz;
+      if (s < -1.5 || s > 1.5) return;
+      const rho = Math.hypot(dx - s * o.nx, dy, dz - s * o.nz);
+      if (rho > rOut + 0.8 && rho < rOut + 2.5) ss.push(s);
+    });
     if (ss.length < 6) continue;
     ss.sort((a, b) => a - b);
     const rimS = ss[ss.length >> 1], rimR = coneRadius(rimS, r, rOut, D);
-    for (const part of parts) {
-      const p = part.position;
-      for (let i = 0; i < p.length; i += 3) {
-        const dx = p[i] - o.x, dy = p[i + 1] - o.y, dz = p[i + 2] - o.z;
-        if (dx * dx + dy * dy + dz * dz > near2) continue;
-        const s = dx * o.nx + dz * o.nz, rx = dx - s * o.nx, rz = dz - s * o.nz, rho = Math.hypot(rx, dy, rz);
-        if (rho < 1e-6 || Math.hypot(rho - rimR, s - rimS) >= tol) continue;
-        p[i] = o.x + rimS * o.nx + (rx / rho) * rimR; p[i + 1] = o.y + (dy / rho) * rimR; p[i + 2] = o.z + rimS * o.nz + (rz / rho) * rimR;
-      }
-    }
+    near(o, rOut + 3, (p, i) => {
+      const dx = p[i] - o.x, dy = p[i + 1] - o.y, dz = p[i + 2] - o.z;
+      if (dx * dx + dy * dy + dz * dz > near2) return;
+      const s = dx * o.nx + dz * o.nz, rx = dx - s * o.nx, rz = dz - s * o.nz, rho = Math.hypot(rx, dy, rz);
+      if (rho < 1e-6 || Math.hypot(rho - rimR, s - rimS) >= tol) return;
+      p[i] = o.x + rimS * o.nx + (rx / rho) * rimR; p[i + 1] = o.y + (dy / rho) * rimR; p[i + 2] = o.z + rimS * o.nz + (rz / rho) * rimR;
+    });
   }
 }
 
@@ -253,7 +277,9 @@ export function createSkinShell() {
 
     // The skin for `amount` (0 to 1) of softening, a slice at a time (a generator): 0 is the rigid end (see RIGID_ROUND), 1 the softest. At the end { skin, wall },
     // each { position, normal } (flat arrays of triangles), the part on the tunnels being `wall`. Null if there is nothing to make it from.
-    *build(tunnels, amount) {
+    // `cuts` ({ frame: { A, B }, rects: [{ y0, y1, a0, a1, b0, b1 }] }, optional) are the circulation's hallways as boxes (a, b in metres along the axes A and B, in
+    // x and z): the skin is cut along the outline of every one that reaches it (see below).
+    *build(tunnels, amount, cuts = null) {
       const c = yield* prepare(tunnels);
       if (!c) return null;
       amount = clamp01(amount);
@@ -290,32 +316,29 @@ export function createSkinShell() {
       // 2b. the flared reveal of every opening (more of it the more rigid): a bell mouth along the way out, from the tube's radius at depth D inside the wall to a
       // wider mouth at the face. `fun` is its distance field (negative inside), joined to the tunnels' below.
       fun.fill(99);
-      if (rigid > 0.02) {
-        const tanA = Math.tan(FLARE_ANGLE);
-        for (const o of openings) {
-          const r = o.r, rOut = mouthRadius(r, rigid), D = (rOut - r) / tanA, reach = rOut + D + 1;
-          const a0 = Math.max(0, Math.floor((o.x - reach - ox) / fc)), a1 = Math.min(nx - 1, Math.floor((o.x + reach - ox) / fc));
-          const b0 = Math.max(0, Math.floor((o.z - reach - oz) / fc)), b1 = Math.min(nz - 1, Math.floor((o.z + reach - oz) / fc));
-          const m0 = Math.max(0, Math.floor((o.y - rOut - 1 - oy) / fc)), m1 = Math.min(ny - 1, Math.floor((o.y + rOut + 1 - oy) / fc));
-          for (let m = m0; m <= m1; m++) {
-            const dy = oy + (m + 0.5) * fc - o.y;
-            for (let b = b0; b <= b1; b++) {
-              const dz = oz + (b + 0.5) * fc - o.z;
-              for (let a = a0; a <= a1; a++) {
-                const dx = ox + (a + 0.5) * fc - o.x, s = dx * o.nx + dz * o.nz; // (s: how far out of the face, along the way out)
-                if (s < -D - 0.5 || s > 1.5) continue;
-                const rho = Math.hypot(dx - s * o.nx, dy, dz - s * o.nz), t = Math.min(1, Math.max(0, -s) / D), u = 1 - t;
-                // (out beyond the face the cone goes on widening: where the skin's wall is a little out from where the opening was put, the cut then
-                // still meets it as a cone, not as a step)
-                const mouth = (((rOut - r) * FLARE_EXP) / D);
-                const R = s > 0 ? rOut + s * mouth : r + (rOut - r) * Math.pow(u, FLARE_EXP), slope = s > 0 ? mouth : mouth * Math.pow(u, FLARE_EXP - 1);
-                const val = (rho - R) / Math.sqrt(1 + slope * slope), k = at(a, m, b);
-                if (val < fun[k]) fun[k] = val;
-              }
+      for (const o of openings) {
+        if (rigid <= 0.02) break; // (no flare at the soft end)
+        const { r, rOut, D } = revealOf(o, rigid), reach = rOut + D + 1, mouth = ((rOut - r) * FLARE_EXP) / D;
+        const a0 = Math.max(0, Math.floor((o.x - reach - ox) / fc)), a1 = Math.min(nx - 1, Math.floor((o.x + reach - ox) / fc));
+        const b0 = Math.max(0, Math.floor((o.z - reach - oz) / fc)), b1 = Math.min(nz - 1, Math.floor((o.z + reach - oz) / fc));
+        const m0 = Math.max(0, Math.floor((o.y - rOut - 1 - oy) / fc)), m1 = Math.min(ny - 1, Math.floor((o.y + rOut + 1 - oy) / fc));
+        for (let m = m0; m <= m1; m++) {
+          const dy = oy + (m + 0.5) * fc - o.y;
+          for (let b = b0; b <= b1; b++) {
+            const dz = oz + (b + 0.5) * fc - o.z;
+            for (let a = a0; a <= a1; a++) {
+              const dx = ox + (a + 0.5) * fc - o.x, s = dx * o.nx + dz * o.nz; // (s: how far out of the face, along the way out)
+              if (s < -D - 0.5 || s > 1.5) continue;
+              const rho = Math.hypot(dx - s * o.nx, dy, dz - s * o.nz), t = Math.min(1, Math.max(0, -s) / D), u = 1 - t;
+              // (out beyond the face the cone goes on widening: where the skin's wall is a little out from where the opening was put, the cut then
+              // still meets it as a cone, not as a step)
+              const R = s > 0 ? rOut + s * mouth : r + (rOut - r) * Math.pow(u, FLARE_EXP), slope = s > 0 ? mouth : mouth * Math.pow(u, FLARE_EXP - 1);
+              const val = (rho - R) / Math.sqrt(1 + slope * slope), k = at(a, m, b);
+              if (val < fun[k]) fun[k] = val;
             }
           }
-          if (due()) { yield; fresh(); }
         }
+        if (due()) { yield; fresh(); }
       }
       // 3. the tunnels (and their reveals) taken out: the soft maximum of the skin and the inside of the tunnels, softly the more it is softened, crisp at the rigid end
       const fillet = RIGID_FILLET * rigid + FILLET * amount;
@@ -328,6 +351,48 @@ export function createSkinShell() {
           sh[k] = Math.max(v, t) + h * h * fillet * 0.25;
         }
         if (due()) { yield; fresh(); }
+      }
+
+      // 3b. the circulation's hallways where they reach the skin: a hallway (one of the boxes of `cuts`) that crosses the surface of the skin (some of its grid cells
+      // are in the stone and some on or outside it) is taken out of the stone with a hard cut, so that the skin has a clean rectangular opening that follows the
+      // hallway's outline exactly, with no lip: the box's own planes. A hallway that is wholly inside the stone, or wholly out, does not touch the skin and is
+      // left alone.
+      if (cuts && cuts.rects.length) {
+        const { A, B } = cuts.frame;
+        for (const rc of cuts.rects) {
+          const ca = (rc.a0 + rc.a1) / 2, cb = (rc.b0 + rc.b1) / 2, cy = (rc.y0 + rc.y1) / 2, ha = (rc.a1 - rc.a0) / 2, hb = (rc.b1 - rc.b0) / 2, hy = (rc.y1 - rc.y0) / 2;
+          let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+          for (const [pa, pb] of [[rc.a0, rc.b0], [rc.a1, rc.b0], [rc.a1, rc.b1], [rc.a0, rc.b1]]) {
+            const x = pa * A[0] + pb * B[0], z = pa * A[1] + pb * B[1];
+            x0 = Math.min(x0, x); x1 = Math.max(x1, x); z0 = Math.min(z0, z); z1 = Math.max(z1, z);
+          }
+          const ia0 = Math.max(0, Math.floor((x0 - ox) / fc) - 1), ia1 = Math.min(nx - 1, Math.floor((x1 - ox) / fc) + 1);
+          const ib0 = Math.max(0, Math.floor((z0 - oz) / fc) - 1), ib1 = Math.min(nz - 1, Math.floor((z1 - oz) / fc) + 1);
+          const im0 = Math.max(0, Math.floor((rc.y0 - oy) / fc) - 1), im1 = Math.min(ny - 1, Math.floor((rc.y1 - oy) / fc) + 1);
+          if (ia0 > ia1 || ib0 > ib1 || im0 > im1) continue;
+          // the distance from a cell's centre to the box (negative inside): the largest of its distances to the box's planes
+          const dist = (a, m, b) => {
+            const x = ox + (a + 0.5) * fc, z = oz + (b + 0.5) * fc, y = oy + (m + 0.5) * fc;
+            return Math.max(Math.abs(x * A[0] + z * A[1] - ca) - ha, Math.abs(x * B[0] + z * B[1] - cb) - hb, Math.abs(y - cy) - hy);
+          };
+          let lo = Infinity, hi = -Infinity;
+          for (let m = im0; m <= im1; m++) for (let b = ib0; b <= ib1; b++) for (let a = ia0; a <= ia1; a++) {
+            if (dist(a, m, b) > fc * 0.5) continue; // (only the cells in the box)
+            const v = sh[at(a, m, b)];
+            if (v < lo) lo = v;
+            if (v > hi) hi = v;
+          }
+          if (!(lo < 0.05 && hi > -0.05)) continue; // (wholly in the stone, or wholly out: it does not meet the skin)
+          for (let m = im0; m <= im1; m++) {
+            for (let b = ib0; b <= ib1; b++) {
+              for (let a = ia0; a <= ia1; a++) {
+                const k = at(a, m, b), v = -dist(a, m, b);
+                if (v > sh[k]) sh[k] = v;
+              }
+            }
+          }
+          if (due()) { yield; fresh(); }
+        }
       }
 
       // marching cubes on the result (inside the stone is below zero)

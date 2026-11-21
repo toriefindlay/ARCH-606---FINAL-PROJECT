@@ -233,7 +233,7 @@ function tunnelShowFrame(dt = 0, force = false) {
   else if (settings.playing) skinClock += dt * settings.speed;
   const skinAmount = t && t.done ? (Math.round(Math.min(1, skinClock / SKIN_SECONDS) * SKIN_STEPS) / SKIN_STEPS) * (settings.skinSoften / 100) : 0;
   tunnelView.setVisible(settings.showTunnels);
-  if (t) tunnelView.update(layers.model, t, { amount: Math.round(skinAmount * 100) / 100 });
+  if (t) tunnelView.update(layers.model, t, { amount: Math.round(skinAmount * 100) / 100, cuts: skinCuts, cutsKey: skinCutsKey });
   else tunnelView.clear();
 }
 
@@ -426,6 +426,14 @@ function startForm() {
   if (!form) return;
   setActiveForm(form);
   formView.setForm(form, layers.model, info.object);
+}
+
+// The circulation's hallways as boxes ({ frame: { A, B }, rects: [{ y0, y1, a0, a1, b0, b1 }] }, or null), where the skin is cut along the outline of any that
+// reaches it, and a key that changes when they do (see circulation/index.js). The skin is made again when the key changes.
+let skinCuts = null, skinCutsKey = "";
+export function setSkinCuts(cuts, key) {
+  skinCuts = cuts;
+  skinCutsKey = key;
 }
 
 // The finished tunnels, read-only, for the hallways (erosion/circulation): null until the tunnels are done and fit the form.

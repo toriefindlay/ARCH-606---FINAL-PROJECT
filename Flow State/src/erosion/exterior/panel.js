@@ -12,6 +12,8 @@ let onClearErosion = () => {};
 
 export function mountPanel(el, hooks = {}) {
   onClearErosion = hooks.clearErosion ?? onClearErosion;
+  // (the erosion speed and the airflow slice no longer have controls: keep them at their defaults, whatever an old session saved)
+  settings.erode = 2; settings.flowDebug = false; settings.flowHeight = 2;
   el.innerHTML = `
     <p class="hint" style="margin-top:0">Work on the mass with one of these at a time (none by default); each carries on from the shape the other left.</p>
     <label title="The mass grows towards the sun: the longer the sun hits a roof or wall, the more it grows. Runs while the Sun panel plays a day or the year."><input type="checkbox" id="erode-sun"> Sun (grows towards the sun)</label>
@@ -56,9 +58,6 @@ export function mountPanel(el, hooks = {}) {
         <option value="12">12×</option>
       </select>
     </div>
-    <label title="How fast the wind tunnels are eroded out of the mass, from a dimple in the wall to the whole way through: 2× takes half a minute, 8× under ten seconds.">Erosion speed <output id="erode-out"></output>
-      <input type="range" id="erode" min="0.5" max="8" step="0.5">
-    </label>
     <button type="button" class="tool" id="erode-clear" style="width:100%;margin-bottom:8px">Clear erosion</button>
     <label title="Once the tunnels are finished, shows the wind as small flowing particles that enter and leave the tunnels and curve round the structure. Turn on X-ray to see them inside the mass."><input type="checkbox" id="wind-particles"> Wind particles (through the tunnels)</label>
     <label title="The time of year whose wind direction and speed the particles follow. Changing it solves the airflow for that wind (a few seconds) and then turns the particles smoothly to it.">Wind for the particles
@@ -68,19 +67,11 @@ export function mountPanel(el, hooks = {}) {
       <input type="range" id="particle-speed" min="0.5" max="6" step="0.5">
     </label>
     <p id="particle-note" class="hint" style="margin:0 0 6px"></p>
-    <label title="Test view for the wind tunnels: solves how the prevailing wind flows round and through the mass and the buildings, and shows the air speed on a horizontal slice (blue slower, red faster than the open wind). Does not change the mass."><input type="checkbox" id="flow-debug"> Airflow slice (test)</label>
-    <label>Slice height <output id="flow-height-out"></output>
-      <input type="range" id="flow-height" min="0" max="60" step="0.5">
-    </label>
-    <p id="flow-note" class="hint" style="margin:0 0 6px"></p>
     <p class="hint" style="margin-top:0">Import a mass. The wind rounds convex edges and corners (windward first); the more it wears a surface the bluer it gets.</p>`;
 
   $("erode-play").addEventListener("click", () => { settings.playing = !settings.playing; syncControls(); });
   $("erode-clear").addEventListener("click", () => onClearErosion());
   $("erode-speed").addEventListener("change", (e) => (settings.speed = Number(e.target.value)));
-  $("erode").addEventListener("input", (e) => { settings.erode = Number(e.target.value); syncControls(); });
-  $("flow-debug").addEventListener("change", (e) => (settings.flowDebug = e.target.checked));
-  $("flow-height").addEventListener("input", (e) => { settings.flowHeight = Number(e.target.value); syncControls(); });
   $("wind-particles").addEventListener("change", (e) => { settings.windParticles = e.target.checked; syncControls(); });
   $("particle-wind").addEventListener("change", (e) => { settings.particleWind = Number(e.target.value); syncControls(); });
   $("particle-speed").addEventListener("input", (e) => { settings.particleSpeed = Number(e.target.value); syncControls(); });
@@ -112,8 +103,6 @@ export function syncControls() {
   if (!$("erode-play")) return;
   $("erode-play").textContent = settings.playing ? "Pause" : "Play";
   $("erode-speed").value = String(settings.speed);
-  $("erode").value = settings.erode;
-  $("erode-out").textContent = `${settings.erode}×`;
   $("erode-wind").checked = settings.erodeWind;
   $("erode-sun").checked = settings.erodeSun;
   $("erode-tunnels").checked = settings.erodeTunnels;
@@ -138,9 +127,6 @@ export function syncControls() {
   $("particle-wind").value = String(settings.particleWind);
   $("particle-speed").value = settings.particleSpeed;
   $("particle-speed-out").textContent = `${settings.particleSpeed}×`;
-  $("flow-debug").checked = settings.flowDebug;
-  $("flow-height").value = settings.flowHeight;
-  $("flow-height-out").textContent = `${settings.flowHeight} m`;
 }
 
 const setNote = (id) => (text) => {

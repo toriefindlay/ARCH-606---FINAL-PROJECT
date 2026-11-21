@@ -6,7 +6,7 @@ import { $ } from "../../core/dom.js";
 import { on } from "../../core/events.js";
 import { state, layers } from "../../core/state.js";
 import { onFrame } from "../../view/scene.js";
-import { getFinishedTunnels } from "../exterior/index.js";
+import { getFinishedTunnels, setSkinCuts } from "../exterior/index.js";
 import { STOREY } from "../exterior/tunnels.js";
 import { settings as exteriorSettings } from "../exterior/panel.js";
 import { planCirculation } from "./rules.js";
@@ -77,6 +77,7 @@ function frame() {
   const t = settings.enabled ? finished : null;
   if (!t) {
     plan = null; planKey = ""; wantKey = "";
+    setSkinCuts(null, "");
     view.clear();
     setNote(settings.enabled ? "Waiting for the wind tunnels to finish (turn them on under Exterior erosion)." : "");
     setReport([]);
@@ -84,13 +85,13 @@ function frame() {
   }
   lastTunnels = t;
   // (the versions of the tunnels before they were moved, which do not change when the cores move them: or the plan would be made again for ever)
-  const key = `${t.id}|${t.baseVersion}|${t.baseVoxVersion}|${settings.mode}|${settings.width}|${settings.serve}|${settings.cores}|${settings.loops}|${settings.lift}|${settings.fill}|${settings.extraCores}`;
+  const key = `${t.id}|${t.baseVersion}|${t.baseVoxVersion}|${settings.mode}|${settings.width}|${settings.serve}|${settings.cores}|${settings.loops}|${settings.lift}|${settings.fill}|${settings.extraCores}|${settings.setback}`;
   if (key !== planKey) {
     if (key !== wantKey) { wantKey = key; wantSince = performance.now(); }
     setNote(wantMain ? "Planning the main cores and moving the tunnels round them…" : "Planning the hallways…");
     if (performance.now() - wantSince >= SETTLE) {
       try {
-        plan = planCirculation(snapshot(t), { mode: settings.mode, width: settings.width, serve: settings.serve, cores: settings.cores, loops: settings.loops, lift: settings.lift, fill: settings.fill, extraCores: settings.extraCores });
+        plan = planCirculation(snapshot(t), { mode: settings.mode, width: settings.width, serve: settings.serve, cores: settings.cores, loops: settings.loops, lift: settings.lift, fill: settings.fill, extraCores: settings.extraCores, setback: settings.setback });
         if (plan.graph) t.applyRoute(plan.graph); // (the tunnels moved round the main cores)
         else if (t.rerouted) t.restoreRoute(); // (no main cores could be placed: the tunnels stay as they were)
         setReport(reportOf(plan));
@@ -104,6 +105,9 @@ function frame() {
       planKey = key;
     }
   }
+  // the skin is cut along the hallways where they reach it: only while the circulation is shown (else there would be openings with nothing behind them)
+  const cutsOn = !!plan && exteriorSettings.showCirculation;
+  setSkinCuts(cutsOn ? { frame: { A: plan.grid.A, B: plan.grid.B }, rects: plan.paths ?? [] } : null, cutsOn ? planKey : "");
   view.setParts(exteriorSettings.showAccessible, exteriorSettings.showCutoff); // (which hallways: the amber ones, the grey ones, or both)
   view.update(layers.model, plan, planKey, exteriorSettings.showCirculation); // (shown or hidden with the checkbox under X-ray, in Exterior erosion)
 }
@@ -111,7 +115,7 @@ function frame() {
 export function mountCirculation() {
   view = createCirculationView();
   mountPanel($("circulation-panel"), { save: saveSnapshot });
-  on("site:cleared", () => { plan = null; planKey = ""; wantKey = ""; view.clear(); });
-  on("mass:changed", () => { plan = null; planKey = ""; wantKey = ""; view.clear(); });
+  on("site:cleared", () => { plan = null; planKey = ""; wantKey = ""; setSkinCuts(null, ""); view.clear(); });
+  on("mass:changed", () => { plan = null; planKey = ""; wantKey = ""; setSkinCuts(null, ""); view.clear(); });
   onFrame(frame);
 }

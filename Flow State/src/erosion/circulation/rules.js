@@ -1,4 +1,4 @@
-﻿// MODEL (circulation): the hallways and the vertical cores people walk through, planned in the spaces the finished wind tunnels leave. Pure logic:
+// MODEL (circulation): the hallways and the vertical cores people walk through, planned in the spaces the finished wind tunnels leave. Pure logic:
 // no scene or DOM code, and it only READS the tunnels (a plain snapshot, see site below), so it cannot change them.
 //
 // What it works from (`site`, all in world metres, x = east, y = up, z = south):
@@ -36,6 +36,7 @@ export const DEFAULTS = {
   serve: 10, // m: every floor cell should be within this walk of a hallway
   cores: 0, // stairs-and-lifts at the most between two floors: 0 = as many as help (up to MAX_CORES)
   loops: 3, // shortcuts (loops) the most that are made on a floor
+  setback: 0.5, // m: kept between a hallway and the outside wall (0: hallways run right up to the facade, so the skin is cut along them)
   coreLong: 5.2, // m: the long side of a stair (two flights, back to back, with a landing at each end)
   coreShort: 2.8, // m: the short side (two flights side by side)
   lift: false, // a lift at one end of the stair (makes the link 2.4 m longer, so it fits in fewer places)
@@ -46,7 +47,6 @@ export const DEFAULTS = {
   cell: 0.4, // m: the grid
 };
 const TUBE_MARGIN = 0.2; // m: kept between a hallway and a tunnel's wall
-const WALL = 0.5; // m: kept between a hallway and the mass's outside wall
 const ROOF_GAP = 0.3; // m: a floor needs this much over its headroom
 const TURN = 5; // the cost of a turn, in lattice steps
 const MAX_CELLS = 160000; // cells in a floor's grid at the most (the grid is made coarser above that)
@@ -156,7 +156,9 @@ export function planCirculation(site, options = {}) {
     amin = Math.min(amin, aOf(x, z)); amax = Math.max(amax, aOf(x, z));
     bmin = Math.min(bmin, bOf(x, z)); bmax = Math.max(bmax, bOf(x, z));
   }
-  const PAD = 1, spanA = amax - amin + 2 * PAD, spanB = bmax - bmin + 2 * PAD;
+  // (the grid reaches PAD beyond the mass's box: the walls can lie beyond the box (it is made of whole columns of the tunnels' coarse grid), and a wall at the
+  // grid's edge would have no outside cells beside it, and so no setback)
+  const PAD = 4, spanA = amax - amin + 2 * PAD, spanB = bmax - bmin + 2 * PAD;
   let g = o.cell;
   while ((spanA / g) * (spanB / g) > MAX_CELLS) g *= 1.1;
   const na = Math.ceil(spanA / g), nb = Math.ceil(spanB / g), n = na * nb, a0 = amin - PAD, b0 = bmin - PAD;
@@ -214,7 +216,7 @@ export function planCirculation(site, options = {}) {
   };
 
   // ---- one grid per storey ----
-  const wallN = Math.ceil(WALL / g);
+  const wallN = Math.max(0, Math.ceil(o.setback / g - 1e-9)); // (cells; the outside itself is always blocked)
   const floors = [];
   for (let s = 0; s < S; s++) {
     const y0 = s * storey, yTop = y0 + o.head + ROOF_GAP;
@@ -1011,6 +1013,32 @@ export function planCirculation(site, options = {}) {
   }
   if (totalLength > 0 && reachableLength < 0.999 * totalLength) warnings.push(`${Math.round((100 * (totalLength - reachableLength)) / totalLength)}% of the hallways have no route to an entrance on the ground floor (shown grey): the tunnels leave no way down to them.`);
 
+  // ---- the hallways' outlines as rectangles (the skin is cut along them where they reach it, see exterior/skinShell.js) ----
+  // Every floor's hallway footprint (the accessible and the cut-off together) is broken into rectangles at the grid's own resolution, each from the floor to the
+  // ceiling: [{ y0, y1, a0, a1, b0, b1 }] (a, b in metres along the axes of the grid).
+  const paths = [];
+  for (let s = 0; s < usable; s++) {
+    const fo = floorOut[s];
+    if (!fo) continue;
+    const un = new Uint8Array(n), used = new Uint8Array(n);
+    for (let k = 0; k < n; k++) un[k] = (fo.mask && fo.mask[k]) || (fo.detached && fo.detached[k]) ? 1 : 0;
+    for (let j = 0; j < nb; j++) {
+      for (let i = 0; i < na; i++) {
+        const k = j * na + i;
+        if (!un[k] || used[k]) continue;
+        let w = 1;
+        while (i + w < na && un[k + w] && !used[k + w]) w++;
+        let h = 1;
+        grow: while (j + h < nb) {
+          for (let q = 0; q < w; q++) { const kk = (j + h) * na + i + q; if (!un[kk] || used[kk]) break grow; }
+          h++;
+        }
+        for (let jj = 0; jj < h; jj++) for (let ii = 0; ii < w; ii++) used[(j + jj) * na + i + ii] = 1;
+        paths.push({ y0: s * storey, y1: s * storey + o.head, a0: a0 + i * g, a1: a0 + (i + w) * g, b0: b0 + j * g, b1: b0 + (j + h) * g });
+      }
+    }
+  }
+
   // the links stacked at one place are one core, from its lowest floor to its highest
   const groups = new Map();
   for (const k of links) {
@@ -1059,6 +1087,7 @@ export function planCirculation(site, options = {}) {
     // the tunnels as moved round the main cores (to be applied to the real tunnels), and what was moved; null when nothing was
     graph: o.fixedCores ? site.graph : null, reroute: o.reroute ?? null,
     floors: floorOut, cores,
+    paths, // the hallways as rectangles, for cutting the skin where they reach it
     entrances: entrancesOut, entrance: entrancesOut[0] ?? null, mainNoExit,
     stats: { groundPieces, groundWithRun, roomPieces, roomWithHall, length: totalLength, reachableLength, links: links.length, cores: cores.length, entrances: entrances.length, floorsServed: floorOut.filter(Boolean).length, usable },
     warnings, timings,
