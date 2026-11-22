@@ -4,7 +4,6 @@ import "./view/scene.js";
 import "./ui/hud.js";
 import "./ui/collapse.js";
 import "./site/context.js";
-import "./site/draw.js";
 import "./site/sun.js";
 import "./site/wind.js";
 import "./mass/model3dm.js";

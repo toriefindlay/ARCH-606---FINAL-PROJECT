@@ -1,4 +1,4 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
@@ -79,7 +79,7 @@
       <p id="save-status" class="hint"></p>
     </div>
     <div class="stats" id="stats"></div>
-    <details id="model-panel" class="section tone-model" open>
+    <details id="model-panel" class="section tone-model">
       <summary>Model</summary>
       <button type="button" id="model-import" class="tool">Import .3dm</button>
       <input type="file" id="model-file" accept=".3dm" hidden>
@@ -93,24 +93,19 @@
         </div>
       </div>
     </details>
-    <details class="section tone-exterior" open>
-      <summary>Exterior erosion</summary>
+    <details class="section tone-exterior">
+      <summary>Passive cooling</summary>
       <div id="exterior-panel"></div>
     </details>
-    <details class="section tone-interior" open>
-      <summary>Interior erosion</summary>
-      <div id="interior-panel"></div>
+    <details class="section tone-circulation">
+      <summary>Circulation</summary>
+      <div id="circulation-panel"></div>
     </details>
-    <details id="draw-tools" class="section tone-draw" open>
-      <summary>Draw</summary>
-      <div class="tools">
-        <button type="button" class="tool" data-draw="road">+ Road</button>
-        <button type="button" class="tool" data-draw="path">+ Path</button>
-      </div>
-      <p id="draw-help" class="hint">Pick a tool, then click the ground to place points. Double-click or Enter to finish, Backspace to undo a point, Esc to cancel.</p>
-      <ul id="drawn-list"></ul>
+    <details class="section tone-cost">
+      <summary>Cost savings</summary>
+      <div id="cost-panel"></div>
     </details>
-    <details id="sun-panel" class="section tone-sun hidden" open>
+    <details id="sun-panel" class="section tone-sun hidden">
       <summary>Sun</summary>
       <label>Date <input type="date" id="sun-date"></label>
       <label>Solar time <output id="sun-time-out">12:00</output>
@@ -128,7 +123,7 @@
       </div>
       <p id="sun-readout" class="stats"></p>
     </details>
-    <details id="wind-panel" class="section tone-wind hidden" open>
+    <details id="wind-panel" class="section tone-wind hidden">
       <summary>Wind</summary>
       <label>Period
         <select id="wind-season">
@@ -141,13 +136,10 @@
       </label>
       <p id="wind-readout" class="stats"></p>
     </details>
-    <details class="section tone-layers" open>
+    <details class="section tone-layers">
       <summary>Layers</summary>
       <label><input type="checkbox" data-layer="sun"> Sun path &amp; shadows</label>
-      <label><input type="checkbox" data-layer="wind"> Wind</label>
-      <label><input type="checkbox" data-layer="traffic"> Traffic</label>
       <label><input type="checkbox" data-layer="model" checked> Model</label>
-      <label><input type="checkbox" data-layer="drawn" checked> Drawn</label>
       <label><input type="checkbox" data-layer="roads" checked> Roads</label>
       <label><input type="checkbox" data-layer="paths" checked> Pedestrian paths</label>
       <label><input type="checkbox" data-layer="green" checked> Green &amp; water</label>

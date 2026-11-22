@@ -53,13 +53,14 @@ async function fetchWind(lat, lon) {
   const y = new Date().getFullYear() - 1; // last full year of reanalysis data
   const url =
     `https://archive-api.open-meteo.com/v1/archive?latitude=${lat}&longitude=${lon}` +
-    `&start_date=${y}-01-01&end_date=${y}-12-31&hourly=wind_speed_10m,wind_direction_10m&wind_speed_unit=ms&timezone=GMT`;
+    `&start_date=${y}-01-01&end_date=${y}-12-31&hourly=wind_speed_10m,wind_direction_10m,temperature_2m&wind_speed_unit=ms&timezone=GMT`;
   const res = await fetch(url);
   if (!res.ok) throw new Error(`Wind service responded ${res.status}`);
   const j = await res.json();
   const raw = {
     speed: j.hourly.wind_speed_10m,
     dir: j.hourly.wind_direction_10m,
+    temp: j.hourly.temperature_2m, // °C, 2 m: what "the warmest times of year" is measured by
     month: j.hourly.time.map((t) => parseInt(t.slice(5, 7), 10)),
     year: y,
   };
@@ -84,6 +85,41 @@ function windStats(raw, months) {
   const out = bins.map((b) => ({ freq: n ? b.n / n : 0, mean: b.n ? b.sum / b.n : 0 }));
   const top = out.reduce((best, b, i) => (b.freq > out[best].freq ? i : best), 0);
   return { n, mean: n ? sum / n : 0, calm: n ? calm / n : 0, bins: out, top, from: top * 22.5 };
+}
+
+// The wind rose for the warm part of the year, for the passive cooling: every hour counts in proportion to how far it is above
+// a base temperature, so a hot afternoon counts for much more than a mild one and the cool months count for nothing. The base is
+// 22 °C, or the median temperature if the site never gets that warm (so a cold climate still gets its warmest hours).
+// Same shape as windStats() (freq is each direction's share of the total weight), plus { base, meanTemp }: the base
+// temperature and the mean temperature of the hours that count. Null if the data has no temperatures.
+const COMFORT = 22; // °C
+const warmBase = (raw) => {
+  const temps = raw.temp.filter((t) => t != null).sort((a, b) => a - b);
+  return temps.length ? Math.min(COMFORT, temps[Math.floor(temps.length / 2)]) : null;
+};
+// months: only the hours of these months (1-12) count; the base temperature is still that of the whole year.
+function warmStats(raw, months = null) {
+  if (!raw.temp) return null;
+  const base = warmBase(raw);
+  if (base === null) return null;
+  const bins = Array.from({ length: 16 }, () => ({ w: 0, sum: 0 }));
+  let total = 0, calm = 0, tw = 0;
+  for (let i = 0; i < raw.speed.length; i++) {
+    const v = raw.speed[i], d = raw.dir[i], t = raw.temp[i];
+    if (v == null || d == null || t == null || t <= base || (months && !months.includes(raw.month[i]))) continue;
+    const w = t - base;
+    total += w;
+    tw += w * t;
+    if (v < 0.5) { calm += w; continue; }
+    const b = bins[Math.round(d / 22.5) % 16];
+    b.w += w;
+    b.sum += w * v;
+  }
+  if (!total) return null;
+  const out = bins.map((b) => ({ freq: b.w / total, mean: b.w ? b.sum / b.w : 0 }));
+  const top = out.reduce((best, b, i) => (b.freq > out[best].freq ? i : best), 0);
+  const mean = bins.reduce((s, b) => s + b.sum, 0) / total;
+  return { n: raw.speed.length, mean, calm: calm / total, bins: out, top, from: top * 22.5, base, meanTemp: tw / total };
 }
 
 let loading = false;
@@ -126,6 +162,63 @@ export const downwind = (fromDeg) => [-Math.sin(fromDeg * RAD), Math.cos(fromDeg
 
 // Prevailing wind for other modules (e.g. erosion rules): { from, mean, bins } or null until loaded.
 export const getWind = () => windState?.stats ?? null;
+
+// The wind of the warm part of the year, whatever period the Wind panel shows: { from, mean, bins, base, meanTemp }, or null until
+// the wind data has loaded (or if it has no temperatures). See warmStats().
+export function getWarmWind() {
+  if (!windState) return null;
+  if (windState.warm === undefined) windState.warm = warmStats(windState.raw);
+  return windState.warm;
+}
+
+// How much cooling the site's climate asks for, from last year's hourly temperatures: { cdh, hours, mean, year } where cdh is the cooling degree-hours above `base`
+// (the sum, over the year's hours, of how far each is above it, in K·h), hours the number of hours above it, and mean the annual mean temperature (°C).
+// Null until the wind data has loaded (or if it has no temperatures). See erosion/cost.
+export function getCoolingHours(base = 18) {
+  if (!windState?.raw.temp) return null;
+  const { temp, year } = windState.raw;
+  let cdh = 0, hours = 0, sum = 0, n = 0;
+  for (const t of temp) {
+    if (t == null) continue;
+    sum += t; n++;
+    if (t > base) { cdh += t - base; hours++; }
+  }
+  return n ? { cdh, hours, mean: sum / n, year } : null;
+}
+
+// The warm part of the year cut into up to `count` consecutive periods that carry about the same warmth (hours above the base
+// temperature, as in warmStats), each with its own wind rose: [{ months, label, share, ...warmStats }], in calendar order. The
+// first period starts after the coldest month, so a warm season that runs over the new year (southern hemisphere) stays whole.
+// Months with nothing above the base are left out, so there can be fewer periods than asked for (and none without temperatures).
+const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+export function getWarmPeriods(count) {
+  if (!windState || !windState.raw.temp) return [];
+  const raw = windState.raw, base = warmBase(raw);
+  if (base === null) return [];
+  const cache = (windState.periods ??= new Map());
+  if (cache.has(count)) return cache.get(count);
+  const weight = new Array(13).fill(0); // by month, 1-12
+  for (let i = 0; i < raw.temp.length; i++) if (raw.temp[i] != null && raw.temp[i] > base) weight[raw.month[i]] += raw.temp[i] - base;
+  let coldest = 1;
+  for (let m = 2; m <= 12; m++) if (weight[m] < weight[coldest]) coldest = m;
+  const all = weight.reduce((s, w) => s + w, 0);
+  // calendar order; months with next to no warmth (under 4% of the year's) are left out so they do not stretch a period
+  const order = Array.from({ length: 12 }, (_, i) => ((coldest + i) % 12) + 1).filter((m) => weight[m] > 0.04 * all);
+  const total = order.reduce((s, m) => s + weight[m], 0);
+  const groups = Array.from({ length: Math.max(1, count) }, () => []);
+  let before = 0;
+  for (const m of order) {
+    groups[Math.min(groups.length - 1, Math.floor(((before + weight[m] / 2) / total) * groups.length))].push(m);
+    before += weight[m];
+  }
+  const periods = groups.filter((g) => g.length).map((months) => {
+    const stats = warmStats(raw, months);
+    const label = months.length === 1 ? MONTH_NAMES[months[0] - 1] : `${MONTH_NAMES[months[0] - 1]}–${MONTH_NAMES[months[months.length - 1] - 1]}`;
+    return { months, label, share: months.reduce((s, m) => s + weight[m], 0) / total, ...stats };
+  }).filter((p) => p.bins);
+  cache.set(count, periods);
+  return periods;
+}
 
 function buildWind() {
   const g = layers.wind;
