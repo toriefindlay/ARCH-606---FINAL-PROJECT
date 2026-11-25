@@ -82,20 +82,29 @@
     <details id="model-panel" class="section tone-model">
       <summary>Model</summary>
       <button type="button" id="model-import" class="tool">Import .3dm</button>
-      <input type="file" id="model-file" accept=".3dm" hidden>
-      <p class="hint">Or drop a .3dm file on the scene. It lands on the pin. Tick Manipulate to move, turn and scale it. Press Delete to remove it.</p>
+      <input type="file" id="model-file" accept=".3dm" multiple hidden>
+      <p class="hint">Or drop .3dm files on the scene. Import as many massings as you like: the first lands on the pin, the next ones beside it. Tick Manipulate, then click a massing to select it and move, turn or scale it. Press Delete to remove the selected one.</p>
       <p id="model-info" class="stats hidden"></p>
       <div id="model-actions" class="hidden">
+        <div id="model-list"></div>
         <label><input type="checkbox" id="model-manipulate"> Manipulate</label>
         <div class="tools">
+          <button type="button" class="tool" id="model-duplicate" title="Add a copy of the selected massing beside the others">Duplicate</button>
           <button type="button" class="tool" id="model-reset">Reset size</button>
-          <button type="button" class="tool" id="model-remove" title="Delete the imported mass (Delete key)">Delete mass</button>
+        </div>
+        <div class="tools">
+          <button type="button" class="tool" id="model-remove" title="Delete the selected massing (Delete key)">Delete selected</button>
+          <button type="button" class="tool" id="model-remove-all">Delete all</button>
         </div>
       </div>
     </details>
     <details class="section tone-exterior">
       <summary>Passive cooling</summary>
       <div id="exterior-panel"></div>
+    </details>
+    <details class="section tone-facades">
+      <summary>Facades</summary>
+      <div id="facades-panel"></div>
     </details>
     <details class="section tone-circulation">
       <summary>Circulation</summary>
@@ -147,6 +156,30 @@
     </details>
     <label class="toggle"><input type="checkbox" id="orbit"> Slow orbit</label>
     <p class="credit">Map data &copy; OpenStreetMap contributors</p>
+  </aside>
+
+  <!-- Floor plans: shown once the wind tunnels and the circulation are done -->
+  <aside id="floorplans" class="hidden" aria-label="Floor plans">
+    <div class="floorplan-top">
+      <h2>Floor plans</h2>
+      <button type="button" id="floorplan-toggle" aria-expanded="true">Hide ▸</button>
+    </div>
+    <div class="floorplan-body">
+      <div id="floorplan-deck" tabindex="0" aria-label="Deck of floor plans: scroll or use the arrow keys"></div>
+      <nav class="floorplan-nav" aria-label="Levels">
+        <button type="button" id="floorplan-up" aria-label="Floor above">▲</button>
+        <div id="floorplan-levels"></div>
+        <button type="button" id="floorplan-down" aria-label="Floor below">▼</button>
+      </nav>
+    </div>
+    <ul class="floorplan-key">
+      <li><i class="k-wall"></i>Wall</li>
+      <li><i class="k-tunnel"></i>Wind tunnel</li>
+      <li><i class="k-hall"></i>Hallway</li>
+      <li><i class="k-cut"></i>Cut off</li>
+      <li><i class="k-stair"></i>Stair</li>
+      <li><i class="k-lift"></i>Lift</li>
+    </ul>
   </aside>
 
   <div id="dropzone" class="hidden">Drop a .3dm file to place it on the pin</div>

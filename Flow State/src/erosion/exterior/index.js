@@ -2,115 +2,105 @@ import { $ } from "../../core/dom.js";
 import { on } from "../../core/events.js";
 import { state, layers } from "../../core/state.js";
 import { onFrame } from "../../view/scene.js";
-import { getMassInfo } from "../../mass/model3dm.js";
+import { getMassInfo, getMassFrames, hasRoundedMass } from "../../mass/model3dm.js";
+import { registerPersist } from "../../core/persist.js";
 import { registerCutProvider, collectCuts, notifyCutsChanged } from "../combine.js";
 import { provideCuts } from "./rules.js";
 import { createForm } from "./form.js";
-import { createWindErosion, setActiveForm } from "./windErode.js";
-import { createSunGrowth } from "./sunGrow.js";
 import { createTunnels, REACH } from "./tunnels.js";
+import { createVoxelMass } from "./voxelFlow.js";
 import { setActiveTunnels } from "./tunnelCut.js";
-import { renderPreview, createFormView, createTunnelView, setXray } from "./view.js";
-import { mountPanel, settings, syncControls, setWindNote, setSunNote, setTunnelNote, setFloorRows, setWindOptions, setParticleNote, setParticleWindOptions } from "./panel.js";
+import { renderPreview, patchMass, createTunnelView, setXray, setRounded } from "./view.js";
+import { mountPanel, settings, syncControls, setTunnelNote, setFloorRows, setWindOptions, setParticleNote, setParticleWindOptions } from "./panel.js";
 import { createWindParticles } from "./windParticles.js";
 import { createCoolingView } from "./coolingView.js";
 import { getSpaces, spacesSignature } from "../interior/spaces.js";
-import { getWind, getWarmWind, getWarmPeriods, requestWind, setWindObstacle, downwind } from "../../site/wind.js";
+import { getWind, getWarmWind, getWarmPeriods, requestWind, downwind } from "../../site/wind.js";
 import { cityHeights } from "../../site/windFlow.js";
 
 const RESCAN_DELAY = 350; // ms after the mass stops moving before it is analysed again
-const WIND_INTERVAL = 0.6; // seconds between updates of the wind-rounded shape
-const FLOW_DELAY = 1500; // ms after the form last changed before the wind streaks bend around the new shape
-const SUN_INTERVAL = 0.1; // seconds between times the sun's warmth is collected
-const SUN_SHAPE_INTERVAL = 0.6; // seconds between updates of the grown shape
-const SUN_IDLE = 1500; // ms without the sun moving before the panel says what to press
 
-let form = null; // the one shape the sun and the wind work on (see form.js)
-let formView = null;
+let form = null; // the height map of the mass that the tunnels are built from (see form.js)
 let coolingView = null; // the floor plans shaded by cooling (the "cooling data" layer)
 let tunnelView = null; // the tunnels' walls, and the hole they leave in the mass's own surface
 let tunnelShown = ""; // which tunnels, and which state of them, the view and the cuts were last given
 let tunnelBusy = false; // a step of the tunnels (a solve) is running
 let tunnelWorking = false; // the tunnels are being worn: the cut offered to the pipeline waits for the end
-let skinClock = 0; // simulated seconds since the tunnels were finished (the skin softens with it)
-const SKIN_SECONDS = 150, SKIN_STEPS = 5; // how long the skin takes to soften fully (at the erosion speed), and in how many steps
 let tunnelWinds = null; // the wind of the whole structure, as last worked out by tunnelFrame
 let tunnelStats = null; // the air speed in the tunnels and the cooling, in the last solution
 let tunnels = null; // the persistent voxel mass the wind tunnels are carved from (tunnels.js), built from the form when first wanted
-let mode = "none"; // the kind of erosion working now: "sun" | "wind" | "tunnels" | "none" (the panel allows one at a time)
-let phase = 0; // changes whenever the mode does, so that slow set-up for an earlier mode is dropped
-let windErosion = null; // the wind's rounding of the form as it was when the wind started, once worked out
-let windBuilding = false; // it is being worked out
-let windClock = 0; // simulated seconds of wind not yet applied
-let windTick = 0;
-let flowTimer = 0;
 let particles = null; // the wind particles flowing through the finished tunnels
 let massVersion = 0; // changes whenever the mass does, so that slow set-up for an old mass is dropped
-let sunGrowth = null; // the sun's growth of the form as it was when the sun started, once worked out
-let sunBuilding = false;
-let sunHours = 0; // simulated hours of sun not yet applied
-let sunVec = null; // where the sun last was
-let sunSeen = 0; // when (ms) the Sun panel last advanced the sun
-let sunTick = 0;
-let sunShape = 0; // seconds since the grown shape was last redrawn
 let rescanTimer = 0;
-
-const currentMode = () => (settings.erodeSun ? "sun" : settings.erodeWind ? "wind" : settings.erodeTunnels ? "tunnels" : "none");
-
-// The sun's and the wind's set-up is worked out from the form as it is when they start, so it is dropped whenever the form
-// is changed by anything else (the other mode, or clearing).
-function resetPhases() {
-  phase++;
-  windErosion = sunGrowth = null;
-  windBuilding = sunBuilding = false;
-  windClock = windTick = sunHours = sunTick = sunShape = 0;
-  setWindNote("");
-  setSunNote("");
-}
-
-// Switching mode: the new one carries on from the form as the last one left it.
-function syncMode() {
-  const next = currentMode();
-  if (next === mode) return;
-  mode = next;
-  resetPhases();
-}
-
-// The form changed (the sun or the wind worked on it): redraw it, tell the pipeline, and let the wind streaks follow it.
-function formChanged() {
-  formView.update(form);
-  notifyCutsChanged();
-  clearTimeout(flowTimer);
-  flowTimer = setTimeout(() => form && setWindObstacle(form.asScan()), FLOW_DELAY);
-}
 
 // The mass moved, scaled or went away: its shape no longer fits, so start again from the new mass.
 function stopMass() {
   clearTimeout(rescanTimer);
-  const had = !!form?.changed();
   stopForm();
-  if (had) notifyCutsChanged();
 }
 
 function stopForm() {
   massVersion++;
-  clearTimeout(flowTimer);
   form = null;
-  resetPhases();
-  setActiveForm(null);
-  formView?.clear();
   particles?.clear();
   tunnels = null;
   tunnelStats = null;
+  preview = null;
 }
 
 // The wind tunnels' voxel mass is built from the form the first time it is wanted and then kept, so tunnels stay worn between solves and when
-// another mode is switched on and off. It is built afresh if the sun or the wind has changed the form since (the tunnels would no longer fit
-// the shape), or if the mass moved (stopForm).
+// they are switched off and on. It is built afresh if the mass moved (stopForm).
 function ensureTunnels() {
   if (tunnels && tunnels.builtOn !== form.version) tunnels = null;
   tunnels ??= createTunnels(form, { cityHeight: cityHeights(state.site.radius, state.features?.buildings) });
   return tunnels;
+}
+
+/* ---------- saving the tunnels with a site ---------- */
+
+// The settings the tunnels are made with. They are saved with a site (with the finished tunnels themselves), and a site opened
+// or started afresh begins from these defaults, not from what the last one was set to.
+const TUNNEL_KEYS = ["erodeTunnels", "tunnelVolume", "tunnelStack", "tunnelWind", "tunnelMulti"];
+const TUNNEL_DEFAULTS = Object.fromEntries(TUNNEL_KEYS.map((k) => [k, settings[k]]));
+const tunnelSettings = () => Object.fromEntries(TUNNEL_KEYS.map((k) => [k, settings[k]]));
+let pending = null; // saved tunnels waiting for their massings to be read: { massings, made, network }
+let adopt = null; // tunnels just put back, whose plan is still to be taken up: { tunnels, made }
+
+// Where the massings stand and how big they are, to the nearest centimetre: saved tunnels fit only these.
+const massingsKey = () => JSON.stringify(getMassFrames().map((f) => [f.x, f.z, f.turn, f.halfX, f.halfZ, f.height].map((v) => Math.round(v * 100) / 100)));
+// What the tunnels were made with: while it is the same, they stand as they are.
+const madeWith = () => `${settings.tunnelVolume}|${settings.tunnelStack}|${settings.tunnelWind}|${settings.tunnelMulti}|${spacesSignature()}`;
+
+function captureTunnels() {
+  const live = tunnels && form && tunnels.builtOn === form.version ? tunnels.save() : null;
+  return { settings: tunnelSettings(), tunnels: live ? { massings: massingsKey(), made: tunnels.made ?? madeWith(), network: live } : pending };
+}
+
+// For the Save button: whether the tunnels went with the site ("saved"), are still being worn and so did not ("unfinished"),
+// or there are none ("none").
+export function tunnelSaveStatus() {
+  if (pending || getFinishedTunnels()) return "saved";
+  return settings.erodeTunnels && getMassInfo() ? "unfinished" : "none";
+}
+
+// Once all the massings a site was saved with are back, its tunnels are put back in place of being grown again.
+function restorePending() {
+  if (!pending || !form) return;
+  if (getMassFrames().length < JSON.parse(pending.massings).length) return; // (more massings are still being read)
+  const saved = pending;
+  pending = null;
+  if (massingsKey() !== saved.massings) return; // (a massing has been moved or changed since)
+  const t = ensureTunnels();
+  if (!t?.load(saved.network)) {
+    tunnels = null;
+    console.warn("The saved wind tunnels do not fit these massings, so they will be worn again.");
+    return;
+  }
+  // the occupied spaces are taken up at once, so that they are not seen as just changed
+  spacesSeen = spacesApplied = spacesSignature();
+  spacesList = getSpaces().map((s) => ({ ...s }));
+  t.made = saved.made;
+  adopt = { tunnels: t, made: saved.made };
 }
 
 // A line in place of the floor table (nothing to show yet, or why not).
@@ -159,8 +149,13 @@ function tunnelFrame() {
   // the open wind's dynamic pressure (U^2/2) that is stack * y per metre. Strong in weak wind and in tall masses.
   const U = Math.max(1.5, base.mean || 3), stack = settings.tunnelStack ? (9.81 * (settings.tunnelStack / (273.15 + (base.meanTemp ?? 20)))) / (0.5 * U * U) : 0;
   const plan = `${wind.from}|${limit}|${settledSpaces()}|${stack.toFixed(4)}|${wind.set.map((b) => `${b.from}:${b.share.toFixed(2)}`).join(",")}`;
+  if (adopt?.tunnels === t) { // (tunnels put back from a saved site stand for this plan, unless a setting has been changed since)
+    if (adopt.made === madeWith()) t.plan = plan;
+    adopt = null;
+  }
   if (t.plan !== plan) { // another wind, volume limit or occupied spaces: the mass is put back and the tunnels start again
     t.plan = plan;
+    t.made = madeWith();
     t.setBuoyancy(stack);
     t.setObstacles(spacesList);
     t.setWind(wind.dir);
@@ -206,7 +201,7 @@ function floorRow(t, w) {
 
 // Keeps what is drawn, and the cut offered to the pipeline, in step with the tunnels: shown whenever there are tunnels that fit the
 // form (also while another mode is on), and cleared when they are gone.
-function tunnelShowFrame(dt = 0, force = false) {
+function tunnelShowFrame(force = false) {
   const t = tunnels && form && tunnels.builtOn === form.version ? tunnels : null;
   if (!tunnelWorking || force) { // the cut offered to the pipeline follows once the tunnels are worn (not at every round)
     const cut = t && t.carved ? t : null;
@@ -217,13 +212,12 @@ function tunnelShowFrame(dt = 0, force = false) {
       notifyCutsChanged();
     }
   }
-  // The skin softens slowly once the tunnels are done (see tunnelMesh.js): the clock runs while they are, with the erosion speed, and starts again with new
-  // tunnels. The amount moves in steps (every change is a rebuild of the walls), and the slider says how far it goes.
-  if (!t || !t.done) skinClock = 0;
-  else if (settings.playing) skinClock += dt * settings.speed;
-  const skinAmount = t && t.done ? (Math.round(Math.min(1, skinClock / SKIN_SECONDS) * SKIN_STEPS) / SKIN_STEPS) * (settings.skinSoften / 100) : 0;
   tunnelView.setVisible(settings.showTunnels);
-  if (t) tunnelView.update(layers.model, t, { amount: Math.round(skinAmount * 100) / 100, cuts: skinCuts, cutsKey: skinCutsKey });
+  // (the skin is made of upright walls and flat roofs: on a rounded massing it would turn the curves into steps, so the
+  // massing keeps its own surface, and the openings are cut in that)
+  const rounded = hasRoundedMass();
+  setRounded(rounded);
+  if (t) tunnelView.update(layers.model, t, rounded ? null : { cuts: skinCuts, cutsKey: skinCutsKey, shapes: skinShapes }, skinShapes?.lining ?? null);
   else tunnelView.clear();
 }
 
@@ -242,7 +236,7 @@ async function tunnelStep(t, wind, limit, plan, growing) {
       await t.grow(limit);
     } else {
       await t.solve(wind.dir);
-      if (version === massVersion && tunnels === t) tunnelShowFrame(0, true);
+      if (version === massVersion && tunnels === t) tunnelShowFrame(true);
     }
     if (version === massVersion && tunnels === t && t.done && !t.stale(wind.dir)) tunnelStats = { ...t.tunnelSpeed(), cooling: t.cooling() };
   } catch (e) {
@@ -252,104 +246,46 @@ async function tunnelStep(t, wind, limit, plan, growing) {
     tunnelBusy = false;
   }
 }
-// The sun growth is worked out the first time it is wanted for the form (it takes a moment).
-function buildSun() {
-  if (sunGrowth || sunBuilding || !form) return;
-  sunBuilding = true;
-  const version = massVersion, mine = phase;
-  setSunNote("Working out how this mass can grow…");
-  const buildings = state.features?.buildings;
-  const cityTop = buildings?.reduce((m, b) => Math.max(m, b.height), 0) ?? 0;
-  createSunGrowth(form, { cityHeight: cityHeights(state.site.radius, buildings), cityTop })
-    .then((er) => {
-      if (version !== massVersion || mine !== phase) return;
-      sunBuilding = false;
-      sunGrowth = er;
-    })
-    .catch((e) => {
-      if (version === massVersion && mine === phase) sunBuilding = false;
-      console.error("Sun growth failed:", e);
-    });
-}
-
-function sunFrame(dt) {
-  if (!settings.erodeSun) return setSunNote("");
-  if (!getMassInfo()) return setSunNote("Place a .3dm mass for the sun to grow.");
-  buildSun();
-  if (!sunGrowth) return;
-  const moving = performance.now() - sunSeen < SUN_IDLE;
-  setSunNote(
-    !layers.sun?.visible
-      ? "Switch on the Sun layer, then run a day or the year."
-      : !moving && !sunGrowth.changed()
-        ? "Press Play day or Run through the year in the Sun panel: the mass grows as the sun moves."
-        : sunGrowth.growth > 0
-          ? `Sun has grown the mass by up to ${sunGrowth.growth.toFixed(1)} m (limit ${sunGrowth.rMax.toFixed(1)} m).`
-          : "The sun is warming the mass; growth starts shortly."
-  );
-  sunTick += dt;
-  sunShape += dt;
-  if (sunTick >= SUN_INTERVAL && sunVec && sunHours > 0) {
-    sunGrowth.expose(sunVec, sunHours, settings.erode / 2);
-    sunHours = sunTick = 0;
+// The massings without tunnels, as the particles want them: a voxel copy of the form (and the site's buildings) to solve the
+// airflow on. It is made again when the form changes, but only once it has stopped changing for a moment.
+const PREVIEW_SETTLE = 1500; // ms
+let preview = null; // { uncarved, done, vox, massBox, form, builtOn }
+let previewSeen = -1, previewSince = 0;
+function uncarvedMass() {
+  if (preview && preview.form === form && preview.builtOn === form.version) return preview;
+  if (form.version !== previewSeen) { previewSeen = form.version; previewSince = performance.now(); }
+  // (a new or moved mass has no copy yet, and need not wait: it has already settled, see RESCAN_DELAY)
+  if (preview?.form === form && performance.now() - previewSince < PREVIEW_SETTLE) return preview;
+  const vox = createVoxelMass(form, { cityHeight: cityHeights(state.site.radius, state.features?.buildings) });
+  if (!vox) return null;
+  // the footprint and height of the massings, which the particles are aimed at
+  let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity, top = 0;
+  for (let j = 0; j < form.nz; j++) {
+    for (let i = 0; i < form.nx; i++) {
+      const h = form.heights[j * form.nx + i];
+      if (h <= 0.5) continue;
+      top = Math.max(top, h);
+      x0 = Math.min(x0, form.x0 + i * form.cx); x1 = Math.max(x1, form.x0 + (i + 1) * form.cx);
+      z0 = Math.min(z0, form.z0 + j * form.cz); z1 = Math.max(z1, form.z0 + (j + 1) * form.cz);
+    }
   }
-  if (sunShape >= SUN_SHAPE_INTERVAL) {
-    sunShape = 0;
-    if (sunGrowth.recompute()) formChanged();
-  }
+  if (top <= 0) return null;
+  preview = { uncarved: true, done: true, vox, massBox: { x0, x1, z0, z1, top }, form, builtOn: form.version };
+  return preview;
 }
 
-// The wind erosion is worked out the first time it is wanted for the form (it takes a moment).
-function buildWind() {
-  if (windErosion || windBuilding || !form) return;
-  windBuilding = true;
-  const version = massVersion, mine = phase;
-  setWindNote("Working out how the wind can round this mass…");
-  createWindErosion(form)
-    .then((er) => {
-      if (version !== massVersion || mine !== phase) return;
-      windBuilding = false;
-      windErosion = er;
-    })
-    .catch((e) => {
-      if (version === massVersion && mine === phase) windBuilding = false;
-      console.error("Wind erosion failed:", e);
-    });
-}
-
-function windFrame(dt) {
-  if (!settings.erodeWind) return setWindNote("");
-  if (!settings.playing) return;
-  if (!getMassInfo()) return setWindNote("Place a .3dm mass for the wind to round.");
-  const rose = getWind();
-  if (!rose) {
-    requestWind(); // needs the wind data, whether or not the wind layer is switched on
-    return setWindNote("Loading wind data…");
-  }
-  buildWind();
-  if (!windErosion) return;
-  setWindNote(
-    windErosion.radius > 0
-      ? `Wind has rounded the edges by up to ${windErosion.radius.toFixed(1)} m (limit ${windErosion.rMax.toFixed(1)} m).`
-      : "The wind is blowing; the first edges start to round shortly."
-  );
-  windClock += dt * settings.speed;
-  windTick += dt;
-  if (windTick < WIND_INTERVAL) return;
-  windErosion.expose(rose, windClock, settings.erode / 2);
-  windClock = windTick = 0;
-  if (windErosion.recompute()) formChanged();
-}
-
-// The wind particles: once the tunnels are finished, small particles follow the airflow through and round them, for the wind of the time of
-// year chosen in the panel (by default the one the tunnels were worn for).
+// The wind particles: small particles follow the airflow round and between the massings, or through the wind tunnels once there
+// are some, for the wind of the time of year chosen in the panel (by default the one the tunnels were worn for).
 function particleFrame(dt) {
   if (!settings.windParticles) { particles.clear(); return setParticleNote(""); }
-  const t = tunnels && form && tunnels.builtOn === form.version ? tunnels : null;
-  if (!t || !getMassInfo()) { particles.clear(); return setParticleNote("Wear wind tunnels into the mass first."); }
+  if (!getMassInfo()) { particles.clear(); return setParticleNote("Place a .3dm mass for the wind to flow round."); }
+  if (!form) { particles.clear(); return setParticleNote("Reading the massings…"); }
   requestWind();
   if (!getWind()) return setParticleNote("Loading wind data…");
-  if (!t.done) { particles.clear(); return setParticleNote("Waiting for the tunnels to finish."); }
+  const worn = tunnels && tunnels.builtOn === form.version ? tunnels : null;
+  if (settings.erodeTunnels && worn && !worn.done) { particles.clear(); return setParticleNote("Waiting for the tunnels to finish."); }
+  const t = worn?.done ? worn : uncarvedMass();
+  if (!t) { particles.clear(); return setParticleNote(""); }
   const periods = getWarmPeriods(4);
   setParticleWindOptions(periods);
   const sel = settings.particleWind;
@@ -364,8 +300,8 @@ function startForm() {
   if (!info || !layers.model) return;
   form = createForm(info);
   if (!form) return;
-  setActiveForm(form);
-  formView.setForm(form, layers.model, info.object);
+  patchMass(info.object); // (so that the tunnels can open the mass's own surface)
+  restorePending();
 }
 
 // The circulation's hallways as boxes ({ frame: { A, B }, rects: [{ y0, y1, a0, a1, b0, b1 }] }, or null), where the skin is cut along the outline of any that
@@ -376,13 +312,19 @@ export function setSkinCuts(cuts, key) {
   skinCutsKey = key;
 }
 
+// The shapes the facade gives the tunnels' openings ({ key, lining, shape }, see tunnelMesh.js), or null for the round ones: the
+// skin is made again when the key changes (see facades/index.js).
+let skinShapes = null;
+export function setSkinShapes(shapes) {
+  skinShapes = shapes;
+}
+
 // The finished tunnels, read-only, for the hallways (erosion/circulation): null until the tunnels are done and fit the form.
 export function getFinishedTunnels() {
   return tunnels && form && tunnels.builtOn === form.version && tunnels.done ? tunnels : null;
 }
 
 export function mountExterior() {
-  formView = createFormView();
   particles = createWindParticles();
   tunnelView = createTunnelView();
   coolingView = createCoolingView();
@@ -391,18 +333,8 @@ export function mountExterior() {
     clearErosion: () => {
       tunnels = null; // the tunnels are built afresh from the mass as placed
       tunnelStats = null;
-      if (!form?.clear()) return;
-      resetPhases(); // the sun and the wind start again from the mass as placed
-      formView.update(form);
-      setWindObstacle(form.asScan());
-      notifyCutsChanged();
+      pending = null;
     },
-  });
-  on("sun:advanced", ({ vec, hours }) => {
-    sunSeen = performance.now();
-    if (!settings.erodeSun || !sunGrowth) return; // sunlight before the growth is ready or switched on does not count
-    sunVec = vec;
-    sunHours += hours;
   });
   on("cuts:changed", () => renderPreview(collectCuts().filter((c) => c.source === "exterior")));
 
@@ -414,14 +346,24 @@ export function mountExterior() {
   on("site:cleared", () => {
     clearTimeout(rescanTimer);
     stopForm();
+    pending = adopt = null;
+    Object.assign(settings, TUNNEL_DEFAULTS);
+    syncControls();
+  });
+  registerPersist("tunnels", {
+    capture: captureTunnels,
+    // (the massings are read after this, and the tunnels are put back once they are all in: see restorePending)
+    restore: (saved) => {
+      Object.assign(settings, saved?.settings ?? {});
+      pending = saved?.tunnels ?? null;
+      syncControls();
+      restorePending();
+    },
   });
 
   onFrame((dt) => {
-    syncMode();
-    windFrame(dt);
-    sunFrame(dt);
     tunnelFrame();
-    tunnelShowFrame(dt);
+    tunnelShowFrame();
     setXray(layers.model, settings.xray);
     coolingFrame();
     particleFrame(dt);

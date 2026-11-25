@@ -2,7 +2,7 @@ import * as THREE from "three";
 import { sunLight, hemiLight, onFrame } from "../view/scene.js";
 import { makeLabel, clearChildren } from "../view/labels.js";
 import { state, layers } from "../core/state.js";
-import { on, emit } from "../core/events.js";
+import { on } from "../core/events.js";
 import { $ } from "../core/dom.js";
 import { registerPersist } from "../core/persist.js";
 
@@ -178,7 +178,6 @@ onFrame((dt, now) => {
     }
     $("sun-time").value = hourNow;
     updateSun();
-    emit("sun:advanced", { vec: sunPosition(state.site.lat, sunDoy(), hourNow).vec, hours });
     return;
   }
   if (!sunPlaying) return;
@@ -189,7 +188,6 @@ onFrame((dt, now) => {
   if (hourNow > to || hourNow < from) hourNow = from;
   $("sun-time").value = hourNow;
   updateSun();
-  emit("sun:advanced", { vec: sunPosition(state.site.lat, sunDoy(), hourNow).vec, hours });
 });
 
 $("sun-time").addEventListener("input", () => {

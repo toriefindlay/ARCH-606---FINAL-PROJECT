@@ -4,6 +4,7 @@ import { putSite, getSite, listSites, removeSite } from "./core/storage.js";
 import { on } from "./core/events.js";
 import { $ } from "./core/dom.js";
 import { getMassFile } from "./mass/model3dm.js";
+import { tunnelSaveStatus } from "./erosion/exterior/index.js";
 import { generate, clearSite } from "./pipeline.js";
 
 // Saved sites: the Save button, the start screen's "Saved sites" list, and the "← Sites" button.
@@ -17,7 +18,8 @@ export async function saveCurrent() {
   try {
     await putSite(meta, data, getMassFile());
     state.saveRef = { id, name };
-    $("save-status").textContent = `Saved ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}. Find it on the start screen.`;
+    const tunnels = { saved: " The wind tunnels are saved with it.", unfinished: " The wind tunnels aren't finished, so they aren't in it: save again once they are.", none: "" }[tunnelSaveStatus()];
+    $("save-status").textContent = `Saved ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}.${tunnels} Find it on the start screen.`;
   } catch (e) {
     console.error(e);
     $("save-status").textContent = "Couldn't save (browser storage unavailable or full).";

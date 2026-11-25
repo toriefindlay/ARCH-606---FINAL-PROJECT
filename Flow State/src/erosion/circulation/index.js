@@ -9,7 +9,7 @@ import { onFrame } from "../../view/scene.js";
 import { getFinishedTunnels, setSkinCuts } from "../exterior/index.js";
 import { STOREY } from "../exterior/tunnels.js";
 import { settings as exteriorSettings } from "../exterior/panel.js";
-import { planCirculation } from "./rules.js";
+import { planStructures } from "./structures.js";
 import { createCirculationView } from "./view.js";
 import { mountPanel, settings, setNote, setReport } from "./panel.js";
 
@@ -36,7 +36,14 @@ function snapshot(t) {
 }
 
 const pct = (v) => `${Math.round(100 * v)}%`;
+// The report's lines. With several structures, each has its own, under its size (they are numbered from west to east).
 function reportOf(p) {
+  if (!p.parts) return reportOfOne(p);
+  const st = p.stats;
+  const total = `${p.parts.length} separate structures, each planned on its own: ${st.length.toFixed(0)} m of hallway (${pct(st.length ? st.reachableLength / st.length : 0)} joined to an exit).`;
+  return [total, ...p.parts.flatMap((part, i) => [`— Structure ${i + 1} of ${p.parts.length} (${i === 0 ? "furthest west" : i === p.parts.length - 1 ? "furthest east" : "numbered west to east"}) —`, ...reportOfOne(part)])];
+}
+function reportOfOne(p) {
   const lines = [];
   const st = p.stats;
   if (p.mode === "main") {
@@ -91,7 +98,7 @@ function frame() {
     setNote(wantMain ? "Planning the main cores and moving the tunnels round them…" : "Planning the hallways…");
     if (performance.now() - wantSince >= SETTLE) {
       try {
-        plan = planCirculation(snapshot(t), { mode: settings.mode, width: settings.width, serve: settings.serve, cores: settings.cores, loops: settings.loops, lift: settings.lift, fill: settings.fill, extraCores: settings.extraCores, setback: settings.setback });
+        plan = planStructures(snapshot(t), { mode: settings.mode, width: settings.width, serve: settings.serve, cores: settings.cores, loops: settings.loops, lift: settings.lift, fill: settings.fill, extraCores: settings.extraCores, setback: settings.setback });
         if (plan.graph) t.applyRoute(plan.graph); // (the tunnels moved round the main cores)
         else if (t.rerouted) t.restoreRoute(); // (no main cores could be placed: the tunnels stay as they were)
         setReport(reportOf(plan));
@@ -111,6 +118,9 @@ function frame() {
   view.setParts(exteriorSettings.showAccessible, exteriorSettings.showCutoff); // (which hallways: the amber ones, the grey ones, or both)
   view.update(layers.model, plan, planKey, exteriorSettings.showCirculation); // (shown or hidden with the checkbox under X-ray, in Passive cooling)
 }
+
+// The plan as it now stands (circulation/structures.js), or null while there is none: for the floor plans (floorplans/).
+export const getCirculationPlan = () => (settings.enabled ? plan : null);
 
 export function mountCirculation() {
   view = createCirculationView();

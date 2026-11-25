@@ -1,4 +1,5 @@
-// VIEW (exterior erosion): the wind as small particles with short trails, drifting through and round the finished wind tunnels.
+// VIEW (exterior erosion): the wind as small particles with short trails, drifting through and round the finished wind tunnels,
+// or, while there are none, round and between the massings as placed (then the extra streams run through the gaps between them).
 //
 // The particles follow the real airflow of the tunnels (voxelFlow.js: a velocity in every open voxel, relative to the wind far
 // away), so they enter the openings, speed up inside the tunnels and part round the outside of the mass. The flow is solved
@@ -9,11 +10,17 @@
 // Smoothness comes from: a gentle blur of the voxel velocities, trilinear sampling, midpoint (RK2) steps, and a fade in/out at
 // birth and death. Everything is in world metres, in the same frame as the tunnels (it is added under layers.model).
 import * as THREE from "three";
-import { solveFlow, tick } from "./voxelFlow.js";
+import { solveFlow, tick, MASS } from "./voxelFlow.js";
 import { downwind } from "../../site/wind.js";
 
-const COUNT = 36000; // particles
+const STREAM_COUNT = 36000; // particles in the streams: through the tunnels (or gaps) and the open wind aimed at the massings
+const SURROUND_COUNT = 18000; // more particles, spread evenly over the open wind on all sides of the massings
+const COUNT = STREAM_COUNT + SURROUND_COUNT;
+// how far past the outermost massing the surrounding particles reach on each side: this part of the massings' overall width, within these (metres)
+const SURROUND_PART = 0.35, SURROUND_MIN = 18, SURROUND_MAX = 32;
 const TUNNEL_SHARE = 0.85; // the part of the particles started in the tunnel air (and traced back upwind), the rest are open wind
+const GAP_SHARE = 0.5; // the same for the air in the gaps, while there are no tunnels
+const GAP_REACH = 30; // metres: air with mass this near on two opposite sides is in a gap
 const TRAIL = 7; // points per trail (the head and TRAIL - 1 older ones)
 const SEG = TRAIL - 1;
 const TRAIL_DT = 0.07; // seconds between the points kept along a trail
@@ -110,6 +117,33 @@ function addTunnelCells(t, field) {
   field.fastest = fastest || 1;
 }
 
+// The gap air (no tunnels yet): open voxels below the top of the massings with mass within GAP_REACH on two opposite sides
+// (east and west, or north and south), so between two massings, or in a courtyard. Kept in the same list as the tunnel cells,
+// to start particles in the same way.
+function addGapCells(t, field) {
+  const { vox, massBox: mb } = t, { nx, nz, ny, c, x0, z0, yc, cells: kinds } = vox, nxz = nx * nz, open = field.open;
+  const far = Math.ceil(GAP_REACH / c);
+  const cells = [];
+  for (let l = 0; l < ny && yc[l] < mb.top; l++) {
+    for (let j = 1; j < nz - 1; j++) {
+      const z = z0 + (j + 0.5) * c;
+      if (z < mb.z0 || z > mb.z1) continue;
+      for (let i = 1; i < nx - 1; i++) {
+        const x = x0 + (i + 0.5) * c, k = (l * nz + j) * nx + i;
+        if (x < mb.x0 || x > mb.x1 || !open[k]) continue;
+        // is there mass within reach, going `step` voxels at a time, with `room` voxels to the edge of the box?
+        const walled = (step, room) => {
+          for (let n = 1; n <= Math.min(far, room); n++) if (kinds[k + n * step] === MASS) return true;
+          return false;
+        };
+        const between = (walled(-1, i) && walled(1, nx - 1 - i)) || (walled(-nx, j) && walled(nx, nz - 1 - j));
+        if (between && Math.hypot(field.vx[k], field.vy[k], field.vz[k]) >= 0.03) cells.push(k);
+      }
+    }
+  }
+  field.cells = Int32Array.from(cells);
+}
+
 // The velocity of field f at a world point (trilinear between the open voxel centres around it), written to out = [vx, vy, vz].
 // False if the point is not in open air.
 function sample(vox, f, x, y, z, out) {
@@ -204,10 +238,10 @@ export function createWindParticles() {
     busy = true;
     const mine = token, alive = () => mine === token;
     try {
-      const flow = t.flow && !t.stale(dir) ? t.flow : await solveFlow(t.vox, { dir });
+      const flow = t.flow && !t.stale?.(dir) ? t.flow : await solveFlow(t.vox, { dir });
       if (!alive() || !flow) return;
       const field = await buildField(t.vox, flow, alive);
-      if (field && alive()) { addTunnelCells(t, field); cache.set(key, field); }
+      if (field && alive()) { (t.uncarved ? addGapCells : addTunnelCells)(t, field); cache.set(key, field); }
     } catch (e) {
       console.error("Wind particles: the airflow could not be solved:", e);
       if (alive()) cache.set(key, null); // do not retry until something changes
@@ -217,15 +251,15 @@ export function createWindParticles() {
   };
 
   // A particle born in the tunnel air (more where the tunnels carry more) and traced back upwind along the flow, so that a dense
-  // stream runs in through the opening and out of the far side. When `first`, only part of the way back, so the view starts full.
+  // stream runs in through the opening and out of the far side.
   const bt = [0, 0, 0];
-  const tunnelSeed = (i, t, first, pathSpeed, R) => {
+  const tunnelSeed = (i, t, pathSpeed, R) => {
     const f = fieldB, { vox } = t, { nx, nz, c, x0, z0, ye, dz } = vox, nxz = nx * nz;
     if (!f?.cells?.length) return false;
     const q = (Math.random() * f.cells.length) | 0; // every tunnel cell is equally likely, so a slow tunnel gets as many particles per metre as a fast one
     const k = f.cells[q], l = Math.floor(k / nxz), j = Math.floor((k - l * nxz) / nx), ci = k - l * nxz - j * nx;
     let x = x0 + (ci + Math.random()) * c, z = z0 + (j + Math.random()) * c, y = ye[l] + Math.random() * dz[l];
-    const step = 0.6 * c, limit = first ? Math.floor(Math.random() * 160) : 160;
+    const step = 0.6 * c, limit = 160;
     let back = 0;
     for (let n = 0; n < limit; n++) {
       if (!velocity(vox, x, y, z, bt)) break;
@@ -243,23 +277,47 @@ export function createWindParticles() {
     return true;
   };
 
-  // Where particles are born: upwind of the mass, spread across it, mostly low. `first` scatters them through the whole region instead.
-  const spawn = (i, t, dir, pathSpeed, first) => {
+  // A surrounding particle: born anywhere in a field laid along the wind, from well upwind of the massings to well downwind,
+  // and reaching a clear margin past the outermost one on both sides, every part of it equally likely. So however the massings
+  // are placed and wherever the wind comes from, there is open wind drifting past all their sides. (massBox holds them all.)
+  const surroundSeed = (i, t, dir, pathSpeed) => {
+    const { vox, massBox: mb } = t, [ux, uz] = dir;
+    const cx = (mb.x0 + mb.x1) / 2, cz = (mb.z0 + mb.z1) / 2, w = mb.x1 - mb.x0, d = mb.z1 - mb.z0;
+    const margin = clamp(SURROUND_PART * Math.max(w, d), SURROUND_MIN, SURROUND_MAX);
+    const along = (Math.abs(ux) * w + Math.abs(uz) * d) / 2 + margin * 1.5, across = (Math.abs(uz) * w + Math.abs(ux) * d) / 2 + margin;
+    for (let attempt = 0; attempt < 12; attempt++) {
+      const a = (Math.random() * 2 - 1) * along, b = (Math.random() * 2 - 1) * across;
+      const x = cx + ux * a - uz * b, z = cz + uz * a + ux * b, y = 0.3 + Math.random() * mb.top * 1.05;
+      if (!velocity(vox, x, y, z, bt)) continue; // (inside a massing or a building, or off the edge of the airflow's box)
+      px[i] = x; py[i] = y; pz[i] = z;
+      // a short life, so that they stay spread evenly instead of drifting off or being swept into lines
+      life[i] = clamp(margin / Math.max(pathSpeed, 0.1), 5, 14) * (0.7 + Math.random() * 0.6);
+      age[i] = 0;
+      trailClock[i] = 0;
+      for (let p = 0; p < TRAIL; p++) hist.set([x, y, z], (i * TRAIL + p) * 3);
+      return;
+    }
+    age[i] = life[i] = 1e9; // nowhere to start (drawn invisible): try again next frame
+  };
+
+  // Where particles are born: upwind of the mass, spread across it, mostly low.
+  const spawn = (i, t, dir, pathSpeed) => {
+    if (i >= STREAM_COUNT) return surroundSeed(i, t, dir, pathSpeed);
     const { vox, massBox: mb } = t;
     const cx = (mb.x0 + mb.x1) / 2, cz = (mb.z0 + mb.z1) / 2, R = Math.hypot(mb.x1 - mb.x0, mb.z1 - mb.z0) / 2;
     const [ux, uz] = dir, hMax = mb.top * 1.05;
     const reach = R * 1.5 + 12;
-    if (Math.random() < TUNNEL_SHARE && tunnelSeed(i, t, first, pathSpeed, R)) return;
+    if (Math.random() < (t.uncarved ? GAP_SHARE : TUNNEL_SHARE) && tunnelSeed(i, t, pathSpeed, R)) return;
     // The stream is aimed at the mass: as wide as the mass looks from upwind, and as high as it is, so most particles meet the tunnels.
     const half = (Math.abs(uz) * (mb.x1 - mb.x0) + Math.abs(ux) * (mb.z1 - mb.z0)) / 2 * 1.05 + 3;
     for (let attempt = 0; attempt < 12; attempt++) {
-      const a = first ? (Math.random() * 2 - 1) * reach : -reach + Math.random() * 4, b = (Math.random() * 2 - 1) * half;
+      const a = -reach + Math.random() * 4, b = (Math.random() * 2 - 1) * half;
       const x = cx + ux * a - uz * b, z = cz + uz * a + ux * b, y = 0.3 + Math.random() * hMax;
       const k = vox.at(x, y, z);
       if (k < 0) continue;
       px[i] = x; py[i] = y; pz[i] = z;
       life[i] = clamp((1.7 * (2 * reach)) / Math.max(pathSpeed, 0.1), 5, 45) * (0.7 + Math.random() * 0.6);
-      age[i] = first ? Math.random() * life[i] : 0;
+      age[i] = 0;
       trailClock[i] = 0;
       for (let p = 0; p < TRAIL; p++) hist.set([x, y, z], (i * TRAIL + p) * 3);
       return;
@@ -279,9 +337,50 @@ export function createWindParticles() {
     return true;
   };
 
+  // Carries particle i on by `seconds` without drawing it, in steps of at most a voxel. False if it leaves the open air.
+  const advance = (i, vox, seconds) => {
+    let x = px[i], y = py[i], z = pz[i], left = seconds;
+    while (left > 1e-6) {
+      if (!velocity(vox, x, y, z, tmp)) return false;
+      const a0 = tmp[0], a1 = tmp[1], a2 = tmp[2], h = Math.min(left, vox.c / Math.max(Math.hypot(a0, a1, a2), 1e-3));
+      if (!velocity(vox, x + a0 * h * 0.5, y + a1 * h * 0.5, z + a2 * h * 0.5, tmp)) { tmp[0] = a0; tmp[1] = a1; tmp[2] = a2; }
+      const qx = x + tmp[0] * h, qy = Math.max(0.05, y + tmp[1] * h), qz = z + tmp[2] * h;
+      if (vox.at(qx, qy, qz) < 0) return false;
+      x = qx; y = qy; z = qz; left -= h;
+      speedNow[i] = Math.hypot(tmp[0], tmp[1], tmp[2]) / Math.max(1e-6, speedB);
+    }
+    px[i] = x; py[i] = y; pz[i] = z;
+    return true;
+  };
+
+  // A particle for the first frame, already in mid-flow: born as usual, then carried to a random point of its life with its
+  // trail drawn out behind it. So the particles look from the start as they do once they have been running for a while,
+  // instead of fading in upwind and taking a minute to arrive.
+  const prime = (i, t, dir, pathSpeed) => {
+    for (let attempt = 0; attempt < 5; attempt++) {
+      spawn(i, t, dir, pathSpeed);
+      if (age[i] > 1e8) return;
+      const reached = Math.random() * life[i], tail = Math.min(reached, SEG * TRAIL_DT);
+      if (!advance(i, t.vox, reached - tail)) continue; // it would have left the air before then: try another
+      const b = i * TRAIL * 3;
+      for (let p = 0; p < TRAIL; p++) hist.set([px[i], py[i], pz[i]], b + p * 3);
+      let whole = true;
+      for (let p = 0; p < SEG && whole; p++) {
+        whole = advance(i, t.vox, tail / SEG);
+        hist.copyWithin(b + 3, b, b + 3 * SEG);
+        hist[b] = px[i]; hist[b + 1] = py[i]; hist[b + 2] = pz[i];
+      }
+      if (!whole) continue;
+      age[i] = reached;
+      trailClock[i] = Math.random() * TRAIL_DT;
+      return;
+    }
+    spawn(i, t, dir, pathSpeed); // (a short-lived spot: it starts from its birth)
+  };
+
   return {
     clear,
-    // t: the tunnels (tunnels.js), done. wind: { from, mean } the time of year. dt: seconds. pace: scene speed relative to the real wind.
+    // t: the tunnels (tunnels.js), done, or the uncarved massings ({ uncarved: true, done: true, vox, massBox }). wind: { from, mean } the time of year. dt: seconds. pace: scene speed relative to the real wind.
     // Returns a line for the panel ("" when it is simply running).
     update(to, t, wind, { dt = 0, pace = 2 } = {}) {
       if (!to || !t?.done || !wind) { clear(); return ""; }
@@ -305,7 +404,7 @@ export function createWindParticles() {
       const mixDir = fieldA ? [fieldA.dir[0] + (bdir[0] - fieldA.dir[0]) * e, fieldA.dir[1] + (bdir[1] - fieldA.dir[1]) * e] : bdir;
       const mixLen = Math.hypot(mixDir[0], mixDir[1]) || 1, sdir = [mixDir[0] / mixLen, mixDir[1] / mixLen];
       const typical = speedB * 1.1;
-      if (!seeded) { for (let i = 0; i < COUNT; i++) spawn(i, t, sdir, typical, true); seeded = true; }
+      if (!seeded) { for (let i = 0; i < COUNT; i++) prime(i, t, sdir, typical); seeded = true; }
 
       // Fewer, larger steps when the air is fast relative to a voxel (and a hard cap, so a slow frame cannot stall the page).
       const top = (fieldB.maxSpeed || 2) * Math.max(speedB, fieldA ? speedA : 0);
@@ -328,7 +427,7 @@ export function createWindParticles() {
             speedNow[i] = Math.hypot(tmp[0], tmp[1], tmp[2]) / Math.max(1e-6, speedB);
           }
         }
-        if (dead) { spawn(i, t, sdir, typical, false); x = px[i]; y = py[i]; z = pz[i]; speedNow[i] = 0; }
+        if (dead) { spawn(i, t, sdir, typical); x = px[i]; y = py[i]; z = pz[i]; speedNow[i] = 0; }
         else { px[i] = x; py[i] = y; pz[i] = z; }
 
         // The trail: the head is live, an older point is kept every TRAIL_DT.

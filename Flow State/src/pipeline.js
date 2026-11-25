@@ -70,7 +70,7 @@ export async function generate(lat, lon, radius, saved = null) {
     const payload = { site: state.site, features, saved };
     emit("site:built", payload);
     emit("site:ready", payload);
-    if (saved) await restoreAll(saved.state, { modelBuffer: saved.modelBuffer });
+    if (saved) await restoreAll(saved.state, { modelBuffer: saved.modelBuffer, modelFiles: saved.modelFiles });
 
     await frame();
     loadingEl.classList.add("fade");

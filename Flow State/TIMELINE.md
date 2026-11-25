@@ -107,3 +107,35 @@ Earlier entries (before 2026-11-20) were written up afterwards from what was ask
 | 2026-11-20 | Made every side-panel section start collapsed whenever the site is opened, and stopped remembering which were open. |
 | 2026-11-21 | Fixed grooves and dents in the skin beside the openings when Circulation was on: hallways that only meet the skin inside a tunnel's reveal are no longer cut. |
 | 2026-11-21 | Added a Cost savings panel that estimates the yearly and 10 and 25 year saving against air-conditioning electricity, from the building's floor area, the site's climate, and the region's currency and electricity price. |
+
+## 24 Nov 2026: several massings, facades and floor plans
+
+| Date | Change |
+|---|---|
+| 2026-11-24 | Started a local server (port 8000) so the site opens in Chrome. |
+| 2026-11-24 | Made it possible to import, duplicate, select, move and delete more than one massing, all saved with the site, with wind particles flowing round and between them even without tunnels. |
+| 2026-11-24 | Added extra wind particles on all sides of wherever the massings are placed. |
+| 2026-11-24 | Made the wind particles appear already mid-flow when switched on. |
+| 2026-11-24 | Made circulation plan each separate structure on its own, so every one gets its own stairs, cores and entrances. |
+| 2026-11-24 | Removed the Sun (grows towards the sun) and Wind (rounds the edges) checkboxes and their code. |
+| 2026-11-24 | Added a Facades panel, moved the Soften the skin slider into it, and added eight flat facade textures. |
+| 2026-11-24 | Replaced the flat textures with five protruding facades: Triangular, Cubic, Organic, Protruding fins and Hexagonal. |
+| 2026-11-24 | Tried adding a matching frame round each tunnel opening, then removed it because the facades looked better before. |
+| 2026-11-24 | Changed the tunnel openings to take shapes from each facade's pattern, so the panels framed them. |
+| 2026-11-24 | Made the Cubic facade's smallest size 200%, with a slider that only made it larger (undone later the same day, see below). |
+| 2026-11-24 | Made the Organic web wrap continuously round the corners. |
+| 2026-11-24 | Returned Cubic, Protruding fins and Hexagonal to their first 3D versions with round openings, keeping Organic as it was. |
+| 2026-11-24 | Gave Triangular a 60 to 400% size range, with shades open over the openings and closing further away. |
+| 2026-11-24 | Made the Triangular tiles one size, connected across the walls and corners without large gaps, with only their openness changing. |
+| 2026-11-24 | Removed the soften-the-skin function and its code, keeping the rigid skin. |
+| 2026-11-24 | Coloured the openings in Protruding fins and Hexagonal navy to match their glazing. |
+| 2026-11-24 | Made the Cubic blocks and openings white. |
+| 2026-11-24 | Removed the erosion speed menu next to Pause. |
+| 2026-11-24 | Made Save site keep the finished wind tunnels, so they reload without being grown again. |
+| 2026-11-24 | Made every site open with no facade and default tunnel settings unless it was saved otherwise. |
+| 2026-11-24 | Fixed tunnels and facades on rounded forms: the original smooth surface is kept and facades wrap over it. |
+| 2026-11-24 | Fixed Organic and Triangular on stepped forms, where panels floated across open space and some walls were bare, by covering each visible face. |
+| 2026-11-24 | Added a scrollable deck of floor plans on the right, showing each floor's wind tunnels and circulation once both are done. |
+| 2026-11-24 | Restyled the floor plans as fine black-ink drawings with varied line weights, double-line walls, stippled tunnels and single-line titles. |
+| 2026-11-24 | Removed the lip the skin made on the ground round the foot of the building. |
+| 2026-11-24 | Brought SOFTWARE_SUMMARY.md and this timeline up to date, and corrected the summary's tunnel method to the ductwork that actually runs. |

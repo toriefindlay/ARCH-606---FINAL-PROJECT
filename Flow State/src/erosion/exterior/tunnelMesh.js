@@ -5,7 +5,7 @@
 // where they meet, come out as smooth, rounded passages. The same field goes to the shader (see view.js), which discards the mass's own surface
 // where the field is above ISO, so that where a tunnel reaches a wall it leaves a smooth opening. The walls are drawn as the tunnels grow.
 //
-// THE SKIN: once the tunnels are finished (and `skin.amount` is above 0) the outside of the mass is drawn as one smooth softened surface instead (see
+// THE SKIN: once the tunnels are finished the outside of the mass is drawn as one surface instead (see
 // skinShell.js), which replaces the mass's own surface and takes the tunnels as part of itself. Nothing here changes the tunnels or the cooling.
 //
 // The work of a redraw is a generator that gives the page back every few milliseconds (see marching.js), one slice a frame, so that no frame is held up by
@@ -17,12 +17,13 @@ import { march, fresh, due } from "./marching.js";
 const ISO = 0.5; // the level of the field the surface lies on (the same as uTunnelIso in view.js)
 const MIN_INTERVAL = 150; // ms between one redraw and the start of the next while the tunnels grow
 
-export function createMeshView(uniforms, empty) {
+export function createMeshView(uniforms, empty, dressSkin = () => {}) { // dressSkin: gives the skin's material the facade (view.js)
   let group = null, mesh = null, texture = null;
-  let skinMesh = null; // the softened outside of the mass (see skinShell.js), while it is shown: it replaces the mass's own surface
+  let skinMesh = null; // the outside of the mass (see skinShell.js), while it is shown: it replaces the mass's own surface
   let wall = null, skinMaterial = null, matched = false, lastKey = "", lastTime = 0;
+  let plain = null; // the tunnels' own colour, kept while they are lined for a facade
   let job = null; // the redraw in progress: { key, parent, gen }
-  let visible = true; // are the tunnels' walls shown? (the mass's own surface and the softened skin are not affected)
+  let visible = true; // are the tunnels' walls shown? (the mass's own surface and the skin are not affected)
   const shell = createSkinShell();
 
   const dropSkin = () => {
@@ -49,7 +50,7 @@ export function createMeshView(uniforms, empty) {
   // The materials (the colour of the mass's own), and the group the tunnels' walls go in (which the x-ray mode leaves solid).
   const place = (parent) => {
     if (!wall) wall = new THREE.MeshLambertMaterial({ side: THREE.DoubleSide });
-    if (!skinMaterial) skinMaterial = new THREE.MeshLambertMaterial({ side: THREE.DoubleSide });
+    if (!skinMaterial) { skinMaterial = new THREE.MeshLambertMaterial({ side: THREE.DoubleSide }); dressSkin(skinMaterial); }
     if (!matched) parent.traverse((o) => { if (!matched && o.isMesh && o.material?.color && o !== mesh && o !== skinMesh) { wall.color.copy(o.material.color); skinMaterial.color.copy(o.material.color); matched = true; } });
     if (!group || group.parent !== parent) {
       group?.parent?.remove(group);
@@ -61,12 +62,12 @@ export function createMeshView(uniforms, empty) {
     if (mesh) { group.remove(mesh); mesh.geometry.dispose(); mesh = null; }
   };
 
-  // What a redraw makes, a slice at a time: { kind: "skin", built } for the softened skin (amount above 0), or { kind: "tunnels", ... } for the tunnels alone.
+  // What a redraw makes, a slice at a time: { kind: "skin", built } for the skin, or { kind: "tunnels", ... } for the tunnels alone.
   function* compute(tunnels, skin) {
     fresh();
-    if (skin) { // (once the tunnels are done: the skin, from the rigid end (amount 0) to the softest (1))
-      const built = yield* shell.build(tunnels, skin.amount ?? 0, skin.cuts ?? null);
-      if (built) return { kind: "skin", built };
+    if (skin) { // (once the tunnels are done)
+      const built = yield* shell.build(tunnels, skin.cuts ?? null, skin.shapes?.shape ?? null, !!skin.shapes);
+      if (built) return { kind: "skin", built, shapes: skin.shapes ?? null };
     }
     const { massBox } = tunnels, { edges } = tunnels.network();
     const segs = edges.map((e) => [e.a.x, e.a.y, e.a.z, e.b.x, e.b.y, e.b.z, e.r]); // (a copy: the network goes on changing while this is drawn)
@@ -119,8 +120,12 @@ export function createMeshView(uniforms, empty) {
     place(parent);
     if (r.kind === "skin") { // its surface, with the tunnels in it, replaces the mass's own; the tunnels' map is not needed
       uniforms.uTunnelTex.value = empty;
+      // (openings shaped for a facade are lined in a colour that goes with it; otherwise the tunnels are the mass's own colour)
+      plain ??= wall.color.clone();
+      if (r.shapes) wall.color.set(r.shapes.lining);
+      else wall.color.copy(plain);
       if (r.built.wall.position.length) { mesh = new THREE.Mesh(geometryOf(r.built.wall), wall); group.add(mesh); }
-      if (r.built.skin.position.length) { skinMesh = new THREE.Mesh(geometryOf(r.built.skin), skinMaterial); parent.add(skinMesh); } // (faint in x-ray, like the mass)
+      if (r.built.skin.position.length) { skinMesh = new THREE.Mesh(geometryOf(r.built.skin), skinMaterial); skinMesh.userData.skin = true; skinMesh.userData.shapesKey = r.shapes?.key ?? ""; parent.add(skinMesh); } // (faint in x-ray, like the mass)
       uniforms.uHideMass.value = 1;
       return;
     }
@@ -147,13 +152,20 @@ export function createMeshView(uniforms, empty) {
     },
     // Shows the tunnels of `tunnels` (tunnels.js) under `parent`. Cheap to call every frame: a redraw is started when they have changed (not sooner than
     // MIN_INTERVAL after the last), and one slice of it is done at every call.
-    // `skin` ({ amount: 0 to 1, cuts: the circulation's hallways as boxes, cutsKey: says when they have changed }, optional) gives the outside of the mass its skin once the tunnels are done (see skinShell.js): amount 0 is the rigid end (a
-    // flat, smooth facade with crisp round openings and angled reveals), 1 the softest. Without it the mass's own surface is kept, with the raw openings.
-    update(parent, tunnels, skin = null) {
+    // (skin.shapes, optional: { key (says when they have changed), lining (a colour for the openings), shape (see skinShell.js) })
+    // `skin` ({ cuts: the circulation's hallways as boxes, cutsKey: says when they have changed }, optional) gives the outside of the mass its skin once the
+    // tunnels are done (see skinShell.js): a flat facade with crisp openings and angled reveals. Without it the mass's own surface is kept, with the raw openings.
+    // `lining` (a colour, or null) is for the openings and tunnels where there is no skin to carry it.
+    update(parent, tunnels, skin = null, lining = null) {
       if (!parent || !tunnels || !tunnels.carved) return clear();
       if (job && job.parent !== parent) job = null;
+      if (!skin && wall) { // (without a skin the tunnels' walls take their colour at once: it needs no redraw)
+        plain ??= wall.color.clone();
+        if (lining !== null) wall.color.set(lining);
+        else wall.color.copy(plain);
+      }
       if (!job) {
-        const key = `${tunnels.id}|${parent.id}|${tunnels.version}|${tunnels.done && skin ? `skin${skin.amount ?? 0}|${skin.cutsKey ?? ""}` : "raw"}`;
+        const key = `${tunnels.id}|${parent.id}|${tunnels.version}|${tunnels.done && skin ? `skin|${skin.cutsKey ?? ""}|${skin.shapes?.key ?? ""}` : "raw"}`;
         if (key === lastKey && group?.parent === parent) return;
         if (group?.parent === parent && performance.now() - lastTime < MIN_INTERVAL) return;
         job = { key, parent, gen: compute(tunnels, tunnels.done ? skin : null) };

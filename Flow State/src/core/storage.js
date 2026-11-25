@@ -59,7 +59,8 @@ export async function cachePut(key, value) {
 
 // ---- saved sites
 
-// meta: small record shown in the list; data: raw map data; modelRec: { name, buffer } or null.
+// meta: small record shown in the list; data: raw map data; modelRec: { name, buffer, files: [{ name, buffer }] } or null
+// (`files` has one entry per massing; name and buffer are the first one's, which is all that older saved sites hold).
 export async function putSite(meta, data, modelRec) {
   const db = await openDB();
   const tx = db.transaction(["sites", "siteData", "models"], "readwrite");
@@ -78,7 +79,7 @@ export async function getSite(id) {
     request(db.transaction("models").objectStore("models").get(id)),
   ]);
   if (!meta || !data) throw new Error("That saved site is missing its data.");
-  return { ...meta, data, modelBuffer: mdl?.buffer ?? null };
+  return { ...meta, data, modelBuffer: mdl?.buffer ?? null, modelFiles: mdl?.files ?? null };
 }
 
 export async function listSites() {

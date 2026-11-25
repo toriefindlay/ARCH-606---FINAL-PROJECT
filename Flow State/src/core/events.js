@@ -7,8 +7,6 @@
 //   layer:toggled  {name, visible}          a Layers checkbox changed
 //   mass:changed  {mass}                    the imported mass was placed, scaled or removed (mass may be null)
 //   cuts:changed                             an erosion module's cuts changed (see erosion/combine.js)
-//   sun:advanced  {vec, hours}              the Sun panel's simulation moved the sun: vec is its direction (world, y up) and
-//                                           hours the simulated time that passed (only while a day or the year is playing)
 
 const handlers = new Map();
 
