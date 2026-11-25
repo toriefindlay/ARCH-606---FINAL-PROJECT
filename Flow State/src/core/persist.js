@@ -2,7 +2,7 @@
 //
 //   registerPersist("myKey", {
 //     capture: () => serialisableValue,
-//     restore: (value, extras) => {},   // may be async; extras = { modelBuffer }
+//     restore: (value, extras) => {},   // may be async; extras = { modelBuffer, modelFiles }
 //   });
 //
 // Parts are captured and restored in registration order (the import order in main.js).

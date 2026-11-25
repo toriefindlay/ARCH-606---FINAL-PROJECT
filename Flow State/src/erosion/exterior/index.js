@@ -9,6 +9,7 @@ import { createForm } from "./form.js";
 import { createWindErosion, setActiveForm } from "./windErode.js";
 import { createSunGrowth } from "./sunGrow.js";
 import { createTunnels, REACH } from "./tunnels.js";
+import { createVoxelMass } from "./voxelFlow.js";
 import { setActiveTunnels } from "./tunnelCut.js";
 import { renderPreview, createFormView, createTunnelView, setXray } from "./view.js";
 import { mountPanel, settings, syncControls, setWindNote, setSunNote, setTunnelNote, setFloorRows, setWindOptions, setParticleNote, setParticleWindOptions } from "./panel.js";
@@ -102,6 +103,7 @@ function stopForm() {
   particles?.clear();
   tunnels = null;
   tunnelStats = null;
+  preview = null;
 }
 
 // The wind tunnels' voxel mass is built from the form the first time it is wanted and then kept, so tunnels stay worn between solves and when
@@ -341,15 +343,47 @@ function windFrame(dt) {
   if (windErosion.recompute()) formChanged();
 }
 
-// The wind particles: once the tunnels are finished, small particles follow the airflow through and round them, for the wind of the time of
-// year chosen in the panel (by default the one the tunnels were worn for).
+// The massings without tunnels, as the particles want them: a voxel copy of the form (and the site's buildings) to solve the
+// airflow on. It is made again when the form changes, but only once it has stopped changing for a moment, so that the sun or
+// the wind reshaping it does not restart the airflow at every step.
+const PREVIEW_SETTLE = 1500; // ms
+let preview = null; // { uncarved, done, vox, massBox, form, builtOn }
+let previewSeen = -1, previewSince = 0;
+function uncarvedMass() {
+  if (preview && preview.form === form && preview.builtOn === form.version) return preview;
+  if (form.version !== previewSeen) { previewSeen = form.version; previewSince = performance.now(); }
+  // (a new or moved mass has no copy yet, and need not wait: it has already settled, see RESCAN_DELAY)
+  if (preview?.form === form && performance.now() - previewSince < PREVIEW_SETTLE) return preview;
+  const vox = createVoxelMass(form, { cityHeight: cityHeights(state.site.radius, state.features?.buildings) });
+  if (!vox) return null;
+  // the footprint and height of the massings, which the particles are aimed at
+  let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity, top = 0;
+  for (let j = 0; j < form.nz; j++) {
+    for (let i = 0; i < form.nx; i++) {
+      const h = form.heights[j * form.nx + i];
+      if (h <= 0.5) continue;
+      top = Math.max(top, h);
+      x0 = Math.min(x0, form.x0 + i * form.cx); x1 = Math.max(x1, form.x0 + (i + 1) * form.cx);
+      z0 = Math.min(z0, form.z0 + j * form.cz); z1 = Math.max(z1, form.z0 + (j + 1) * form.cz);
+    }
+  }
+  if (top <= 0) return null;
+  preview = { uncarved: true, done: true, vox, massBox: { x0, x1, z0, z1, top }, form, builtOn: form.version };
+  return preview;
+}
+
+// The wind particles: small particles follow the airflow round and between the massings, or through the wind tunnels once there
+// are some, for the wind of the time of year chosen in the panel (by default the one the tunnels were worn for).
 function particleFrame(dt) {
   if (!settings.windParticles) { particles.clear(); return setParticleNote(""); }
-  const t = tunnels && form && tunnels.builtOn === form.version ? tunnels : null;
-  if (!t || !getMassInfo()) { particles.clear(); return setParticleNote("Wear wind tunnels into the mass first."); }
+  if (!getMassInfo()) { particles.clear(); return setParticleNote("Place a .3dm mass for the wind to flow round."); }
+  if (!form) { particles.clear(); return setParticleNote("Reading the massings…"); }
   requestWind();
   if (!getWind()) return setParticleNote("Loading wind data…");
-  if (!t.done) { particles.clear(); return setParticleNote("Waiting for the tunnels to finish."); }
+  const worn = tunnels && tunnels.builtOn === form.version ? tunnels : null;
+  if (settings.erodeTunnels && worn && !worn.done) { particles.clear(); return setParticleNote("Waiting for the tunnels to finish."); }
+  const t = worn?.done ? worn : uncarvedMass();
+  if (!t) { particles.clear(); return setParticleNote(""); }
   const periods = getWarmPeriods(4);
   setParticleWindOptions(periods);
   const sel = settings.particleWind;

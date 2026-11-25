@@ -82,14 +82,19 @@
     <details id="model-panel" class="section tone-model">
       <summary>Model</summary>
       <button type="button" id="model-import" class="tool">Import .3dm</button>
-      <input type="file" id="model-file" accept=".3dm" hidden>
-      <p class="hint">Or drop a .3dm file on the scene. It lands on the pin. Tick Manipulate to move, turn and scale it. Press Delete to remove it.</p>
+      <input type="file" id="model-file" accept=".3dm" multiple hidden>
+      <p class="hint">Or drop .3dm files on the scene. Import as many massings as you like: the first lands on the pin, the next ones beside it. Tick Manipulate, then click a massing to select it and move, turn or scale it. Press Delete to remove the selected one.</p>
       <p id="model-info" class="stats hidden"></p>
       <div id="model-actions" class="hidden">
+        <div id="model-list"></div>
         <label><input type="checkbox" id="model-manipulate"> Manipulate</label>
         <div class="tools">
+          <button type="button" class="tool" id="model-duplicate" title="Add a copy of the selected massing beside the others">Duplicate</button>
           <button type="button" class="tool" id="model-reset">Reset size</button>
-          <button type="button" class="tool" id="model-remove" title="Delete the imported mass (Delete key)">Delete mass</button>
+        </div>
+        <div class="tools">
+          <button type="button" class="tool" id="model-remove" title="Delete the selected massing (Delete key)">Delete selected</button>
+          <button type="button" class="tool" id="model-remove-all">Delete all</button>
         </div>
       </div>
     </details>

@@ -2,21 +2,25 @@ import * as THREE from "three";
 import { Rhino3dmLoader } from "three/addons/loaders/3DMLoader.js";
 import { renderer, camera, controls, onFrame } from "../view/scene.js";
 import { aimRay, groundPoint } from "../view/pick.js";
-import { clearChildren } from "../view/labels.js";
 import { state, layers } from "../core/state.js";
 import { on, emit } from "../core/events.js";
 import { $ } from "../core/dom.js";
 import { registerPersist } from "../core/persist.js";
 
-// The starting mass: a Rhino .3dm dropped on the pin, restyled as a white-model massing,
-// with a gumball to move and turn it and corner points to scale it (shown while "Manipulate" is ticked).
-// This is the geometry the erosion modules carve.
+// The starting massings: one or more Rhino .3dm files dropped on the site, restyled as white-model massings. One of them is
+// selected at a time; it has a gumball to move and turn it and corner points to scale it (shown while "Manipulate" is ticked).
+// Together they are "the mass" the erosion modules carve and the wind flows round: they all sit under one group, so the gaps
+// between them are simply open air.
 
 // Rhino UnitSystem enum values and names -> metres per unit.
 const UNIT_BY_ENUM = { 1: 1e-6, 2: 1e-3, 3: 1e-2, 4: 1, 5: 1e3, 6: 2.54e-8, 7: 2.54e-5, 8: 0.0254, 9: 0.3048, 10: 1609.344 };
 const UNIT_BY_NAME = { microns: 1e-6, millimeters: 1e-3, centimeters: 1e-2, meters: 1, kilometers: 1e3, inches: 0.0254, feet: 0.3048, miles: 1609.344 };
 
-let model = null; // { name, buffer, placement, size, scale, initial, handles, outline, gumball, manipulating }
+let models = []; // [{ name, buffer, placement, size, scale, initial }]
+let model = null; // the selected one of `models` (null only when there are none)
+let massRoot = null; // the group (under layers.model) holding every massing's placement, and nothing else
+let ui = null; // { outline, handles, gumball }: the manipulation controls, shared, put on the selected massing
+let manipulating = false;
 let modelDrag = null; // { part, start, scale, rotation, x, z, distance, angle }: the state when a drag began
 let rhinoLoader = null;
 
@@ -26,16 +30,21 @@ const MODEL_LINE = new THREE.LineBasicMaterial({ color: 0xd4542b });
 
 // ---- public API for other modules
 
-// The placed mass, or null. `object` is a THREE.Group already scaled and positioned in world
-// space (metres, centred on the pin, base on y = 0); `bounds` is its world-space Box3.
+// All the placed massings as one mass, or null. `object` is a THREE.Group holding every massing, each already scaled and
+// positioned in world space (metres, base on y = 0); `bounds` is the world-space Box3 round all of them.
 export function getMassInfo() {
-  if (!model) return null;
-  model.placement.updateMatrixWorld(true);
-  return { name: model.name, object: model.placement, bounds: new THREE.Box3().setFromObject(model.placement), scale: model.scale };
+  if (!models.length) return null;
+  massRoot.updateMatrixWorld(true);
+  const name = models.length === 1 ? models[0].name : `${models.length} massings`;
+  return { name, object: massRoot, bounds: new THREE.Box3().setFromObject(massRoot), count: models.length };
 }
 
-// Raw file bytes, so a saved site can reload the model.
-export const getMassFile = () => (model ? { name: model.name, buffer: model.buffer } : null);
+// Raw file bytes, so a saved site can reload the massings. `files` is in the same order as the massings (see registerPersist
+// below); copies of one massing share its bytes, which browser storage keeps only once.
+export const getMassFile = () =>
+  models.length
+    ? { name: models[0].name, buffer: models[0].buffer, files: models.map((m) => ({ name: m.name, buffer: m.buffer })) }
+    : null;
 
 // ---- loading
 
@@ -122,21 +131,58 @@ function setModelMsg(text, isError = false) {
   el.innerHTML = text;
 }
 
-function removeModel() {
-  if (layers.model) clearChildren(layers.model);
+const emitChanged = () => emit("mass:changed", { mass: getMassInfo() });
+
+function discard(entry) {
+  massRoot?.remove(entry.placement);
+  entry.placement.traverse((o) => o.geometry?.dispose()); // (a copy still using it simply sends it to the GPU again)
+}
+
+// Deletes one massing (the selected one unless told otherwise).
+function removeModel(entry = model) {
+  if (!entry) return;
+  const at = models.indexOf(entry);
+  if (at < 0) return;
+  discard(entry);
+  models.splice(at, 1);
+  modelDrag = null;
+  controls.enabled = true;
+  if (entry === model) model = models[Math.min(at, models.length - 1)] ?? null;
+  refresh();
+  emitChanged();
+}
+
+function removeAll() {
+  if (!models.length) return;
+  models.forEach(discard);
+  models = [];
   model = null;
   modelDrag = null;
   controls.enabled = true;
-  setModelMsg("");
-  $("model-actions").classList.add("hidden");
-  $("model-manipulate").checked = false;
-  emit("mass:changed", { mass: null });
+  refresh();
+  emitChanged();
 }
 
-// Reads a .3dm, restyles it as a white-model massing and drops it on the pin.
-// `scale` and `pose` ({ x, z, rot }) restore a saved size and position; otherwise the size is chosen from the model's units.
-export async function placeModel(buffer, name, scale = null, pose = null) {
-  if (!state.siteGroup || !layers.model) return;
+// Choosing another massing only moves the controls: the mass itself has not changed.
+function selectModel(entry) {
+  if (!entry || entry === model) return;
+  model = entry;
+  refresh();
+}
+
+// Reads a .3dm, restyles it as a white-model massing and adds it to the site. The first lands on the pin; later ones land
+// beside what is already there. `scale` and `pose` ({ x, z, rot }) restore a saved size and position; otherwise the size is
+// chosen from the model's units. Files are read one at a time (the reader reports failures to whoever is waiting).
+let queue = Promise.resolve();
+export function placeModel(buffer, name, scale = null, pose = null) {
+  const site = state.siteGroup;
+  const next = queue.then(() => (site && state.siteGroup === site ? readAndPlace(buffer, name, scale, pose, site) : undefined));
+  queue = next.catch(() => {});
+  return next;
+}
+
+async function readAndPlace(buffer, name, scale, pose, site) {
+  if (!layers.model) return;
   setModelMsg(`Reading ${name}…`);
   let obj;
   try {
@@ -146,7 +192,7 @@ export async function placeModel(buffer, name, scale = null, pose = null) {
     setModelMsg(`Couldn't read that file (${e?.message ?? e}).`, true);
     return;
   }
-  if (!state.siteGroup) return; // site was closed while the file loaded
+  if (state.siteGroup !== site) return; // the site was closed while the file loaded
 
   // Drop hidden layers and points, and restyle everything else.
   const drop = [];
@@ -186,10 +232,8 @@ export async function placeModel(buffer, name, scale = null, pose = null) {
   inner.updateMatrixWorld(true);
   const size = box.getSize(new THREE.Vector3());
 
-  removeModel();
   const placement = new THREE.Group();
   placement.add(inner);
-  layers.model.add(placement);
 
   // Fit absurd sizes (wrong units) to the site so the model is findable; the user can still resize.
   const R = state.site.radius;
@@ -198,17 +242,41 @@ export async function placeModel(buffer, name, scale = null, pose = null) {
   if (horiz > R * 0.8) initial = (R * 0.3) / horiz;
   else if (horiz < R * 0.01) initial = (R * 0.05) / horiz;
 
-  model = { name, buffer, placement, size, scale: initial, initial, handles: [], outline: null, gumball: null, manipulating: false };
-  if (scale > 0) model.scale = scale;
+  const entry = { name, buffer, placement, size, scale: clampScale(size, scale > 0 ? scale : initial), initial };
+  placement.scale.setScalar(entry.scale);
   if (pose) {
     placement.position.set(pose.x ?? 0, 0, pose.z ?? 0);
     placement.rotation.y = pose.rot ?? 0;
   }
-  buildHandles();
-  applyModelScale(model.scale);
-  setManipulating(false);
-  $("model-actions").classList.remove("hidden");
-  if (!(scale > 0) && initial !== 1) setModelMsg(`${name}: units looked wrong, so it was resized to fit. Drag a corner to adjust.`);
+  addEntry(entry, !pose);
+  if (!(scale > 0) && initial !== 1) setModelMsg(`${name}: units looked wrong, so it was resized to fit. Tick Manipulate and drag a corner to adjust.`);
+}
+
+// Moves a new massing clear of the ones already there: to their east, a street's width away.
+function placeBeside(placement) {
+  const others = getMassInfo()?.bounds;
+  if (!others) return;
+  placement.updateMatrixWorld(true);
+  const box = new THREE.Box3().setFromObject(placement);
+  const gap = Math.min(15, Math.max(4, 0.4 * (box.max.x - box.min.x)));
+  placement.position.x += others.max.x + gap - box.min.x;
+  placement.position.z += (model ? model.placement.position.z : 0) - placement.position.z;
+}
+
+function addEntry(entry, beside) {
+  if (beside) placeBeside(entry.placement);
+  massRoot.add(entry.placement);
+  models.push(entry);
+  model = entry;
+  refresh();
+  emitChanged();
+}
+
+// A second copy of the selected massing, with its size and turn, set down beside the others.
+function duplicateModel() {
+  if (!model) return;
+  const placement = model.placement.clone(true);
+  addEntry({ ...model, placement }, true);
 }
 
 // ---- scale handles
@@ -216,9 +284,10 @@ export async function placeModel(buffer, name, scale = null, pose = null) {
 function buildHandles() {
   const outline = new THREE.LineLoop(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0xd4542b, depthTest: false }));
   outline.renderOrder = 20;
+  outline.frustumCulled = false; // its points move from massing to massing
   layers.model.add(outline);
-  model.outline = outline;
 
+  const handles = [];
   for (let i = 0; i < 4; i++) {
     // An invisible sphere keeps the handle easy to grab; the small orange point inside it is what you see.
     const h = new THREE.Mesh(new THREE.SphereGeometry(0.5, 8, 6), new THREE.MeshBasicMaterial({ visible: false }));
@@ -228,10 +297,11 @@ function buildHandles() {
     h.add(dot);
     h.userData.part = "scale";
     layers.model.add(h);
-    model.handles.push(h);
+    handles.push(h);
   }
-  model.gumball = buildGumball();
-  layers.model.add(model.gumball.group);
+  const gumball = buildGumball();
+  layers.model.add(gumball.group);
+  ui = { outline, handles, gumball };
 }
 
 // The gumball: arrows to slide the mass east-west (red) and north-south (green), a square to slide it freely,
@@ -268,20 +338,34 @@ function buildGumball() {
   return { group, pickers };
 }
 
-// Manipulating shows the scale box, its corner points and the gumball. Otherwise only the model itself is drawn.
+// Manipulating shows the selected massing's scale box, corner points and gumball. Otherwise only the massings are drawn.
 function setManipulating(on) {
-  model.manipulating = on;
-  model.outline.visible = on;
-  model.handles.forEach((h) => (h.visible = on));
-  model.gumball.group.visible = on;
+  manipulating = on;
   $("model-manipulate").checked = on;
   if (!on) canvasEl.style.cursor = "";
+  refresh();
 }
 
 const rad2deg = (r) => ((((r * 180) / Math.PI) % 360) + 360) % 360;
 
-// Puts the scale box, corner points and gumball where the mass is, and tells everyone the mass changed.
-function layout() {
+// Brings the panel and the manipulation controls up to date with the massings and the selection.
+function refresh() {
+  const show = manipulating && !!model;
+  if (ui) {
+    ui.outline.visible = show;
+    ui.handles.forEach((h) => (h.visible = show));
+    ui.gumball.group.visible = show;
+  }
+  $("model-actions").classList.toggle("hidden", !model);
+  renderList();
+  if (!model) {
+    manipulating = false;
+    $("model-manipulate").checked = false;
+    canvasEl.style.cursor = "";
+    setModelMsg("");
+    return;
+  }
+
   const { placement, size, scale: s } = model;
   const hx = (size.x * s) / 2, hz = (size.z * s) / 2, y = 0.6;
   const cos = Math.cos(placement.rotation.y), sin = Math.sin(placement.rotation.y);
@@ -290,37 +374,70 @@ function layout() {
     placement.position.x + x * cos + z * sin,
     placement.position.z - x * sin + z * cos,
   ]);
-  model.outline.geometry.setFromPoints(corners.map(([x, z]) => new THREE.Vector3(x, y, z)));
-  model.handles.forEach((h, i) => h.position.set(corners[i][0], y, corners[i][1]));
-  model.gumball.group.position.set(placement.position.x, y, placement.position.z);
+  ui.outline.geometry.setFromPoints(corners.map(([x, z]) => new THREE.Vector3(x, y, z)));
+  ui.handles.forEach((h, i) => h.position.set(corners[i][0], y, corners[i][1]));
+  ui.gumball.group.position.set(placement.position.x, y, placement.position.z);
 
   setModelMsg(
-    `<b>${model.name}</b><br>${(size.x * s).toFixed(1)} × ${(size.z * s).toFixed(1)} m footprint · ${(size.y * s).toFixed(1)} m high<br>` +
+    `<b>${escapeHtml(model.name)}</b><br>${(size.x * s).toFixed(1)} × ${(size.z * s).toFixed(1)} m footprint · ${(size.y * s).toFixed(1)} m high<br>` +
       `Scale <b>×${(s / model.initial).toFixed(2)}</b> · turned <b>${rad2deg(-placement.rotation.y).toFixed(0)}°</b>`
   );
-  emit("mass:changed", { mass: getMassInfo() });
+}
+
+const escapeHtml = (text) => text.replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[ch]);
+
+// One button per massing; the selected one is marked.
+function renderList() {
+  $("model-list").replaceChildren(
+    ...models.map((m, i) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = m === model ? "tool on" : "tool";
+      b.textContent = `Massing ${i + 1} · ${m.name}`;
+      b.setAttribute("aria-pressed", String(m === model));
+      b.addEventListener("click", () => selectModel(m));
+      return b;
+    })
+  );
+}
+
+// The selected massing moved, turned or changed size: tell everyone the mass changed.
+function layout() {
+  refresh();
+  emitChanged();
+}
+
+function clampScale(size, s) {
+  const R = state.site.radius;
+  const horiz = Math.max(size.x, size.z, 1e-6);
+  return Math.min(Math.max(s, 1 / horiz), (R * 2) / horiz); // between 1 m and twice the context radius
 }
 
 function applyModelScale(s) {
-  const R = state.site.radius;
-  const horiz = Math.max(model.size.x, model.size.z);
-  s = Math.min(Math.max(s, 1 / horiz), (R * 2) / horiz); // between 1 m and twice the context radius
-  model.scale = s;
-  model.placement.scale.setScalar(s);
+  model.scale = clampScale(model.size, s);
+  model.placement.scale.setScalar(model.scale);
   layout();
 }
 
 // Keep the corner points and the gumball a constant size on screen.
 onFrame(() => {
-  if (!model || !model.manipulating || !layers.model.visible) return;
-  for (const h of model.handles) h.scale.setScalar(camera.position.distanceTo(h.position) * 0.018);
-  model.gumball.group.scale.setScalar(camera.position.distanceTo(model.gumball.group.position) * 0.12);
+  if (!model || !manipulating || !layers.model.visible) return;
+  for (const h of ui.handles) h.scale.setScalar(camera.position.distanceTo(h.position) * 0.018);
+  ui.gumball.group.scale.setScalar(camera.position.distanceTo(ui.gumball.group.position) * 0.12);
 });
 
 // The part of the manipulation controls under the pointer: a corner point, or one of the gumball's pieces.
 function pickPart(e) {
-  if (!model || !model.manipulating || !layers.model.visible) return null;
-  return aimRay(e).intersectObjects([...model.handles, ...model.gumball.pickers], false)[0]?.object.userData.part ?? null;
+  if (!model || !manipulating || !layers.model.visible) return null;
+  return aimRay(e).intersectObjects([...ui.handles, ...ui.gumball.pickers], false)[0]?.object.userData.part ?? null;
+}
+
+// The massing under the pointer, or null.
+function pickModel(e) {
+  if (!models.length || !layers.model?.visible) return null;
+  const hit = aimRay(e).intersectObjects(models.map((m) => m.placement), true).find((h) => h.object.isMesh);
+  if (!hit) return null;
+  return models.find((m) => { let found = false; hit.object.traverseAncestors((a) => { if (a === m.placement) found = true; }); return found; }) ?? null;
 }
 
 const CURSORS = { scale: "nwse-resize", slide: "move", "slide-x": "ew-resize", "slide-z": "ns-resize", turn: "grab" };
@@ -385,25 +502,38 @@ const endDrag = (e) => {
 canvasEl.addEventListener("pointerup", endDrag, true);
 canvasEl.addEventListener("pointercancel", endDrag, true);
 
+// While manipulating, a click (not a drag, which orbits) on another massing selects it.
+let pressed = null;
+canvasEl.addEventListener("pointerdown", (e) => { pressed = e.button === 0 ? [e.clientX, e.clientY] : null; });
+canvasEl.addEventListener("pointerup", (e) => {
+  if (manipulating && pressed && Math.hypot(e.clientX - pressed[0], e.clientY - pressed[1]) < 5) selectModel(pickModel(e));
+  pressed = null;
+});
+
 // ---- import by button or by dropping a file anywhere on the scene
 
-async function importFile(file) {
-  if (!state.siteGroup) return;
-  if (!/\.3dm$/i.test(file.name)) {
+async function importFiles(files) {
+  if (!state.siteGroup || !files.length) return;
+  const rhino = files.filter((f) => /\.3dm$/i.test(f.name));
+  if (!rhino.length) {
     setModelMsg("Please choose a Rhino .3dm file.", true);
     return;
   }
-  await placeModel(await file.arrayBuffer(), file.name);
+  for (const file of rhino) await placeModel(await file.arrayBuffer(), file.name);
 }
 
 $("model-import").addEventListener("click", () => $("model-file").click());
 $("model-file").addEventListener("change", (e) => {
-  const f = e.target.files[0];
+  const files = [...e.target.files];
   e.target.value = "";
-  if (f) importFile(f);
+  importFiles(files);
 });
+$("model-duplicate").addEventListener("click", duplicateModel);
 $("model-reset").addEventListener("click", () => model && applyModelScale(model.initial));
-$("model-remove").addEventListener("click", removeModel);
+$("model-remove").addEventListener("click", () => removeModel());
+$("model-remove-all").addEventListener("click", () => {
+  if (models.length < 2 || confirm(`Delete all ${models.length} massings?`)) removeAll();
+});
 $("model-manipulate").addEventListener("change", (e) => model && setManipulating(e.target.checked));
 addEventListener("keydown", (e) => {
   if (e.key === "Delete" && model && !e.target.matches("input, textarea, select")) removeModel();
@@ -427,8 +557,7 @@ addEventListener("drop", (e) => {
   e.preventDefault();
   dragDepth = 0;
   $("dropzone").classList.add("hidden");
-  const f = e.dataTransfer?.files?.[0];
-  if (f) importFile(f);
+  importFiles([...(e.dataTransfer?.files ?? [])]);
 });
 
 // ---- lifecycle
@@ -436,30 +565,39 @@ addEventListener("drop", (e) => {
 on("site:built", () => {
   layers.model = new THREE.Group();
   state.siteGroup.add(layers.model);
+  massRoot = new THREE.Group();
+  layers.model.add(massRoot);
+  buildHandles();
+  refresh();
 });
 
 on("site:cleared", () => {
+  models = [];
   model = null;
+  massRoot = ui = null; // disposed with the site's group
+  manipulating = false;
   modelDrag = null;
   controls.enabled = true;
   $("model-info").classList.add("hidden");
   $("model-actions").classList.add("hidden");
 });
 
+const savedState = (m) => ({ name: m.name, scale: m.scale, pose: { x: m.placement.position.x, z: m.placement.position.z, rot: m.placement.rotation.y } });
+
 registerPersist("model", {
-  capture: () =>
-    model
-      ? { name: model.name, scale: model.scale, pose: { x: model.placement.position.x, z: model.placement.position.z, rot: model.placement.rotation.y } }
-      : null,
-  // Not awaited: reading the file can take a while (or stall), and waiting for it would keep the loading screen up until it
-  // answered, so the site opens first and the model appears when it is read (the Model panel says "Reading…" meanwhile, or why it
-  // could not be read).
+  capture: () => (models.length ? { items: models.map(savedState) } : null),
+  // Not awaited: reading the files can take a while (or stall), and waiting for them would keep the loading screen up until they
+  // answered, so the site opens first and each massing appears when it is read (the Model panel says "Reading…" meanwhile, or why
+  // it could not be read). A site saved with a single massing holds just that massing's { name, scale, pose }.
   restore: (saved, extras) => {
-    if (saved && extras.modelBuffer) {
-      placeModel(extras.modelBuffer, saved.name ?? "model.3dm", saved.scale, saved.pose).catch((e) => {
+    if (!saved) return;
+    (saved.items ?? [saved]).forEach((item, i) => {
+      const buffer = extras.modelFiles?.[i]?.buffer ?? (i === 0 ? extras.modelBuffer : null);
+      if (!buffer) return;
+      placeModel(buffer, item.name ?? "model.3dm", item.scale, item.pose).catch((e) => {
         console.error(e);
-        setModelMsg(`Couldn't place ${saved.name ?? "the model"} (${e?.message ?? e}).`, true);
+        setModelMsg(`Couldn't place ${escapeHtml(item.name ?? "the model")} (${escapeHtml(String(e?.message ?? e))}).`, true);
       });
-    }
+    });
   },
 });

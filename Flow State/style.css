@@ -245,6 +245,8 @@ form, .loader { margin: auto; }
 }
 #hud #model-import { width: 100%; margin: 0 0 8px; }
 #model-info { margin-bottom: 8px; }
+#model-list { display: flex; flex-direction: column; gap: 3px; margin-bottom: 8px; }
+#hud #model-list button.tool { flex: none; padding: 5px 8px; text-align: left; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 #hud { max-height: calc(100vh - 32px); overflow-y: auto; }
 #hud input[type="date"], #hud select {
   display: block;

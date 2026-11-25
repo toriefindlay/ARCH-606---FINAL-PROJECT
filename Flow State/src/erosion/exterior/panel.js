@@ -51,7 +51,7 @@ export function mountPanel(el, hooks = {}) {
       </select>
     </div>
     <button type="button" class="tool" id="erode-clear" style="width:100%;margin-bottom:8px">Clear erosion</button>
-    <label title="Once the tunnels are finished, shows the wind as small flowing particles that enter and leave the tunnels and curve round the structure. Turn on X-ray to see them inside the mass."><input type="checkbox" id="wind-particles"> Wind particles (through the tunnels)</label>
+    <label title="Shows the wind as small flowing particles that curve round the massings and run through the gaps between them. Once wind tunnels are finished they also enter and leave the tunnels (turn on X-ray to see them inside the mass)."><input type="checkbox" id="wind-particles"> Wind particles (round, between and through the massings)</label>
     <label title="The time of year whose wind direction and speed the particles follow. Changing it solves the airflow for that wind (a few seconds) and then turns the particles smoothly to it.">Wind for the particles
       <select id="particle-wind"><option value="-2">Same as the tunnels</option><option value="-1">Whole warm season</option></select>
     </label>

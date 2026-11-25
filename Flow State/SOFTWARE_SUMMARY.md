@@ -161,6 +161,10 @@ The heavy loops (stamping, blurring, meshing) are written as **JavaScript genera
 
 ## 7. Wind particles (`windParticles.js`)
 
+- **Several massings** (`mass/model3dm.js`): all imported massings sit under one group, so the scan, erosion and solvers treat them as one mass with open air in the gaps. The form's grid covers all of them, so massings placed far apart get a coarser grid.
+- **Surrounding particles:** 18,000 extra particles, with or without tunnels, are born evenly over a field laid along the wind that reaches 18 to 32 m past the outermost massing on both sides, and further upwind and downwind. They live only a few seconds so they stay evenly spread. The field is limited to the airflow's solving box.
+- **Without tunnels:** the potential flow is solved on a voxel copy of the massings and the site's buildings. Half the particles are seeded in **gap air** (mass within 30 m on two opposite sides) and traced back upwind. This makes the streams in the gaps denser than the real air flow would, so compare speeds by colour, not by particle density. The rest of this section applies to both cases.
+
 - **Field:** the solved tunnel airflow, with the velocities **blurred over open neighbours** (3×3×3) to remove voxel stair-steps. It is sampled by **trilinear interpolation** between open voxel centres (solid corners are excluded and the weights renormalised), with uneven layer heights handled.
 - **Advection:** **midpoint (RK2)** steps, with the step count chosen so a particle never moves more than half a voxel. A particle that leaves open air or the box dies and respawns.
 - **Fluid look:** short trails recorded at fixed time intervals, fade in and out at birth and death, and colour by speed ratio (blue slower, red faster than the open wind).
