@@ -9,12 +9,13 @@ const LIFT = 2.4; // m: the lift's side
 const SLAB = 0.15; // m: a floor slab's thickness (also a flight of stairs)
 
 export function createCirculationView() {
-  let group = null, owner = null, shownKey = "", parts = null, showAccessible = true, showCutoff = true;
+  let group = null, owner = null, shownKey = "", halls = [], showAccessible = true, showCutoff = true;
 
   const clear = () => {
     group?.traverse((o) => { o.geometry?.dispose(); [o.material].flat().filter(Boolean).forEach((m) => m.dispose()); });
     group?.parent?.remove(group);
-    group = owner = parts = null;
+    group = owner = null;
+    halls = [];
     shownKey = "";
   };
 
@@ -143,18 +144,21 @@ export function createCirculationView() {
       owner = plan;
       group = new THREE.Group();
       group.userData.solid = true; // the x-ray mode leaves this as it is
-      parts = hallways(plan);
-      group.add(parts.mask, parts.detached);
-      for (const c of plan.cores) group.add(core(plan, c));
-      for (const e of plan.entrances) group.add(door(plan, e));
-      parts.mask.visible = showAccessible; parts.detached.visible = showCutoff;
+      for (const one of plan.parts ?? [plan]) { // (each structure's plan has its own grid)
+        const h = hallways(one);
+        halls.push(h);
+        group.add(h.mask, h.detached);
+        for (const c of one.cores) group.add(core(one, c));
+        for (const e of one.entrances) group.add(door(one, e));
+        h.mask.visible = showAccessible; h.detached.visible = showCutoff;
+      }
       parent.add(group);
     },
     // Shows or hides the hallways joined to an exit (amber) and the ones cut off from every exit (grey), each on its own. (The cores and the exits stay.)
     // Cheap to call every frame, and kept for when the plan is drawn again.
     setParts(accessible, cutoff) {
       showAccessible = !!accessible; showCutoff = !!cutoff;
-      if (parts) { parts.mask.visible = showAccessible; parts.detached.visible = showCutoff; }
+      for (const h of halls) { h.mask.visible = showAccessible; h.detached.visible = showCutoff; }
     },
     get plan() { return owner; },
   };

@@ -181,6 +181,9 @@ The heavy loops (stamping, blurring, meshing) are written as **JavaScript genera
 
 ---
 
+### Circulation with several structures (`circulation/structures.js`)
+- The footprint is split into its **separate pieces** (massings that touch count as one building), and each is planned by `rules.js` as if it stood alone, so every building has its own stairs, main cores, entrances and limits. In main-cores mode the tunnels are moved for one structure after another. All structures use the same hallway axes as the tunnels.
+
 ## 9. Where it can't be trusted (honest limits)
 
 - **Potential flow:** no turbulence, separation or friction. It shows where air accelerates, not true speeds. Tunnel speeds are relative to the open wind.
