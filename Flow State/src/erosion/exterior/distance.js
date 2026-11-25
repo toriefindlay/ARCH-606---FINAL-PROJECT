@@ -1,4 +1,4 @@
-// MODEL (exterior erosion): the exact distance transform used by the wind tunnels' cut and the softened skin. No scene or DOM code.
+// MODEL (exterior erosion): the exact distance transform used by the wind tunnels' cut and the skin. No scene or DOM code.
 const INF = 1e20;
 
 /* ---------- distance transform ---------- */

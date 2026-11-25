@@ -1,6 +1,6 @@
 // VIEW (facades): the wall behind a facade's protruding panels (panels.js): glazing or stonework, drawn by the shader on the
 // outside walls. Every pixel of a wall works out where it is on its facade (how far along the wall, how high up) and takes
-// the colour there, so it covers whatever surface it is given (the massings as placed, or the softened skin), follows its
+// the colour there, so it covers whatever surface it is given (the massings as placed, or the skin), follows its
 // curves and stops at the tunnel openings by itself. Roofs are left as they are.
 //
 // view.js adds this to the materials of the mass and of the skin.
@@ -84,13 +84,13 @@ vec3 facadeColour(float u, float y, float aa) {
     col = mix(col, srgb(150.0, 154.0, 150.0), under(lineAt(u, 1.2), 0.025, aa) * seen(1.2, aa));
     return mix(col, srgb(100.0, 104.0, 102.0), under(lineAt(y, STOREY), 0.12, aa));
   }
-  if (uFacade == 2) { // behind the blockwork: courses of pale stone
+  if (uFacade == 2) { // behind the blockwork: white courses
     float courses = max(3.0, floor(STOREY / (0.78 * s) + 0.5)), h = STOREY / courses;
     float row = floor(y / h), x = u / (1.3 * h) + mod(row, 2.0) * 0.5;
-    vec3 col = mix(srgb(178.0, 166.0, 142.0), srgb(198.0, 186.0, 164.0), hash2(vec2(floor(x), row)));
+    vec3 col = mix(srgb(236.0, 235.0, 231.0), srgb(250.0, 249.0, 246.0), hash2(vec2(floor(x), row)));
     col *= 0.95 + 0.1 * noise2(vec2(u, y) * 9.0);
     float mortar = max(under(lineAt(y, h), 0.022, aa), under(lineAt(x * 1.3 * h, 1.3 * h), 0.022, aa));
-    return mix(col, srgb(150.0, 140.0, 120.0), mortar * seen(h, aa));
+    return mix(col, srgb(200.0, 199.0, 194.0), mortar * seen(h, aa));
   }
   if (uFacade == 3) { // behind the web: dark glass in small triangles
     vec3 col = darkGlass(u, y, vec2(0.8, 0.7));

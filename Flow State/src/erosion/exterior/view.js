@@ -20,17 +20,22 @@ EMPTY_TUNNEL.unpackAlignment = 1;
 EMPTY_TUNNEL.needsUpdate = true;
 const tunnelUniforms = {
   uTunnelTex: { value: EMPTY_TUNNEL },
-  uHideMass: { value: 0 }, // 1 while the softened skin (skinShell.js) is drawn: it replaces the mass's own surface and edge lines altogether
+  uHideMass: { value: 0 }, // 1 while the skin (skinShell.js) is drawn: it replaces the mass's own surface and edge lines altogether
   uTunnelOrigin: { value: new THREE.Vector3() }, // the map's corner in world metres (y = 0 is the ground)
   uTunnelSize: { value: new THREE.Vector3(1, 1, 1) }, // its size in x, y, z
   uTunnelIso: { value: 0.5 },
+  uRounded: { value: 0 }, // 1 for rounded massings: openings are cut in, and the facade covers, surfaces of any slope
 };
+export function setRounded(on) {
+  tunnelUniforms.uRounded.value = on ? 1 : 0;
+}
 const TUNNEL_GLSL = /* glsl */ `
 uniform highp sampler3D uTunnelTex;
 uniform float uHideMass;
 uniform vec3 uTunnelOrigin;
 uniform vec3 uTunnelSize;
 uniform float uTunnelIso;
+uniform float uRounded;
 varying vec3 vWindPos;
 bool tunnelAt(vec3 p) {
   vec3 uvw = (p - uTunnelOrigin) / uTunnelSize;
@@ -40,7 +45,7 @@ bool tunnelAt(vec3 p) {
 }
 // A piece of the mass's surface (not a roof or an underside) goes if it lies in a tunnel, or just inside one (lines have no normal and are only tested where they are).
 bool tunnelCut(vec3 p, vec3 n) {
-  if (dot(n, n) > 0.0 && abs(n.y) > 0.6) return false; // roofs and undersides are never opened (the tunnels run through the walls)
+  if (uRounded < 0.5 && dot(n, n) > 0.0 && abs(n.y) > 0.6) return false; // roofs and undersides are never opened (the tunnels run through the walls)
   if (tunnelAt(p)) return true;
   return dot(n, n) > 0.0 && tunnelAt(p - n * 0.2);
 }
@@ -57,10 +62,11 @@ const FACADE_COLOUR = /* glsl */ `
 #include <color_fragment>
 if (uFacade > 0) {
   vec3 fn = facing();
-  if (abs(fn.y) < 0.6) {
+  if (abs(fn.y) < 0.6 || (uRounded > 0.5 && vWindPos.y > 0.05)) {
     float u = facadeU(vWindPos, fn);
     float aa = 0.7 * length(fwidth(vWindPos)) + 1e-4;
-    diffuseColor.rgb = facadeColour(u, vWindPos.y, aa);
+    // (near the top of a rounded massing the pattern is laid out from above, as the panels there are)
+    diffuseColor.rgb = abs(fn.y) > 0.72 ? facadeColour(vWindPos.x, vWindPos.z, aa) : facadeColour(u, vWindPos.y, aa);
     vec3 inside = vWindPos - fn * 0.2;
     if (tunnelAt(inside + fAlong * 0.28) || tunnelAt(inside - fAlong * 0.28) || tunnelAt(inside + vec3(0.0, 0.28, 0.0)) || tunnelAt(inside - vec3(0.0, 0.28, 0.0))) {
       diffuseColor.rgb = srgb(232.0, 226.0, 214.0);
@@ -73,7 +79,7 @@ const FACADE_LIGHT = /* glsl */ `
 if (uFacade > 0) normal = normalize(normal + mat3(viewMatrix) * (fAlong * fSlope.x + vec3(0.0, fSlope.y, 0.0)));`;
 
 // `kind`: "mesh" (a surface: tested just inside), "line" (the mass's edge lines: tested where they are) or "skin" (the
-// softened skin, which has the tunnels' openings in its own shape: nothing of it is discarded). Surfaces carry the facade.
+// skin, which has the tunnels' openings in its own shape: nothing of it is discarded). Surfaces carry the facade.
 const patched = new WeakSet();
 function patch(material, key, kind) {
   if (patched.has(material)) return;

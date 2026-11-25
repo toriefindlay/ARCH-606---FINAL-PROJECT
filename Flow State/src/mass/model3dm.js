@@ -43,6 +43,32 @@ export function getMassInfo() {
 export const getMassFrames = () =>
   models.map(({ placement, size, scale }) => ({ x: placement.position.x, z: placement.position.z, turn: placement.rotation.y, halfX: (size.x * scale) / 2, halfZ: (size.z * scale) / 2, height: size.y * scale }));
 
+// Is any massing rounded (a dome, a shell, a blob) rather than made of upright walls and flat roofs? The erosion's skin and
+// the facades' four walls suit the latter; rounded ones keep their own surface (see erosion/exterior and facades).
+const ROUNDED_SHARE = 0.4; // of a massing's surface that is neither near upright nor near flat
+export const hasRoundedMass = () => models.some((m) => m.rounded);
+
+function isRounded(object) {
+  const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3(), n = new THREE.Vector3(), side = new THREE.Vector3();
+  let sloping = 0, total = 0;
+  object.updateMatrixWorld(true);
+  object.traverse((o) => {
+    const pos = o.isMesh && o.geometry?.attributes.position;
+    if (!pos) return;
+    const index = o.geometry.index, count = index ? index.count : pos.count;
+    for (let i = 0; i + 2 < count; i += 3) {
+      [a, b, c].forEach((v, k) => v.fromBufferAttribute(pos, index ? index.getX(i + k) : i + k).applyMatrix4(o.matrixWorld));
+      n.subVectors(b, a).cross(side.subVectors(c, a));
+      const area = n.length();
+      if (area < 1e-12) continue;
+      const lean = Math.abs(n.y) / area;
+      total += area;
+      if (lean > 0.25 && lean < 0.92) sloping += area;
+    }
+  });
+  return total > 0 && sloping / total > ROUNDED_SHARE;
+}
+
 // Raw file bytes, so a saved site can reload the massings. `files` is in the same order as the massings (see registerPersist
 // below); copies of one massing share its bytes, which browser storage keeps only once.
 export const getMassFile = () =>
@@ -268,6 +294,7 @@ function placeBeside(placement) {
 }
 
 function addEntry(entry, beside) {
+  entry.rounded ??= isRounded(entry.placement); // (turning and even scaling do not change it, so a copy keeps it)
   if (beside) placeBeside(entry.placement);
   massRoot.add(entry.placement);
   models.push(entry);

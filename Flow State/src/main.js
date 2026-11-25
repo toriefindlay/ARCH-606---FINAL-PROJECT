@@ -9,5 +9,6 @@ import "./site/wind.js";
 import "./mass/model3dm.js";
 import "./erosion/index.js";
 import "./facades/index.js";
+import "./floorplans/index.js";
 import "./library.js";
 import "./ui/start.js";

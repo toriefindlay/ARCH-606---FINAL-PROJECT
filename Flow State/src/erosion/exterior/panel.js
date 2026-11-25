@@ -3,15 +3,15 @@
 // erosion/combine.js after any control changes the cuts, and registerPersist() to save settings.
 import { coolingGradient, COOLING_RAMP, COOLING_MAX, COOLED_AT } from "./coolingView.js";
 
-// Read each frame by index.js. `speed` is simulated seconds per real second.
-export const settings = { playing: true, speed: 12, erodeTunnels: false, tunnelVolume: 40, tunnelStack: 10, tunnelWind: -1, tunnelMulti: false, skinSoften: 0, xray: false, showTunnels: true, showCirculation: false, showAccessible: true, showCutoff: true, coolingData: false, windParticles: false, particleWind: -2, particleSpeed: 0.5 };
+// Read each frame by index.js.
+export const settings = { playing: true, erodeTunnels: false, tunnelVolume: 40, tunnelStack: 10, tunnelWind: -1, tunnelMulti: false, xray: false, showTunnels: true, showCirculation: false, showAccessible: true, showCutoff: true, coolingData: false, windParticles: false, particleWind: -2, particleSpeed: 0.5 };
 
 const $ = (id) => document.getElementById(id);
 let onClearErosion = () => {};
 
 export function mountPanel(el, hooks = {}) {
   onClearErosion = hooks.clearErosion ?? onClearErosion;
-  // (the erosion speed and the airflow slice no longer have controls: keep them at their defaults, whatever an old session saved)
+  // (the airflow slice no longer has a control: it is kept at its default, whatever an old session saved)
   el.innerHTML = `
     <label title="Wind tunnels: the solver works out where the wind can cut through the mass to cool its interior, and opens them. Keeps its own 3D version of the mass."><input type="checkbox" id="erode-tunnels"> Wind tunnels (cut through the mass)</label>
     <label title="The wind the tunnels are worn for: one time of the warm season, or all of it, for the whole structure.">Wind for the tunnels
@@ -36,11 +36,6 @@ export function mountPanel(el, hooks = {}) {
     </details>
     <div class="tools">
       <button type="button" class="tool" id="erode-play">Pause</button>
-      <select id="erode-speed" aria-label="Simulation speed">
-        <option value="1">Real time</option>
-        <option value="4">4×</option>
-        <option value="12">12×</option>
-      </select>
     </div>
     <button type="button" class="tool" id="erode-clear" style="width:100%;margin-bottom:8px">Clear erosion</button>
     <label title="Shows the wind as small flowing particles that curve round the massings and run through the gaps between them. Once wind tunnels are finished they also enter and leave the tunnels (turn on X-ray to see them inside the mass)."><input type="checkbox" id="wind-particles"> Wind particles (round, between and through the massings)</label>
@@ -54,7 +49,6 @@ export function mountPanel(el, hooks = {}) {
 
   $("erode-play").addEventListener("click", () => { settings.playing = !settings.playing; syncControls(); });
   $("erode-clear").addEventListener("click", () => onClearErosion());
-  $("erode-speed").addEventListener("change", (e) => (settings.speed = Number(e.target.value)));
   $("wind-particles").addEventListener("change", (e) => { settings.windParticles = e.target.checked; syncControls(); });
   $("particle-wind").addEventListener("change", (e) => { settings.particleWind = Number(e.target.value); syncControls(); });
   $("particle-speed").addEventListener("input", (e) => { settings.particleSpeed = Number(e.target.value); syncControls(); });
@@ -74,7 +68,6 @@ export function mountPanel(el, hooks = {}) {
 export function syncControls() {
   if (!$("erode-play")) return;
   $("erode-play").textContent = settings.playing ? "Pause" : "Play";
-  $("erode-speed").value = String(settings.speed);
   $("erode-tunnels").checked = settings.erodeTunnels;
   $("tunnel-wind").value = String(settings.tunnelWind);
   $("tunnel-multi").checked = settings.tunnelMulti;

@@ -2,14 +2,15 @@ import { $ } from "../../core/dom.js";
 import { on } from "../../core/events.js";
 import { state, layers } from "../../core/state.js";
 import { onFrame } from "../../view/scene.js";
-import { getMassInfo } from "../../mass/model3dm.js";
+import { getMassInfo, getMassFrames, hasRoundedMass } from "../../mass/model3dm.js";
+import { registerPersist } from "../../core/persist.js";
 import { registerCutProvider, collectCuts, notifyCutsChanged } from "../combine.js";
 import { provideCuts } from "./rules.js";
 import { createForm } from "./form.js";
 import { createTunnels, REACH } from "./tunnels.js";
 import { createVoxelMass } from "./voxelFlow.js";
 import { setActiveTunnels } from "./tunnelCut.js";
-import { renderPreview, patchMass, createTunnelView, setXray } from "./view.js";
+import { renderPreview, patchMass, createTunnelView, setXray, setRounded } from "./view.js";
 import { mountPanel, settings, syncControls, setTunnelNote, setFloorRows, setWindOptions, setParticleNote, setParticleWindOptions } from "./panel.js";
 import { createWindParticles } from "./windParticles.js";
 import { createCoolingView } from "./coolingView.js";
@@ -25,8 +26,6 @@ let tunnelView = null; // the tunnels' walls, and the hole they leave in the mas
 let tunnelShown = ""; // which tunnels, and which state of them, the view and the cuts were last given
 let tunnelBusy = false; // a step of the tunnels (a solve) is running
 let tunnelWorking = false; // the tunnels are being worn: the cut offered to the pipeline waits for the end
-let skinClock = 0; // simulated seconds since the tunnels were finished (the skin softens with it)
-const SKIN_SECONDS = 150, SKIN_STEPS = 5; // how long the skin takes to soften fully (at the erosion speed), and in how many steps
 let tunnelWinds = null; // the wind of the whole structure, as last worked out by tunnelFrame
 let tunnelStats = null; // the air speed in the tunnels and the cooling, in the last solution
 let tunnels = null; // the persistent voxel mass the wind tunnels are carved from (tunnels.js), built from the form when first wanted
@@ -55,6 +54,53 @@ function ensureTunnels() {
   if (tunnels && tunnels.builtOn !== form.version) tunnels = null;
   tunnels ??= createTunnels(form, { cityHeight: cityHeights(state.site.radius, state.features?.buildings) });
   return tunnels;
+}
+
+/* ---------- saving the tunnels with a site ---------- */
+
+// The settings the tunnels are made with. They are saved with a site (with the finished tunnels themselves), and a site opened
+// or started afresh begins from these defaults, not from what the last one was set to.
+const TUNNEL_KEYS = ["erodeTunnels", "tunnelVolume", "tunnelStack", "tunnelWind", "tunnelMulti"];
+const TUNNEL_DEFAULTS = Object.fromEntries(TUNNEL_KEYS.map((k) => [k, settings[k]]));
+const tunnelSettings = () => Object.fromEntries(TUNNEL_KEYS.map((k) => [k, settings[k]]));
+let pending = null; // saved tunnels waiting for their massings to be read: { massings, made, network }
+let adopt = null; // tunnels just put back, whose plan is still to be taken up: { tunnels, made }
+
+// Where the massings stand and how big they are, to the nearest centimetre: saved tunnels fit only these.
+const massingsKey = () => JSON.stringify(getMassFrames().map((f) => [f.x, f.z, f.turn, f.halfX, f.halfZ, f.height].map((v) => Math.round(v * 100) / 100)));
+// What the tunnels were made with: while it is the same, they stand as they are.
+const madeWith = () => `${settings.tunnelVolume}|${settings.tunnelStack}|${settings.tunnelWind}|${settings.tunnelMulti}|${spacesSignature()}`;
+
+function captureTunnels() {
+  const live = tunnels && form && tunnels.builtOn === form.version ? tunnels.save() : null;
+  return { settings: tunnelSettings(), tunnels: live ? { massings: massingsKey(), made: tunnels.made ?? madeWith(), network: live } : pending };
+}
+
+// For the Save button: whether the tunnels went with the site ("saved"), are still being worn and so did not ("unfinished"),
+// or there are none ("none").
+export function tunnelSaveStatus() {
+  if (pending || getFinishedTunnels()) return "saved";
+  return settings.erodeTunnels && getMassInfo() ? "unfinished" : "none";
+}
+
+// Once all the massings a site was saved with are back, its tunnels are put back in place of being grown again.
+function restorePending() {
+  if (!pending || !form) return;
+  if (getMassFrames().length < JSON.parse(pending.massings).length) return; // (more massings are still being read)
+  const saved = pending;
+  pending = null;
+  if (massingsKey() !== saved.massings) return; // (a massing has been moved or changed since)
+  const t = ensureTunnels();
+  if (!t?.load(saved.network)) {
+    tunnels = null;
+    console.warn("The saved wind tunnels do not fit these massings, so they will be worn again.");
+    return;
+  }
+  // the occupied spaces are taken up at once, so that they are not seen as just changed
+  spacesSeen = spacesApplied = spacesSignature();
+  spacesList = getSpaces().map((s) => ({ ...s }));
+  t.made = saved.made;
+  adopt = { tunnels: t, made: saved.made };
 }
 
 // A line in place of the floor table (nothing to show yet, or why not).
@@ -103,8 +149,13 @@ function tunnelFrame() {
   // the open wind's dynamic pressure (U^2/2) that is stack * y per metre. Strong in weak wind and in tall masses.
   const U = Math.max(1.5, base.mean || 3), stack = settings.tunnelStack ? (9.81 * (settings.tunnelStack / (273.15 + (base.meanTemp ?? 20)))) / (0.5 * U * U) : 0;
   const plan = `${wind.from}|${limit}|${settledSpaces()}|${stack.toFixed(4)}|${wind.set.map((b) => `${b.from}:${b.share.toFixed(2)}`).join(",")}`;
+  if (adopt?.tunnels === t) { // (tunnels put back from a saved site stand for this plan, unless a setting has been changed since)
+    if (adopt.made === madeWith()) t.plan = plan;
+    adopt = null;
+  }
   if (t.plan !== plan) { // another wind, volume limit or occupied spaces: the mass is put back and the tunnels start again
     t.plan = plan;
+    t.made = madeWith();
     t.setBuoyancy(stack);
     t.setObstacles(spacesList);
     t.setWind(wind.dir);
@@ -150,7 +201,7 @@ function floorRow(t, w) {
 
 // Keeps what is drawn, and the cut offered to the pipeline, in step with the tunnels: shown whenever there are tunnels that fit the
 // form (also while another mode is on), and cleared when they are gone.
-function tunnelShowFrame(dt = 0, force = false) {
+function tunnelShowFrame(force = false) {
   const t = tunnels && form && tunnels.builtOn === form.version ? tunnels : null;
   if (!tunnelWorking || force) { // the cut offered to the pipeline follows once the tunnels are worn (not at every round)
     const cut = t && t.carved ? t : null;
@@ -161,13 +212,12 @@ function tunnelShowFrame(dt = 0, force = false) {
       notifyCutsChanged();
     }
   }
-  // The skin softens slowly once the tunnels are done (see tunnelMesh.js): the clock runs while they are, with the erosion speed, and starts again with new
-  // tunnels. The amount moves in steps (every change is a rebuild of the walls), and the slider says how far it goes.
-  if (!t || !t.done) skinClock = 0;
-  else if (settings.playing) skinClock += dt * settings.speed;
-  const skinAmount = t && t.done ? (Math.round(Math.min(1, skinClock / SKIN_SECONDS) * SKIN_STEPS) / SKIN_STEPS) * (settings.skinSoften / 100) : 0;
   tunnelView.setVisible(settings.showTunnels);
-  if (t) tunnelView.update(layers.model, t, { amount: Math.round(skinAmount * 100) / 100, cuts: skinCuts, cutsKey: skinCutsKey });
+  // (the skin is made of upright walls and flat roofs: on a rounded massing it would turn the curves into steps, so the
+  // massing keeps its own surface, and the openings are cut in that)
+  const rounded = hasRoundedMass();
+  setRounded(rounded);
+  if (t) tunnelView.update(layers.model, t, rounded ? null : { cuts: skinCuts, cutsKey: skinCutsKey, shapes: skinShapes }, skinShapes?.lining ?? null);
   else tunnelView.clear();
 }
 
@@ -186,7 +236,7 @@ async function tunnelStep(t, wind, limit, plan, growing) {
       await t.grow(limit);
     } else {
       await t.solve(wind.dir);
-      if (version === massVersion && tunnels === t) tunnelShowFrame(0, true);
+      if (version === massVersion && tunnels === t) tunnelShowFrame(true);
     }
     if (version === massVersion && tunnels === t && t.done && !t.stale(wind.dir)) tunnelStats = { ...t.tunnelSpeed(), cooling: t.cooling() };
   } catch (e) {
@@ -251,6 +301,7 @@ function startForm() {
   form = createForm(info);
   if (!form) return;
   patchMass(info.object); // (so that the tunnels can open the mass's own surface)
+  restorePending();
 }
 
 // The circulation's hallways as boxes ({ frame: { A, B }, rects: [{ y0, y1, a0, a1, b0, b1 }] }, or null), where the skin is cut along the outline of any that
@@ -259,6 +310,13 @@ let skinCuts = null, skinCutsKey = "";
 export function setSkinCuts(cuts, key) {
   skinCuts = cuts;
   skinCutsKey = key;
+}
+
+// The shapes the facade gives the tunnels' openings ({ key, lining, shape }, see tunnelMesh.js), or null for the round ones: the
+// skin is made again when the key changes (see facades/index.js).
+let skinShapes = null;
+export function setSkinShapes(shapes) {
+  skinShapes = shapes;
 }
 
 // The finished tunnels, read-only, for the hallways (erosion/circulation): null until the tunnels are done and fit the form.
@@ -275,6 +333,7 @@ export function mountExterior() {
     clearErosion: () => {
       tunnels = null; // the tunnels are built afresh from the mass as placed
       tunnelStats = null;
+      pending = null;
     },
   });
   on("cuts:changed", () => renderPreview(collectCuts().filter((c) => c.source === "exterior")));
@@ -287,11 +346,24 @@ export function mountExterior() {
   on("site:cleared", () => {
     clearTimeout(rescanTimer);
     stopForm();
+    pending = adopt = null;
+    Object.assign(settings, TUNNEL_DEFAULTS);
+    syncControls();
+  });
+  registerPersist("tunnels", {
+    capture: captureTunnels,
+    // (the massings are read after this, and the tunnels are put back once they are all in: see restorePending)
+    restore: (saved) => {
+      Object.assign(settings, saved?.settings ?? {});
+      pending = saved?.tunnels ?? null;
+      syncControls();
+      restorePending();
+    },
   });
 
   onFrame((dt) => {
     tunnelFrame();
-    tunnelShowFrame(dt);
+    tunnelShowFrame();
     setXray(layers.model, settings.xray);
     coolingFrame();
     particleFrame(dt);

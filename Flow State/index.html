@@ -158,6 +158,30 @@
     <p class="credit">Map data &copy; OpenStreetMap contributors</p>
   </aside>
 
+  <!-- Floor plans: shown once the wind tunnels and the circulation are done -->
+  <aside id="floorplans" class="hidden" aria-label="Floor plans">
+    <div class="floorplan-top">
+      <h2>Floor plans</h2>
+      <button type="button" id="floorplan-toggle" aria-expanded="true">Hide ▸</button>
+    </div>
+    <div class="floorplan-body">
+      <div id="floorplan-deck" tabindex="0" aria-label="Deck of floor plans: scroll or use the arrow keys"></div>
+      <nav class="floorplan-nav" aria-label="Levels">
+        <button type="button" id="floorplan-up" aria-label="Floor above">▲</button>
+        <div id="floorplan-levels"></div>
+        <button type="button" id="floorplan-down" aria-label="Floor below">▼</button>
+      </nav>
+    </div>
+    <ul class="floorplan-key">
+      <li><i class="k-wall"></i>Wall</li>
+      <li><i class="k-tunnel"></i>Wind tunnel</li>
+      <li><i class="k-hall"></i>Hallway</li>
+      <li><i class="k-cut"></i>Cut off</li>
+      <li><i class="k-stair"></i>Stair</li>
+      <li><i class="k-lift"></i>Lift</li>
+    </ul>
+  </aside>
+
   <div id="dropzone" class="hidden">Drop a .3dm file to place it on the pin</div>
 
   <script type="module" src="src/main.js"></script>

@@ -119,6 +119,9 @@ function frame() {
   view.update(layers.model, plan, planKey, exteriorSettings.showCirculation); // (shown or hidden with the checkbox under X-ray, in Passive cooling)
 }
 
+// The plan as it now stands (circulation/structures.js), or null while there is none: for the floor plans (floorplans/).
+export const getCirculationPlan = () => (settings.enabled ? plan : null);
+
 export function mountCirculation() {
   view = createCirculationView();
   mountPanel($("circulation-panel"), { save: saveSnapshot });

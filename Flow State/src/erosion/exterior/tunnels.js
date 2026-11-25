@@ -167,6 +167,7 @@ export function createTunnels(form, { cityHeight = null } = {}) {
   let buoyancy = 0; // the stack effect, per metre of height (see setBuoyancy)
   let iteration = 0, finished = false, version = 0, epoch = 0, branchCount = 0;
   let routeSaved = null, routeBaseVersion = 0, routeBaseVox = 0; // the network as it was before the cores moved the tubes (see applyRoute), and the versions it had
+  let routeBaseVolume = 0; // ...and the volume of its tubes
   let uncovered = []; // the points of the mass no tunnel cools yet
   let attractors = null; // sample points in the mass
   let flowResult = null, flowVersion = -1, flowDir = null, mapKey = "", map = null, networkVolume = 0;
@@ -1524,7 +1525,7 @@ export function createTunnels(form, { cityHeight = null } = {}) {
     // put it back. Applying again replaces the last route (it does not add to it). Only once the tunnels are finished.
     applyRoute(graph) {
       if (!finished) return false;
-      if (!routeSaved) { routeSaved = snapshot(); routeBaseVersion = version; routeBaseVox = vox.version; }
+      if (!routeSaved) { routeSaved = snapshot(); routeBaseVersion = version; routeBaseVox = vox.version; routeBaseVolume = networkVolume; }
       restore({ nodes: graph.nodes, edges: graph.edges });
       recarve();
       version++;
@@ -1540,6 +1541,40 @@ export function createTunnels(form, { cityHeight = null } = {}) {
       return true;
     },
     get rerouted() { return !!routeSaved; },
+
+    // For saving with a site: the finished network as plain data, as it was before any applyRoute, with what it was made from;
+    // null until it is finished. load() puts one back into tunnels freshly built from the same mass, in place of growing them,
+    // and says whether it could (not if the voxels differ, i.e. it is another mass).
+    save() {
+      if (!finished) return null;
+      const net = routeSaved ?? snapshot();
+      return {
+        grid: [nx, nz, ny, Math.round(massVolume)],
+        nodes: net.nodes.map((n) => ({ ...n })), edges: net.edges.map((e) => ({ ...e })),
+        volume: routeSaved ? routeBaseVolume : networkVolume, iteration, buoyancy,
+        frame: frame && { ...frame, A: [...frame.A], B: [...frame.B] },
+        wind: [...wind], windSet: windSet.map((w) => ({ dir: [...w.dir], weight: w.weight })),
+        obstacles: obstacles.map((s) => ({ ...s })), tuneResult, refineResult,
+      };
+    },
+    load(saved) {
+      if (!saved?.edges?.length || saved.grid.join() !== [nx, nz, ny, Math.round(massVolume)].join()) return false;
+      obstacles = saved.obstacles.map((s) => ({ ...s }));
+      obstaclesKey = obstacles.map((s) => `${s.x.toFixed(2)},${s.y.toFixed(2)},${s.z.toFixed(2)},${s.r.toFixed(2)}`).join(";");
+      wind = [...saved.wind];
+      windSet = saved.windSet.map((w) => ({ dir: [...w.dir], weight: w.weight }));
+      buoyancy = saved.buoyancy;
+      reset();
+      restore({ nodes: saved.nodes, edges: saved.edges });
+      networkVolume = saved.volume;
+      frame = saved.frame && { ...saved.frame, A: [...saved.frame.A], B: [...saved.frame.B] };
+      tuneResult = saved.tuneResult; refineResult = saved.refineResult;
+      iteration = saved.iteration;
+      finished = true;
+      recarve();
+      version++;
+      return true;
+    },
     // For finding out why a mass gets few or no tunnels: how many columns of the mass there are, how many are protected (corners and the strip round them),
     // how many wall points the tubes could open on, the axes the ducts were drawn in, and why trunks were turned down. Read-only.
     get ductDebug() {
