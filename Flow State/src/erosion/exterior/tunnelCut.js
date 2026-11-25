@@ -1,8 +1,8 @@
 // The wind tunnels as a cut for the shared erosion pipeline (see erosion/contract.js): the volume of the tunnels, as a signed
-// distance (negative inside). Like windErode.js's cut, handed to rules.js. No scene or DOM code beyond the Box3.
+// distance (negative inside). Handed to rules.js. No scene or DOM code beyond the Box3.
 import * as THREE from "three";
 import { createCut } from "../contract.js";
-import { distance3d } from "./windErode.js";
+import { distance3d } from "./distance.js";
 
 const INF = 1e20;
 

@@ -176,7 +176,11 @@ button.primary:hover { background: var(--accent); }
 .section[open] { background: color-mix(in srgb, var(--tone) 7%, var(--panel)); }
 .tone-model { --tone: #d4542b; }
 .tone-exterior { --tone: #0f766e; }
+.tone-facades { --tone: #4a6fa5; }
 .tone-interior { --tone: #7a4f8f; }
+#facade-styles { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; margin-bottom: 10px; }
+#hud #facade-styles button.tool { display: flex; flex-direction: column; gap: 4px; padding: 4px; font-size: 11px; line-height: 1.2; text-align: center; }
+.facade-swatch { display: block; height: 34px; border-radius: 2px; border: 1px solid rgba(0, 0, 0, 0.15); }
 .tone-circulation { --tone: #b4691f; }
 .tone-cost { --tone: #2f6f4f; }
 .tone-sun { --tone: #b08a1e; }

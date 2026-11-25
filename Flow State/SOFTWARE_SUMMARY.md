@@ -2,7 +2,7 @@
 
 A guide to the main algorithms behind each feature, and why each was chosen. Everything runs in the browser (plain JavaScript modules + three.js), in **world metres** (x east, y up, z south, site pin at the origin, mass base on y = 0).
 
-**The big idea:** the mass is never edited as a mesh. Every change is made on a *grid*: a **height map** (sun, wind rounding), a **voxel grid** (tunnels and airflow) or a **signed-distance field** (cuts, skin). A mesh is extracted only at the end, for display. Grids never fail on messy geometry, combine with simple operations, and can be re-run as often as the inputs change.
+**The big idea:** the mass is never edited as a mesh. Every change is made on a *grid*: a **height map** (the mass as placed), a **voxel grid** (tunnels and airflow) or a **signed-distance field** (cuts, skin). A mesh is extracted only at the end, for display. Grids never fail on messy geometry, combine with simple operations, and can be re-run as often as the inputs change.
 
 | Feature | Representation | Core method |
 | --- | --- | --- |
@@ -10,8 +10,6 @@ A guide to the main algorithms behind each feature, and why each was chosen. Eve
 | Climate | hourly time series | temperature-weighted wind rose; warm-season periods |
 | Sun | solar geometry + ray tracing | sun position; shadow rays |
 | Shared form | height map | rays cast straight down through the Rhino mesh |
-| Sun growth | height map | **dilation** via 3D distance transform |
-| Wind rounding | height map | **morphological opening** via 3D distance transform |
 | Airflow | voxel grid | **potential flow**, red-black SOR |
 | Wind tunnels | graph of tubes | **resistor-network flow**, Murray's law, growth, **simulated annealing** |
 | Cooling score | voxel field | distance-faded air speed, coverage, evenness |
@@ -48,27 +46,14 @@ A guide to the main algorithms behind each feature, and why each was chosen. Eve
 ## 2. The shared form: a height map (`massScan.js`, `form.js`)
 
 - The imported Rhino mesh is scanned by **casting rays straight down** on a regular grid. Each cell stores the height of the mass there. The scanned mass's own mesh does not shape the erosion afterwards.
-- A height map keeps the sun and wind rounding fast and simple: both are 2D filters over a grid. The limit is that it cannot represent an overhang. That is why the tunnels use a separate 3D voxel version of the form (section 4).
-- Sun growth and wind rounding each start from whatever shape the other left, so the mass is always **one form**. Only one runs at a time.
+- A height map is simple and fast to build. The limit is that it cannot represent an overhang. That is why the tunnels use a separate 3D voxel version of the form (section 4).
 
 ---
 
-## 3. Sun growth and wind rounding
+## 3. Distance transforms (`distance.js`)
 
-Both use **distance transforms**, which make morphological operations cheap at any radius.
-
-### 3D distance transform
 - The Felzenszwalb and Huttenlocher algorithm gives the exact Euclidean distance to the nearest solid cell in linear time per axis (a lower-envelope-of-parabolas pass along x, then y, then z).
-- Thresholding that distance at *r* gives a **dilation** (all points within r of the mass). Thresholding the distance of the *complement* gives an **erosion**, and an erosion followed by a dilation gives an **opening**.
-
-### Sun growth (`sunGrow.js`): dilation
-- The grown mass is a dilation of the original by radius *r*. A roof rises by r, a wall moves out by r, and the edges come out rounded. Dilations for a ladder of radii are **precomputed once per mass**, so the animation just looks up a level.
-- **Sunlight sets r.** As the Sun panel advances time, every roof cell and every sun-facing wall collects warmth: the sun's height for roofs, how squarely the sun faces the wall for walls. **Shadows are traced** from the site's buildings and from the mass itself, so a shaded wall collects nothing.
-- Warmer roofs grow higher and warmer walls grow further out. Growth only increases, never grows into a neighbouring building, and the ground does not swell.
-
-### Wind rounding (`windErode.js`): opening
-- The rounded mass is an **opening**: keep every point a ball of radius r can reach from inside. Flat faces stay put, and only **convex edges and corners** are shaved. It never cuts into the mass, and the ground counts as solid so wall feet aren't rounded.
-- **Wear** accumulates per surface cell from the wind rose: most where a lower neighbour lies **upwind**, some on the flanks, little in the lee. Wear sets the local r, so windward edges round first and furthest. Wear only grows.
+- It is used to turn the carved tunnels into a signed-distance field and to shape the softened skin.
 
 ---
 
@@ -184,11 +169,15 @@ The heavy loops (stamping, blurring, meshing) are written as **JavaScript genera
 ### Circulation with several structures (`circulation/structures.js`)
 - The footprint is split into its **separate pieces** (massings that touch count as one building), and each is planned by `rules.js` as if it stood alone, so every building has its own stairs, main cores, entrances and limits. In main-cores mode the tunnels are moved for one structure after another. All structures use the same hallway axes as the tunnels.
 
+### Facades (`facades/`)
+- Five kinds of **protruding panel** (triangular shades, stepped blocks, an organic web, fins, hexagonal hoods) are real triangle meshes (`panels.js`), over a procedural wall texture (`shader.js`).
+- `walls.js` draws the outside surfaces (massings, or the softened skin) into a **depth grid** for each of every massing's four sides. Panels are designed flat and each corner is set on the surface found there. They leave the tunnel openings clear.
+- The panels are rebuilt when the massings, tunnels or skin change. They have **no effect on the tunnels, wind or cooling**.
 ## 9. Where it can't be trusted (honest limits)
 
 - **Potential flow:** no turbulence, separation or friction. It shows where air accelerates, not true speeds. Tunnel speeds are relative to the open wind.
 - **Voxel resolution** (about 1 to 4 m): thin throats round up to a voxel. The drawn tunnels use the exact radii.
 - **The wall-pressure model** is a simplified analytic estimate, not a CFD result.
 - **Wind data** is regional reanalysis at 10 m, not measured on site. One year of data is used.
-- **Height-map form:** the sun and wind rounding cannot represent overhangs, and the 3D tunnels are built on a voxel copy of it.
+- **Height-map form:** it cannot represent overhangs, and the 3D tunnels are built on a voxel copy of it.
 - **Cooling** is a proxy (distance-faded air speed), not a thermal comfort or energy simulation.

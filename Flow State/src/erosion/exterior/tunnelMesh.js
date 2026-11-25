@@ -17,7 +17,7 @@ import { march, fresh, due } from "./marching.js";
 const ISO = 0.5; // the level of the field the surface lies on (the same as uTunnelIso in view.js)
 const MIN_INTERVAL = 150; // ms between one redraw and the start of the next while the tunnels grow
 
-export function createMeshView(uniforms, empty) {
+export function createMeshView(uniforms, empty, dressSkin = () => {}) { // dressSkin: gives the skin's material the facade (view.js)
   let group = null, mesh = null, texture = null;
   let skinMesh = null; // the softened outside of the mass (see skinShell.js), while it is shown: it replaces the mass's own surface
   let wall = null, skinMaterial = null, matched = false, lastKey = "", lastTime = 0;
@@ -49,7 +49,7 @@ export function createMeshView(uniforms, empty) {
   // The materials (the colour of the mass's own), and the group the tunnels' walls go in (which the x-ray mode leaves solid).
   const place = (parent) => {
     if (!wall) wall = new THREE.MeshLambertMaterial({ side: THREE.DoubleSide });
-    if (!skinMaterial) skinMaterial = new THREE.MeshLambertMaterial({ side: THREE.DoubleSide });
+    if (!skinMaterial) { skinMaterial = new THREE.MeshLambertMaterial({ side: THREE.DoubleSide }); dressSkin(skinMaterial); }
     if (!matched) parent.traverse((o) => { if (!matched && o.isMesh && o.material?.color && o !== mesh && o !== skinMesh) { wall.color.copy(o.material.color); skinMaterial.color.copy(o.material.color); matched = true; } });
     if (!group || group.parent !== parent) {
       group?.parent?.remove(group);
@@ -120,7 +120,7 @@ export function createMeshView(uniforms, empty) {
     if (r.kind === "skin") { // its surface, with the tunnels in it, replaces the mass's own; the tunnels' map is not needed
       uniforms.uTunnelTex.value = empty;
       if (r.built.wall.position.length) { mesh = new THREE.Mesh(geometryOf(r.built.wall), wall); group.add(mesh); }
-      if (r.built.skin.position.length) { skinMesh = new THREE.Mesh(geometryOf(r.built.skin), skinMaterial); parent.add(skinMesh); } // (faint in x-ray, like the mass)
+      if (r.built.skin.position.length) { skinMesh = new THREE.Mesh(geometryOf(r.built.skin), skinMaterial); skinMesh.userData.skin = true; parent.add(skinMesh); } // (faint in x-ray, like the mass)
       uniforms.uHideMass.value = 1;
       return;
     }

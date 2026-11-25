@@ -39,6 +39,10 @@ export function getMassInfo() {
   return { name, object: massRoot, bounds: new THREE.Box3().setFromObject(massRoot), count: models.length };
 }
 
+// Each massing's footprint, for things that follow its own sides: [{ x, z (its middle), turn (radians about y), halfX, halfZ, height }].
+export const getMassFrames = () =>
+  models.map(({ placement, size, scale }) => ({ x: placement.position.x, z: placement.position.z, turn: placement.rotation.y, halfX: (size.x * scale) / 2, halfZ: (size.z * scale) / 2, height: size.y * scale }));
+
 // Raw file bytes, so a saved site can reload the massings. `files` is in the same order as the massings (see registerPersist
 // below); copies of one massing share its bytes, which browser storage keeps only once.
 export const getMassFile = () =>

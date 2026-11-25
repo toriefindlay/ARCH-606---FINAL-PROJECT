@@ -4,7 +4,7 @@
 import { coolingGradient, COOLING_RAMP, COOLING_MAX, COOLED_AT } from "./coolingView.js";
 
 // Read each frame by index.js. `speed` is simulated seconds per real second.
-export const settings = { playing: true, speed: 12, erode: 2, erodeWind: false, erodeSun: false, erodeTunnels: false, tunnelVolume: 40, tunnelStack: 10, tunnelWind: -1, tunnelMulti: false, skinSoften: 0, xray: false, showTunnels: true, showCirculation: false, showAccessible: true, showCutoff: true, coolingData: false, windParticles: false, particleWind: -2, particleSpeed: 0.5 };
+export const settings = { playing: true, speed: 12, erodeTunnels: false, tunnelVolume: 40, tunnelStack: 10, tunnelWind: -1, tunnelMulti: false, skinSoften: 0, xray: false, showTunnels: true, showCirculation: false, showAccessible: true, showCutoff: true, coolingData: false, windParticles: false, particleWind: -2, particleSpeed: 0.5 };
 
 const $ = (id) => document.getElementById(id);
 let onClearErosion = () => {};
@@ -13,19 +13,11 @@ export function mountPanel(el, hooks = {}) {
   onClearErosion = hooks.clearErosion ?? onClearErosion;
   // (the erosion speed and the airflow slice no longer have controls: keep them at their defaults, whatever an old session saved)
   el.innerHTML = `
-    <p class="hint" style="margin-top:0">Work on the mass with one of these at a time (none by default); each carries on from the shape the other left.</p>
-    <label title="The mass grows towards the sun: the longer the sun hits a roof or wall, the more it grows. Runs while the Sun panel plays a day or the year."><input type="checkbox" id="erode-sun"> Sun (grows towards the sun)</label>
-    <p id="sun-erode-note" class="hint" style="margin:0 0 6px"></p>
-    <label title="The prevailing wind slowly rounds the mass's edges, windward ones first. It never cuts into the mass."><input type="checkbox" id="erode-wind"> Wind (rounds the edges)</label>
-    <p id="wind-erode-note" class="hint" style="margin:0 0 6px"></p>
     <label title="Wind tunnels: the solver works out where the wind can cut through the mass to cool its interior, and opens them. Keeps its own 3D version of the mass."><input type="checkbox" id="erode-tunnels"> Wind tunnels (cut through the mass)</label>
     <label title="The wind the tunnels are worn for: one time of the warm season, or all of it, for the whole structure.">Wind for the tunnels
       <select id="tunnel-wind"><option value="-1">Whole warm season</option></select>
     </label>
     <label title="On: the tunnels are tuned for the main wind directions of the warm season together (each weighted by its hours and speed), so they still cool when the wind turns. Off: tuned for the main wind alone."><input type="checkbox" id="tunnel-multi"> Tune for all main wind directions</label>
-    <label title="How soft the outside of the mass is once the tunnels are finished. At the rigid end (0) it is a flat, smooth facade with crisp round openings, each with a flared, angled reveal. Towards the soft end the corners round off, and the faces dish in round every opening and swell out between them, so that the edge of each tunnel flows into the face (the skin eases from rigid to the setting slowly). It only reshapes the surface and never changes the tunnels or the cooling.">Soften the skin (rigid to soft) <output id="skin-soften-out"></output>
-      <input type="range" id="skin-soften" min="0" max="100" step="5">
-    </label>
     <label title="Draws the mass faint so that only the wind tunnels stay solid."><input type="checkbox" id="xray"> X-ray (mass faint, tunnels solid)</label>
     <label title="Shows the wind tunnels. Turn it off, with Circulation on, to see only the hallways and stairs." style="margin-left:18px"><input type="checkbox" id="show-tunnels"> Tunnels</label>
     <label title="Shows the hallways, stairs and lifts (planned under Circulation, once the tunnels are finished). Turn it off to see only the tunnels." style="margin-left:18px"><input type="checkbox" id="show-circulation"> Circulation (hallways and stairs)</label>
@@ -58,8 +50,7 @@ export function mountPanel(el, hooks = {}) {
     <label title="How fast the particles drift, relative to the real wind speed of that time of year (exaggerated so the motion is easy to see).">Particle speed <output id="particle-speed-out"></output>
       <input type="range" id="particle-speed" min="0.5" max="6" step="0.5">
     </label>
-    <p id="particle-note" class="hint" style="margin:0 0 6px"></p>
-    <p class="hint" style="margin-top:0">Import a mass. The wind rounds convex edges and corners (windward first); the more it wears a surface the bluer it gets.</p>`;
+    <p id="particle-note" class="hint" style="margin:0 0 6px"></p>`;
 
   $("erode-play").addEventListener("click", () => { settings.playing = !settings.playing; syncControls(); });
   $("erode-clear").addEventListener("click", () => onClearErosion());
@@ -67,24 +58,15 @@ export function mountPanel(el, hooks = {}) {
   $("wind-particles").addEventListener("change", (e) => { settings.windParticles = e.target.checked; syncControls(); });
   $("particle-wind").addEventListener("change", (e) => { settings.particleWind = Number(e.target.value); syncControls(); });
   $("particle-speed").addEventListener("input", (e) => { settings.particleSpeed = Number(e.target.value); syncControls(); });
-  // One kind of erosion works at a time, all on the same form: switching one on switches the other off.
-  const exclusive = (key) => (e) => {
-    settings[key] = e.target.checked;
-    if (e.target.checked) for (const other of ["erodeSun", "erodeWind", "erodeTunnels"]) if (other !== key) settings[other] = false;
-    syncControls();
-  };
-  $("erode-tunnels").addEventListener("change", exclusive("erodeTunnels"));
+  $("erode-tunnels").addEventListener("change", (e) => { settings.erodeTunnels = e.target.checked; syncControls(); });
   $("xray").addEventListener("change", (e) => { settings.xray = e.target.checked; syncControls(); });
   $("show-tunnels").addEventListener("change", (e) => { settings.showTunnels = e.target.checked; syncControls(); });
   $("show-circulation").addEventListener("change", (e) => { settings.showCirculation = e.target.checked; syncControls(); });
   $("show-accessible").addEventListener("change", (e) => { settings.showAccessible = e.target.checked; syncControls(); });
   $("show-cutoff").addEventListener("change", (e) => { settings.showCutoff = e.target.checked; syncControls(); });
   $("cooling-data").addEventListener("change", (e) => { settings.coolingData = e.target.checked; syncControls(); });
-  $("skin-soften").addEventListener("input", (e) => { settings.skinSoften = Number(e.target.value); syncControls(); });
   $("tunnel-multi").addEventListener("change", (e) => { settings.tunnelMulti = e.target.checked; syncControls(); });
   $("tunnel-wind").addEventListener("change", (e) => { settings.tunnelWind = Number(e.target.value); syncControls(); });
-  $("erode-wind").addEventListener("change", exclusive("erodeWind"));
-  $("erode-sun").addEventListener("change", exclusive("erodeSun"));
   syncControls();
 }
 
@@ -93,13 +75,9 @@ export function syncControls() {
   if (!$("erode-play")) return;
   $("erode-play").textContent = settings.playing ? "Pause" : "Play";
   $("erode-speed").value = String(settings.speed);
-  $("erode-wind").checked = settings.erodeWind;
-  $("erode-sun").checked = settings.erodeSun;
   $("erode-tunnels").checked = settings.erodeTunnels;
   $("tunnel-wind").value = String(settings.tunnelWind);
   $("tunnel-multi").checked = settings.tunnelMulti;
-  $("skin-soften").value = settings.skinSoften;
-  $("skin-soften-out").textContent = settings.skinSoften ? `${settings.skinSoften}%` : "rigid";
   $("xray").checked = settings.xray;
   $("show-tunnels").checked = settings.showTunnels;
   $("show-circulation").checked = settings.showCirculation;
@@ -120,8 +98,6 @@ const setNote = (id) => (text) => {
   if (el && el.textContent !== text) el.textContent = text;
 };
 // A line under a checkbox saying what that feature is waiting for ("" when it is simply working).
-export const setSunNote = setNote("sun-erode-note");
-export const setWindNote = setNote("wind-erode-note");
 export const setTunnelNote = setNote("tunnel-note");
 export const setParticleNote = setNote("particle-note");
 // Lists the parts of the warm season the particles can follow (like setWindOptions, for the particle view's own choice).

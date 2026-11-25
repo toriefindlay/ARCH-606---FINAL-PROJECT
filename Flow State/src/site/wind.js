@@ -25,7 +25,7 @@ const FLOW_DELAY = 350; // ms after the mass stops moving before the wind is wor
 const SPAWN_MAX_Y = 60; // streaks that climb over a mass higher than this start again upwind
 
 let flow = null; // the wind around the site's buildings and the placed mass, or null
-let massScan = null; // the placed mass as a height map (as placed, or rounded by the wind erosion)
+let massScan = null; // the placed mass as a height map
 let flowTimer = 0;
 const wind = { vx: 0, vz: 0, vy: 0, k: 1 }; // scratch: the wind at one streak
 const probe = { x: 0, y: 0, z: 0 };
@@ -37,13 +37,6 @@ function rebuildFlow() {
 function updateFlow() {
   const info = getMassInfo();
   massScan = info ? scanMass(info) : null;
-  rebuildFlow();
-}
-
-// The wind erosion rounds the mass: from now on the streaks bend around that shape (a scanMass()-style height map) instead.
-export function setWindObstacle(scan) {
-  clearTimeout(flowTimer);
-  massScan = scan;
   rebuildFlow();
 }
 

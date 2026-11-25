@@ -13,7 +13,7 @@
 // The part of the mesh that lies on the tunnels is returned apart from the rest, so that the x-ray mode can show the tunnels solid.
 //
 // Everything is done a slice at a time (generators, see marching.js) so that no frame is held up by it.
-import { distance3d } from "./windErode.js";
+import { distance3d } from "./distance.js";
 import { march, fresh, due } from "./marching.js";
 
 const INF = 1e20;
