@@ -7,6 +7,7 @@ import { on } from "../core/events.js";
 import { state, layers } from "../core/state.js";
 import { onFrame } from "../view/scene.js";
 import { registerPersist } from "../core/persist.js";
+import { createSolid, meshTriangles } from "../core/solid.js";
 import { getMassFrames, getMassInfo } from "../mass/model3dm.js";
 import { getFinishedTunnels } from "../erosion/exterior/index.js";
 import { settings as exteriorSettings } from "../erosion/exterior/panel.js";
@@ -60,24 +61,6 @@ function clearDrawn() {
   drawn = null;
 }
 
-// The massings' own triangles, in world metres.
-function triangles(object) {
-  const out = [], v = new THREE.Vector3();
-  object.traverse((o) => {
-    const position = o.isMesh && o.geometry?.attributes.position;
-    if (!position) return;
-    o.updateWorldMatrix(true, false);
-    const index = o.geometry.index, count = index ? index.count : position.count;
-    for (let i = 0; i + 2 < count; i += 3) {
-      for (let k = 0; k < 3; k++) {
-        v.fromBufferAttribute(position, index ? index.getX(i + k) : i + k).applyMatrix4(o.matrixWorld);
-        out.push(v.x, v.y, v.z);
-      }
-    }
-  });
-  return out;
-}
-
 function describe({ stats }, tunnels, plan) {
   const lines = [`${stats.floors} floor plate${stats.floors === 1 ? "" : "s"} (${Math.round(stats.area).toLocaleString()} m² of concrete floor), ${stats.columns} steel columns and ${stats.beams} beam lengths.`];
   if (tunnels || plan) lines.push(`${stats.clearColumns} of ${stats.columns} columns miss every tunnel, hallway and stair${stats.clearColumns < stats.columns ? `; the others still pass through one, in ${stats.columnClashes} places (storeys) altogether` : ""}.`);
@@ -119,7 +102,8 @@ function frame() {
     try {
       const turn = getMassFrames()[0]?.turn ?? 0;
       const axes = tunnels?.frame ?? { A: [Math.cos(turn), -Math.sin(turn)], B: [Math.sin(turn), Math.cos(turn)] };
-      data = planStructure({ triangles: triangles(mass.object), bounds: mass.bounds, storey: STOREY, axes, tubes: tunnels ? tunnels.network().edges : [], plan, spacing: settings.spacing });
+      const meshes = meshTriangles(mass.object, THREE.Vector3);
+      data = planStructure({ triangles: meshes.flat(), bounds: mass.bounds, storey: STOREY, axes, tubes: tunnels ? tunnels.network().edges : [], plan, spacing: settings.spacing, solid: createSolid(meshes) });
       const materials = {
         plate: new THREE.MeshLambertMaterial({ color: 0xb4b1aa, side: THREE.DoubleSide, transparent: true, opacity: 0.55, depthWrite: false }),
         steel: new THREE.MeshLambertMaterial({ color: 0x8c3b32 }),

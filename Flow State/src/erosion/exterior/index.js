@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { createSolid, meshTriangles } from "../../core/solid.js";
 import { $ } from "../../core/dom.js";
 import { on } from "../../core/events.js";
 import { state, layers } from "../../core/state.js";
@@ -218,25 +219,14 @@ function tunnelShowFrame(force = false) {
   // massing keeps its own surface, and the openings are cut in that)
   const rounded = hasRoundedMass();
   setRounded(rounded);
-  if (t) tunnelView.update(layers.model, t, rounded ? null : { cuts: skinCuts, cutsKey: skinCutsKey, shapes: skinShapes, surface: massTriangles }, skinShapes?.lining ?? null);
+  const within = rounded ? { solid: () => createSolid(meshTriangles(getMassInfo().object, THREE.Vector3)) } : null;
+  if (t) tunnelView.update(layers.model, t, rounded ? null : { cuts: skinCuts, cutsKey: skinCutsKey, shapes: skinShapes, surface: massTriangles }, skinShapes?.lining ?? null, within);
   else tunnelView.clear();
 }
 
 // The massings' own triangles in world metres (a flat array, 9 numbers each), which the skin is made to lie on.
 function massTriangles() {
-  const out = [], v = new THREE.Vector3();
-  getMassInfo()?.object.traverse((o) => {
-    const position = o.isMesh && o.geometry?.attributes.position;
-    if (!position) return;
-    o.updateWorldMatrix(true, false);
-    const index = o.geometry.index, count = index ? index.count : position.count;
-    for (let i = 0; i + 2 < count; i += 3) {
-      for (let k = 0; k < 3; k++) {
-        v.fromBufferAttribute(position, index ? index.getX(i + k) : i + k).applyMatrix4(o.matrixWorld);
-        out.push(v.x, v.y, v.z);
-      }
-    }
-  });
+  const info = getMassInfo(), out = info ? meshTriangles(info.object, THREE.Vector3).flat() : [];
   return out.length ? out : null;
 }
 

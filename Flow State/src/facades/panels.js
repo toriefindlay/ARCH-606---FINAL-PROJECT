@@ -106,7 +106,8 @@ function triangular(out, wall, size) {
         const ys = corners.map((p) => p[1]);
         if (Math.max(...ys) <= wall.y0 + 0.05 || Math.min(...ys) >= wall.y1 - 0.05) continue;
         const cu = (corners[0][0] + corners[1][0] + corners[2][0]) / 3, cy = (corners[0][1] + corners[1][1] + corners[2][1]) / 3;
-        if (wall.curved && !wall.covers(cu, cy)) continue; // (on a rounded massing: only the shades on this view's part of it)
+        // (on a rounded massing: only the shades on this view's own part of it, and only where the surface carries on under all of one)
+        if (wall.curved && (!wall.owns(cu, cy) || !wall.whole(cu, cy, corners))) continue;
         const open = openness(key, cu, cy);
         const fold = 0.97 - 0.79 * open; // how far each sail's tip is from its side towards the middle
         const reach = (0.42 + 0.48 * open) * size, base = 0.14; // how far the tips stand out

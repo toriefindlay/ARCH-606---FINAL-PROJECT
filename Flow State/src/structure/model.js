@@ -35,8 +35,9 @@ const runAll = (generator) => {
 
 // `site`: { triangles (the massings' own, a flat array of world positions), bounds: { min, max }, storey, axes: { A, B }
 // (unit vectors in x, z), tubes: [{ a: {x, y, z}, b, r }] (may be empty), plan (circulation/structures.js's, or null),
-// spacing (m, between columns at the most) }.
-export function planStructure({ triangles, bounds, storey, axes, tubes = [], plan = null, spacing = 7.5 }) {
+// spacing (m, between columns at the most), solid (core/solid.js: what is really inside the massings; without it, everything
+// under their surfaces is taken to be) }.
+export function planStructure({ triangles, bounds, storey, axes, tubes = [], plan = null, spacing = 7.5, solid: massing = null }) {
   const ox = bounds.min.x - 1, oz = bounds.min.z - 1, W = bounds.max.x - ox + 1, D = bounds.max.z - oz + 1;
   const fc = Math.max(CELL, Math.sqrt((W * D) / MAX_CELLS)), nx = Math.ceil(W / fc) + 1, nz = Math.ceil(D / fc) + 1;
   // (the grid's points are the middles of exactHeights' columns)
@@ -48,6 +49,16 @@ export function planStructure({ triangles, bounds, storey, axes, tubes = [], pla
   };
   let top = 0;
   for (const h of heights) if (h > top) top = h;
+  // Under the curved-in side of a rounded form, or an overhang, the height map says "solid" where there is only air: these
+  // ask the massings themselves, so that no plate, column or beam stands out there.
+  const found = new Map(); // grid point -> the massings' crossings above it
+  const filled = (k, y) => {
+    if (!massing) return true;
+    let c = found.get(k);
+    if (!c) found.set(k, (c = massing.crossings(px(k % nx), pz(Math.floor(k / nx)))));
+    return massing.insideAt(c, y);
+  };
+  const inside = (x, y, z) => !massing || massing.inside(x, Math.max(0.05, y), z);
   const levels = [];
   for (let f = 0; f * storey + FLOOR_NEEDS <= top; f++) levels.push(f);
 
@@ -82,7 +93,9 @@ export function planStructure({ triangles, bounds, storey, axes, tubes = [], pla
     const upper = f === 0 ? 0.015 : f * storey, lower = upper - SLAB; // (the ground floor's top is just above the ground)
     // the floor's footprint, and how far every point is inside (or outside) its edge
     const solid = new Uint8Array(nx * nz);
-    for (let k = 0; k < solid.length; k++) solid[k] = heights[k] >= f * storey + FLOOR_NEEDS ? 1 : 0;
+    for (let k = 0; k < solid.length; k++) {
+      solid[k] = heights[k] >= f * storey + FLOOR_NEEDS && filled(k, upper + 0.05) && filled(k, Math.max(0.02, lower + 0.02)) ? 1 : 0;
+    }
     const far = (inside) => {
       const d = new Float32Array(nx * nz);
       for (let k = 0; k < d.length; k++) d[k] = solid[k] === inside ? 1e20 : 0;
@@ -182,6 +195,15 @@ export function planStructure({ triangles, bounds, storey, axes, tubes = [], pla
   };
   // is there room for a column here, just inside the walls? (its height is the lowest roof round it)
   const roofOver = (x, z) => Math.min(heightAt(x, z), ...[[1, 0], [-1, 0], [0, 1], [0, -1]].map(([u, v]) => heightAt(x + u * 0.35, z + v * 0.35)));
+  // is a column from the ground to `high` at (x, z) inside the building all the way, with a little room round it?
+  const upright = (x, z, high) => {
+    if (!massing) return true;
+    return [[0, 0], [0.3, 0], [-0.3, 0], [0, 0.3], [0, -0.3]].every(([u, v]) => {
+      const c = massing.crossings(x + u, z + v);
+      for (let y = 0.1; y < high - 0.4; y += 0.45) if (!massing.insideAt(c, y)) return false;
+      return massing.insideAt(c, Math.max(0.1, high - 0.4));
+    });
+  };
   const shifts = [];
   for (let u = -SHIFT; u <= SHIFT + 1e-6; u += SHIFT_STEP) for (let v = -SHIFT; v <= SHIFT + 1e-6; v += SHIFT_STEP) shifts.push([u, v, Math.hypot(u, v)]);
   shifts.sort((p, q) => p[2] - q[2]); // (the nearest to its place on the grid first)
@@ -195,7 +217,7 @@ export function planStructure({ triangles, bounds, storey, axes, tubes = [], pla
         const [x, z] = toWorld(a + u, b + v), high = roofOver(x, z);
         // (a column is not moved off a taller part of the building onto a lower one, which would leave the taller part without it)
         if (high < FLOOR_NEEDS || (nominal >= FLOOR_NEEDS && high < nominal - 0.5)) continue;
-        if (columns.some((c) => Math.hypot(c.x - x, c.z - z) < 2.5)) continue;
+        if (columns.some((c) => Math.hypot(c.x - x, c.z - z) < 2.5) || !upright(x, z, high)) continue;
         const { tunnels: ducts, other } = clashes(x, z, high), met = ducts + other, score = TUNNEL_WEIGHT * ducts + other + moved * 0.04;
         if (!best || score < best.score) best = { x, z, high, met, ducts, score };
         if (met === 0) break;
@@ -220,6 +242,7 @@ export function planStructure({ triangles, bounds, storey, axes, tubes = [], pla
       if (clear) {
         const [x, z] = at(s);
         clear = heightAt(x, z) >= y + size.depth / 2 &&
+          [[0.2, 0], [-0.2, 0], [0, 0.2], [0, -0.2]].every(([u, v]) => inside(x + u, y - size.depth / 2, z + v) && inside(x + u, y + size.depth / 2 - 0.05, z + v)) &&
           !(level !== null && cores.some((c) => level > c.s0 && level <= c.s1 && inCore(c, x, z) > 0.02)) &&
           !near.some((t) => tubeDistance(t, x, y, z) < size.width / 2 + 0.05);
       }

@@ -25,6 +25,7 @@ function seat(wall, cu, cy, corners, { clear = 0.3, jump = 1.4 } = {}) {
   if (Math.abs(mu - cu) > 0.8 || Math.abs(my - cy) > 0.8) return null; // (mostly off the wall)
   const middle = wall.depth(mu, my);
   if (middle === null || wall.blocked(cu, cy, clear)) return null;
+  if (wall.curved && (!wall.owns(mu, my) || !wall.whole(mu, my, corners))) return null;
   for (const [u, y] of corners) {
     const at = wall.depth(u, y);
     if ((at !== null && !wall.curved && Math.abs(at - middle) > jump) || wall.blocked(u, y, 0.1)) return null; // (a curved surface falls away as it turns)
@@ -95,13 +96,15 @@ function fins(out, wall, size) {
     const count = Math.ceil((wall.y1 - wall.y0) / step);
     for (let n = 0; n <= count; n++) {
       const y = Math.min(wall.y1, wall.y0 + n * step), at = wall.depth(u, y);
-      if (at === null || wall.blocked(u, y, 0.35) || (run && Math.abs(at - run.at) > (wall.curved ? 2 : 0.8))) {
+      // (on a rounded massing a blade is only on the view's own part, and ends where the surface does not carry on)
+      const absent = at === null || wall.blocked(u, y, 0.35) || (wall.curved && (!wall.owns(u, y) || !wall.whole(u, y, [[ua, y], [ub, y]])));
+      if (absent || (run && (wall.curved ? !wall.whole(u, run.y, [[u, y]]) : Math.abs(at - run.at) > 0.8))) {
         if (run) end(run);
         run = null;
-        if (at === null || wall.blocked(u, y, 0.35)) continue;
+        if (absent) continue;
       }
       const d = reach(y);
-      const now = { at, wallA: wall.point(ua, y, at, 0.02), wallB: wall.point(ub, y, at, 0.02), tipA: wall.point(ua, y, at, d), tipB: wall.point(ub, y, at, d) };
+      const now = { at, y, wallA: wall.point(ua, y, at, 0.02), wallB: wall.point(ub, y, at, 0.02), tipA: wall.point(ua, y, at, d), tipB: wall.point(ub, y, at, d) };
       if (!run) end(now);
       else {
         out.quad(run.wallA, run.tipA, now.tipA, now.wallA, face);
