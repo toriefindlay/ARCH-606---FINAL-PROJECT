@@ -195,7 +195,7 @@ function panelFrame() {
     return setNote(shaped ? "Shaping the tunnel openings to the panels…" : "Cutting the tunnel openings again…");
   }
   const key = `${settings.style}|${sizeNow()}|${placed}|${skin?.geometry.uuid ?? "mass"}|${tunnels ? `${tunnels.id}:${tunnels.version}` : ""}`;
-  if (key === builtKey && mesh) { mesh.visible = true; return setNote(""); }
+  if (key === builtKey && mesh) { wantKey = key; mesh.visible = true; return setNote(""); }
   if (key !== wantKey) {
     wantKey = key;
     wantSince = performance.now();
@@ -212,6 +212,12 @@ function panelFrame() {
     setNote("The panels could not be made (see the console).");
   }
   builtKey = key; // (a failure is not retried until something changes)
+}
+
+// The facade's panels for exporting: { mesh (or null), pending (a facade is chosen and its panels are about to be made) }.
+export function getFacade() {
+  const chosen = settings.style !== "none";
+  return { mesh: chosen && mesh?.visible ? mesh : null, pending: chosen && !!wantKey && wantKey !== builtKey };
 }
 
 function mountFacades() {

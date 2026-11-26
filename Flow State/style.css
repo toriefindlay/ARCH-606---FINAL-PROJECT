@@ -235,6 +235,9 @@ form, .loader { margin: auto; }
 #hud input[type="text"]:focus { border-color: var(--accent); }
 #hud #save-site { width: 100%; margin: 0; }
 #save-status { margin: 6px 0 0; }
+#hud #export-3dm { width: 100%; margin: 8px 0 0; }
+#export-status { margin: 6px 0 0; }
+#export-status:empty { display: none; }
 #dropzone {
   position: fixed;
   inset: 12px;

@@ -145,6 +145,8 @@ export function createMeshView(uniforms, empty, dressSkin = () => {}) { // dress
 
   return {
     clear,
+    // What is drawn now, for exporting: the skin (or null), the tunnels' walls (or null), and whether a redraw is under way.
+    meshes: () => ({ skin: skinMesh, walls: mesh, busy: !!job }),
     // Shows or hides the tunnels' walls (cheap to call every frame). Hidden, they are still worked out, so showing them again is instant.
     setVisible(on) {
       visible = !!on;

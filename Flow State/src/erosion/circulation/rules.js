@@ -1053,7 +1053,8 @@ export function planCirculation(site, options = {}) {
     const flush = () => {
       const k0 = run[0], last = run[run.length - 1], doors = [];
       for (const k of run) { k.doors[0].forEach((d) => doors.push({ floor: k.s, side: d.side })); k.doors[1].forEach((d) => doors.push({ floor: k.s + 1, side: d.side })); }
-      cores.push({ a0: k0.a0, a1: k0.a1, b0: k0.b0, b1: k0.b1, w: k0.w, h: k0.h, s0: k0.s, s1: last.s + 1, doors, kind: k0.kind ?? "stair", main: !!k0.main, narrow: !!k0.narrow });
+      const joined = run.some((k) => groundRoots.has(find(`link:${links.indexOf(k)}`))); // (to an entrance, as the hallways are)
+      cores.push({ a0: k0.a0, a1: k0.a1, b0: k0.b0, b1: k0.b1, w: k0.w, h: k0.h, s0: k0.s, s1: last.s + 1, doors, kind: k0.kind ?? "stair", main: !!k0.main, narrow: !!k0.narrow, connected: joined });
     };
     for (let i = 1; i < list.length; i++) {
       if (list[i].s === run[run.length - 1].s + 1) run.push(list[i]);

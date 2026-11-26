@@ -324,6 +324,9 @@ export function getFinishedTunnels() {
   return tunnels && form && tunnels.builtOn === form.version && tunnels.done ? tunnels : null;
 }
 
+// The skin and the tunnels' walls as drawn now (see tunnelMesh.js), for exporting.
+export const getShownMeshes = () => tunnelView.meshes();
+
 export function mountExterior() {
   particles = createWindParticles();
   tunnelView = createTunnelView();
