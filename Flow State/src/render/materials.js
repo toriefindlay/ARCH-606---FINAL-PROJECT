@@ -112,6 +112,7 @@ export function createMaterials() {
     wood: standard({ map: woodMap, roughness: 0.72 }),
     deck: standard({ map: woodMap, color: 0xd9c3a0, roughness: 0.8 }),
     steel: standard({ color: 0x4a5158, metalness: 0.85, roughness: 0.45 }),
+    frame: standard({ color: 0x8c3b32, metalness: 0.55, roughness: 0.5 }), // the structure's steel, in red oxide primer
     door: standard({ map: woodMap, color: 0x8a5a38, roughness: 0.5 }),
     ghost: new THREE.LineBasicMaterial({ color: 0x4d4a45, transparent: true, opacity: 0.3 }),
   };

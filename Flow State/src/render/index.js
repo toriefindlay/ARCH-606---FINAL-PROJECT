@@ -12,6 +12,8 @@ import { settings as exteriorSettings } from "../erosion/exterior/panel.js";
 import { getCirculationPlan } from "../erosion/circulation/index.js";
 import { createForm } from "../erosion/exterior/form.js";
 import { getFacade } from "../facades/index.js";
+import { getStructure } from "../structure/index.js";
+import { buildStructureMeshes } from "../structure/view.js";
 import { createMaterials, worldUV } from "./materials.js";
 import { buildSurroundings } from "./surroundings.js";
 import { buildDucts, buildLiners, buildFraming, buildOutline, placeEntrances, buildEntrances, clearEntrances } from "./systems.js";
@@ -42,12 +44,14 @@ function gather() {
   if (tunnels && shown.busy) return { wait: "The tunnels are still being redrawn: try again in a few seconds." };
   if (facade.pending) return { wait: "The facade panels are still being made: try again in a few seconds." };
   const plan = tunnels ? getCirculationPlan() : null;
+  const structure = getStructure();
+  if (structure.pending) return { wait: "The structure is still being planned: try again in a few seconds." };
   const missing = [];
   if (!tunnels) missing.push(exteriorSettings.erodeTunnels ? "wind tunnels (not finished yet)" : "wind tunnels");
   if (!plan) missing.push("circulation (turn it on under Circulation)");
   if (!facade.mesh) missing.push("facade (choose one under Facades)");
   const style = document.querySelector("#facade-styles button.on")?.dataset.facade;
-  return { mass, tunnels, shown, facade, plan, style, missing };
+  return { mass, tunnels, shown, facade, plan, style, structure, missing };
 }
 
 function build(studio, source) {
@@ -88,13 +92,27 @@ function build(studio, source) {
   outlines.forEach((g) => g.dispose());
 
   const { ground, context } = buildSurroundings(state.features, state.site.radius, (x, z) => heightAt(x, z) > 0.5, mass.bounds);
+  // the structure, if it has been added: of the same parts as are shown in the working view. The plates are seen through,
+  // so that they do not hide the systems under them.
+  let structure = null;
+  const frame = source.structure;
+  if (frame.data && (frame.plates || frame.steel)) {
+    const plate = materials.concrete.clone();
+    Object.assign(plate, { transparent: true, opacity: 0.38, depthWrite: false });
+    const built = buildStructureMeshes(frame.data, { plate, steel: materials.frame });
+    built.plates.visible = frame.plates;
+    built.steel.visible = frame.steel;
+    structure = built.group;
+    studio.scene.add(structure);
+  }
+
   // (`interior`, the ducts and the framing, belongs to the view of the systems alone: see showMode)
   studio.scene.add(ground, context, envelope, interior, outline);
   // (only metals mirror the bright sky strongly: on everything else it would wash out the sun's light and shade)
   studio.scene.traverse((o) => {
     for (const m of [o.material].flat()) if (m?.isMeshStandardMaterial && m.metalness < 0.5) m.envMapIntensity = 0.45;
   });
-  return { envelope, interior, outline, context };
+  return { envelope, interior, outline, context, structure };
 }
 
 function showMode(mode) {
@@ -103,6 +121,8 @@ function showMode(mode) {
   parts.envelope.visible = !systems;
   parts.outline.visible = systems && $("render-outline").checked;
   parts.interior.visible = systems;
+  if (parts.structure) parts.structure.visible = systems && $("render-structure").checked;
+  $("render-structure-label").classList.toggle("hidden", !systems || !parts.structure);
   $("render-outline-label").classList.toggle("hidden", !systems);
   for (const b of document.querySelectorAll("[data-render-mode]")) b.classList.toggle("on", b.dataset.renderMode === mode);
   view.mode = mode;
@@ -196,6 +216,7 @@ async function open() {
     view.parts = build(studio, source);
     $("render-projection").value = "perspective";
     $("render-surroundings").checked = true;
+    $("render-structure").checked = true;
     setOrbit(true);
     showMode("full");
   } catch (e) {
@@ -232,6 +253,7 @@ $("render-surroundings").addEventListener("change", (e) => {
   view.studio.refresh();
 });
 $("render-outline").addEventListener("change", () => view && showMode(view.mode));
+$("render-structure").addEventListener("change", () => view && showMode(view.mode));
 $("render-save").addEventListener("click", () => view && saveImage());
 $("render-record").addEventListener("click", () => view && recordOrbit());
 // (while the render view is open, keys must not reach the working view behind it: Delete would remove a massing)

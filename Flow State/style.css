@@ -182,6 +182,7 @@ button.primary:hover { background: var(--accent); }
 #hud #facade-styles button.tool { display: flex; flex-direction: column; gap: 4px; padding: 4px; font-size: 11px; line-height: 1.2; text-align: center; }
 .facade-swatch { display: block; height: 34px; border-radius: 2px; border: 1px solid rgba(0, 0, 0, 0.15); }
 .tone-circulation { --tone: #b4691f; }
+.tone-structure { --tone: #8c3b32; }
 .tone-cost { --tone: #2f6f4f; }
 .tone-sun { --tone: #b08a1e; }
 .tone-wind { --tone: #4f86a6; }

@@ -9,6 +9,7 @@ import "./site/wind.js";
 import "./mass/model3dm.js";
 import "./erosion/index.js";
 import "./facades/index.js";
+import "./structure/index.js";
 import "./floorplans/index.js";
 import "./export/index.js";
 import "./render/index.js";
