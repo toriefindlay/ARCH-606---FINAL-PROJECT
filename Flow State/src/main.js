@@ -11,5 +11,6 @@ import "./erosion/index.js";
 import "./facades/index.js";
 import "./floorplans/index.js";
 import "./export/index.js";
+import "./render/index.js";
 import "./library.js";
 import "./ui/start.js";

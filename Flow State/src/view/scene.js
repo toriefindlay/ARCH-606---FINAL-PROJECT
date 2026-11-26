@@ -38,8 +38,13 @@ resize();
 const frameHandlers = [];
 export const onFrame = (fn) => frameHandlers.push(fn);
 
+// While the render view (render/) is open it covers the working view, which then rests.
+let paused = false;
+export const setPaused = (on) => (paused = on);
+
 let lastT = 0;
 renderer.setAnimationLoop((t) => {
+  if (paused) return;
   const dt = Math.min((t - lastT) / 1000, 0.1);
   lastT = t;
   controls.update();
