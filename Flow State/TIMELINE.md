@@ -139,3 +139,23 @@ Earlier entries (before 2026-11-20) were written up afterwards from what was ask
 | 2026-11-24 | Restyled the floor plans as fine black-ink drawings with varied line weights, double-line walls, stippled tunnels and single-line titles. |
 | 2026-11-24 | Removed the lip the skin made on the ground round the foot of the building. |
 | 2026-11-24 | Brought SOFTWARE_SUMMARY.md and this timeline up to date, and corrected the summary's tunnel method to the ductwork that actually runs. |
+
+## 25 Nov 2026: Rhino export, render view, structure and fixes
+
+| Date | Change |
+|---|---|
+| 2026-11-25 | Started a local server (port 8000) so the site opens in Chrome. |
+| 2026-11-25 | Added an Export to Rhino button that writes the massing, wind tunnels, connected circulation and facade as separate meshes on their own layers of a .3dm file. |
+| 2026-11-25 | Added a Render view with an orbiting camera (perspective or axonometric), concrete skin, facade materials, and rendered buildings, roads, greenery and cars, plus image saving and orbit video recording. |
+| 2026-11-25 | Added an Interior systems only mode to the render, showing the tunnels as shiny metal ducting and the circulation as timber framing with drywall. |
+| 2026-11-25 | Fixed Save image freezing without saving, which happened in the axonometric view and with already-refined pictures. |
+| 2026-11-25 | Removed the drywall from the rendered circulation, leaving the wood framing (floor boards, stair treads and doors remain). |
+| 2026-11-25 | Improved circulation in both modes by adding stairs that join cut-off areas, with a narrower two-flight stair, hallways in areas split off by stairs, and more ground-floor exits. |
+| 2026-11-25 | Made the Organic facade a thin 10 cm web, so it no longer bulges out past the walls, corners and roof edges. |
+| 2026-11-25 | Fixed walls sinking back once tunnels were added, by building the skin from the massing's own faces instead of the coarse height grid. |
+| 2026-11-25 | Made the rendered openings the same concrete as the walls, removing their jagged edges, with a round metal liner set back inside each one. |
+| 2026-11-25 | Hid the circulation in the full-building render except for the ground-floor doors, placed on the real walls with the facade cleared in front of them. |
+| 2026-11-25 | Limited the rendered trees and shrubs to the map's green spaces. |
+| 2026-11-25 | Added a Structure panel with concrete floor plates and a generic steel frame that give way to the tunnels and circulation, with its own toggle in the interior render. |
+| 2026-11-25 | Fixed facades on rounded forms (stretched slivers, bare undersides and broken Organic ribs), and stopped steel and tunnel walls poking out under curved sides. |
+| 2026-11-25 | Brought SOFTWARE_SUMMARY.md and this timeline up to date. |

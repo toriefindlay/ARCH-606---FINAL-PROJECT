@@ -2,7 +2,7 @@
 
 A guide to the main algorithms behind each feature, and why each was chosen. Everything runs in the browser (plain JavaScript modules + three.js), in **world metres** (x east, y up, z south, site pin at the origin, mass base on y = 0).
 
-*Last updated 24 Nov 2026.*
+*Last updated 25 Nov 2026.*
 
 **The big idea:** the imported mesh is never edited. Changes are worked out on *grids*: a **height map** (the massings as placed), a **voxel grid** (tunnels and airflow) and a **signed-distance field** (cuts, skin). Meshes are made only at the end, for display. Grids cope with messy geometry, combine with simple operations, and can be re-run as often as the inputs change.
 
@@ -18,8 +18,12 @@ A guide to the main algorithms behind each feature, and why each was chosen. Eve
 | Tunnel and skin surfaces | implicit field | **SDF**, **marching cubes** |
 | Wind particles | velocity field | RK2 advection, backward tracing |
 | Circulation | 2D grids per floor | clearance maps, routed hallways, stair placement |
-| Facades | triangle meshes on wall grids | surface reading, then panel patterns laid on it |
+| Facades | triangle meshes on wall grids; a 3D web on rounded forms | surface reading, then panel patterns laid on it |
+| Inside and outside | the massing meshes | ray crossing count (`core/solid.js`) |
 | Floor plans | SVG | slices of the massing and the tunnel and circulation data |
+| Structure | slab meshes and I-section members | 2D fields and marching squares; column placement search |
+| Render view | its own scene | progressive frame averaging |
+| Rhino export | triangle meshes | vertex welding, written with rhino3dm |
 | Combining cuts | SDF | union = `min` (the exterior/interior contract) |
 
 ---
@@ -54,6 +58,7 @@ A guide to the main algorithms behind each feature, and why each was chosen. Eve
 - All massings sit under **one group**, so the scan, erosion and solvers treat them as one mass with open air in the gaps. The grid covers all of them, so massings placed far apart get a **coarser grid**.
 - The meshes are scanned by **casting rays straight down** on a regular grid. Each cell stores the height of the mass there.
 - A height map is simple and fast. The limit is that it **cannot represent an overhang**. The tunnels use a separate 3D voxel version of the form (section 4).
+- **What is really inside** (`core/solid.js`): rounded facades, their tunnel walls and the structure ask the meshes themselves. Each massing mesh is its own solid, and a point is inside it if a ray straight up crosses it an **odd number of times**. The point is inside the massings if it is inside any of them. This also tells which way a surface faces, including curved-in undersides, and which surfaces are buried in an overlap.
 - The earlier **sun growth** and **wind rounding** tools have been removed. The form is now the massings as placed.
 
 ---
@@ -134,10 +139,11 @@ With `DUCTS = false`, a **free-growing vein network** is used instead: a resisto
 - The tubes are stamped into a **smooth field on a fine grid** (1 inside a tunnel, falling to 0 over a few decimetres). The wall is the **iso-level** of that field, extracted by **marching cubes**, with normals from the field gradient. Tubes of any radius that meet blend into one smooth passage.
 - The same field goes to the shader, which **discards the mass's own surface** wherever the field is above the iso-level, so where a tunnel reaches a wall it leaves a clean opening in the original model.
 - On **rounded massings** (section 7) openings are discarded from surfaces of any slope; otherwise roofs and undersides are never opened.
+- On rounded massings the tunnel walls are also **trimmed to what is really inside** (section 2), so no stubs stand out under curved-in sides.
 
 ### The skin (`skinShell.js`)
 Once the tunnels are done on massings that are not rounded, the outside is drawn as **one surface**:
-1. The mass's signed distance (flat walls, sharp corners).
+1. The mass's signed distance (flat walls, sharp corners). Near the surface it is the **exact distance to the massing's own triangles** (`exactMass.js`), so walls and roofs stay on their real faces. Taken from the coarse height map, as before, they could sit half a metre or more in or out.
 2. The tunnels removed with a **hard cut**. Each opening gets either a round, flared 30 degree reveal, or, with the Triangular or Organic facade, a **straight-sided niche 1 m deep** in a shape from the pattern, with the round tube running on behind.
 3. The circulation's hallways cut out where they reach the face.
 
@@ -156,11 +162,12 @@ The heavy loops (stamping, blurring, meshing) are written as **JavaScript genera
 | --- | --- | --- |
 | **Simple box** | the skin (section 6) | four footprint walls |
 | **Stepped** (steps, wings, towers, notches, overlapping blocks) | the skin | every visible upright face (`faceWalls.js`) |
-| **Rounded** (domes, shells) | the **original surface** with openings cut into it | five views (`curvedWalls.js`) |
+| **Rounded** (domes, shells) | the **original surface** with openings cut into it | five views (`curvedWalls.js`); Organic uses one web in space (`curvedWeb.js`) |
 
 - A massing is **rounded** if more than 40% of its surface is neither near upright nor near flat. The skin would turn its curves into steps. If **any** massing on a site is rounded, all of them are treated this way, with no flared reveals, circulation windows or pattern-shaped openings.
 - **Stepped:** faces are found on the massing's own mesh, hidden parts removed, and cut into rectangles the face fully covers. Panels are trimmed to them and lean out at outward corners. Faces under about 0.7 m are left bare, and slanted faces may be missed.
-- **Rounded:** the surface is read from the four sides and from above. Each view covers what faces it most, and panels stand out along the surface normal.
+- **Rounded:** the surface is read from the four sides and from above. Each view covers what faces it most, and panels stand out along the surface normal. Surfaces are turned to face out using the inside test (section 2), and buried ones are ignored. A panel belongs to **only one view** (the one its middle faces most), and is **left out** where the surface under it jumps or turns sharply, which would stretch it into long slivers.
+- **Organic on rounded forms:** cells round points scattered through **3D space**, with a rib wherever the massing's surface crosses from one cell to another. The width is measured along the surface. The web runs unbroken from blob to blob, covers undersides, and puts a round ring round each tunnel opening.
 
 ---
 
@@ -190,6 +197,10 @@ The heavy loops (stamping, blurring, meshing) are written as **JavaScript genera
 
 - Planned once the tunnels are finished (`rules.js`): each floor is a grid along the tunnels' axes, hallways run where they are clear of tunnels and spaces, and stairs and lifts link floors from ground-floor entrances. **Scattered** mode leaves the tunnels untouched. **Main cores** mode moves tunnels around the cores (`reroute.js`).
 - **Several structures** (`structures.js`): the footprint is split into separate pieces (touching massings count as one). Each is planned as its own building, with its own stairs, cores, entrances and limits. In main-cores mode the tunnels are moved for one structure after another. All use the tunnels' hallway axes.
+- **Joining what is cut off** (with **Fill every space that has room**): after the first stairs are cut into the floors, more are added **one at a time** between an area an exit reaches and one it doesn't. Each is tried on the real floor grids and **kept only if more hallway is joined**, because a stair can also block a hallway. This is not limited by the number of stairs chosen between floors, except that **None** in main-cores mode turns it off.
+- **Compact stair:** these joining stairs may also use a narrower two-flight stair (5.2 × 2.0 m on the grid), and may stand closer together. It is not used with **Include a lift**. Its flights are drawn only about **0.7 m wide**, probably too narrow for a required exit stair.
+- **Split areas:** every piece of floor with room now gets hallways, even if a new stair split it off. A ground-floor piece with a clear way to a wall gets an exit.
+- **Measured** on two saved tunnel networks (13 storeys, about 64 × 47 m): the share of hallway-wide space with an exit-connected hallway within about 2 m rose from **56–68% to 71–83%**. The rest is mostly small bays with no room for a stair, and angled gaps between diagonal tunnels.
 
 ---
 
@@ -200,14 +211,14 @@ The heavy loops (stamping, blurring, meshing) are written as **JavaScript genera
 | Facade | Panels | Tunnel openings | Size range |
 | --- | --- | --- | --- |
 | **Triangular** | folded shades on a triangle grid | pattern-shaped niche | 60 to 400% |
-| **Organic** | thick flowing web | an enlarged web cell, niche | 60 to 200% |
+| **Organic** | thin flowing web, flush on the wall (10 cm) | an enlarged web cell, niche | 60 to 200% |
 | **Cubic** | white stepped blocks | round, white | 60 to 200% |
 | **Protruding fins** | rippling upright blades | round, navy | 60 to 200% |
 | **Hexagonal** | hooded honeycomb | round, navy | 60 to 200% |
 
 - **Wall reading** (`walls.js`, `plainWalls.js`): on simple boxes, the outside surface is read into a **depth grid** for each of four sides. Panels are designed flat and each point is set on the surface found there.
 - **Triangular:** tiles are one size across the wall. Those over an opening are widest open, and they close with distance. The face is bridged across openings so tiles are not dropped. Walls are joined at corners. The recess behind uses a finer division of the same grid. At large sizes on busy walls, most tiles are over or near an opening, so most stay open.
-- **Organic:** one web wraps all round each simple-box massing, with the two walls at each corner joined on a shared edge. On stepped shapes each face is bordered separately.
+- **Organic:** one web wraps all round each simple-box massing, with the two walls at each corner joined on a shared edge. On stepped shapes each face is bordered separately. The ribs are **10 cm** deep at every panel size, so walls, corners and roof edges line up with them. The other facades stick out further by design.
 - **Openings:** the niche shapes in the table apply to the skin. Rounded massings keep plain cut openings. Cubic's block height stops growing partway up the size slider.
 - Panels are rebuilt when the massings, tunnels or skin change, and hidden while tunnels are forming.
 
@@ -224,21 +235,62 @@ The heavy loops (stamping, blurring, meshing) are written as **JavaScript genera
 
 ## 13. Saving a site (`library.js`, `core/storage.js`)
 
-- Saved in this **browser's storage** on this computer: the site, every massing (file, position, size, turn), the finished tunnel network and its settings, and the chosen facade and panel size.
+- Saved in this **browser's storage** on this computer: the site, every massing (file, position, size, turn), the finished tunnel network and its settings, the chosen facade and panel size, and the structure's settings. The structure itself is planned again on reopening.
 - On reopening, the voxels are rebuilt and the saved network is **loaded and carved** instead of grown. Only the airflow is solved again.
 - **Unfinished tunnels are not saved.** The save message says so. Tunnels are grown again if the massings no longer match, after **Clear erosion**, or after a change that affects them.
 - Sites saved with a single massing by the older version still open.
 
 ---
 
-## 14. Where it can't be trusted (honest limits)
+## 14. Structure (`structure/`)
+
+A **Structure** panel adds floor plates and a steel frame (`model.js` plans them, `view.js` draws them). The tunnels and circulation come first: the structure only **reads** them and changes nothing else. It is planned again when they or the massings change.
+
+- **Floor plates:** one 20 cm concrete slab under each floor, kept 20 cm inside the outside walls. Each floor's outline is a **2D field** (footprint, minus tunnels passing through the slab, minus stairs and lifts rising through it), turned into smooth edges by **marching squares**. Hallways sit on top and cut no openings.
+- **Columns:** a grid along the tunnels' axes, 5 to 10 m apart at most (7.5 m by default). Each is one straight column from the ground. It may **shift up to 3.2 m each way** along the axes to the spot with the fewest clashes. Passing through a tunnel counts three times as much as a hallway or stair, and a column may stand in a hallway's edge.
+- **Beams:** primary beams between neighbouring columns under each slab and the roof, with lighter beams across the bays. They sit above the horizontal tunnels and are cut off at risers and stair openings.
+- **Rounded forms:** slabs, columns and beams use the inside test (section 2), so none stands out under a curved side.
+- **Not all columns miss everything.** On the two saved networks, at 7.5 m, 74–77 of 80 columns missed every tunnel, and 54–55 also missed every hallway and stair. This was measured with a simplified box outline and Scattered circulation. The panel reports the count for the current model.
+- It is shown in the working view (use X-ray to see inside), and in the interior render with its own toggle and see-through slabs. The floor plans and the Rhino export don't include it.
+
+---
+
+## 15. Render view (`render/`)
+
+A full-screen view with its **own renderer and scene**, built from a copy of the project, so the working view is unchanged.
+
+- **Modes:** *Full building* (concrete skin, facade materials, and ground-floor doors as the only circulation) and *Interior systems only* (metal ducting along the tunnels' paths and radii, circulation as bare timber framing with floor boards, stair treads and doors, plus the optional massing outline and structure). Only circulation joined to an exit is shown.
+- **Openings:** the skin and the reveals render as one concrete surface, with a round **metal liner** set back inside each opening. Rounded massings show no tunnel openings in the full building.
+- **Doors:** moved onto the massing's real wall faces, with facade panels cleared in front of them. Hallway windows already cut into the skin (**Circulation** on under X-ray) will still appear.
+- **Materials** are drawn on canvases in code, so no textures are downloaded.
+- **Surroundings:** ground, roads, pavements and water are painted from the map data. Buildings use mapped footprints and mapped or estimated heights, with invented windows and roofs. Road widths and cars are illustrative. **Trees and shrubs grow only in mapped green spaces.** Map buildings that overlap the massing are hidden.
+- **Camera:** orbit, drag and zoom, in perspective or axonometric.
+- **Picture quality:** while the camera moves, one frame is drawn at a time. Once still, **96 frames are averaged**, each with the sun slightly shifted, light from another part of the sky and a sub-pixel camera shift. This gives soft shadows, shading in corners and smooth edges. The viewer checks for real camera movement itself, because the axonometric camera controls reported movement constantly.
+- **Output:** *Save image* waits for the refined picture and saves a PNG. *Record orbit* records one 36 s turn as MP4 or WebM, depending on the browser, without the refinement.
+
+---
+
+## 16. Rhino export (`export/`)
+
+- **Export to Rhino (.3dm)** writes up to four meshes, each on its own layer: **Massing** (the skin with openings, where it exists), **Wind tunnels**, **Connected circulation** (only what reaches an exit) and **Facade**. Missing parts are left out, with a note saying why.
+- Triangle corners within 1 mm are **welded**, except across edges sharper than 30°, which stay sharp. The file is written with the rhino3dm library kept in `vendor/`.
+- Units are **metres**, with x east, y north and z up, and the origin at the site pin. It will not line up with the imported file's own coordinates.
+- Rounded massings export without the tunnel openings. Facade colours are not exported, only layer colours. The **structure is not included**.
+
+---
+
+## 17. Where it can't be trusted (honest limits)
 
 - **Potential flow:** no turbulence, separation or friction. It shows where air accelerates, not true speeds. Tunnel speeds are relative to the open wind.
 - **Voxel resolution** (about 0.5 to 4 m): thin throats round up to a voxel. The drawn tunnels use the exact radii.
 - **The wall-pressure model** is a simplified analytic estimate, not a CFD result.
 - **Wind data** is regional reanalysis at 10 m, not measured on site. One year of data is used.
-- **Height-map form:** it cannot represent overhangs.
+- **Height-map form:** it cannot represent overhangs. This still applies to the tunnels, airflow and circulation, even though rounded facades and the structure now use the meshes themselves.
+- **Inside test:** it works best with overlapping forms kept as **separate objects**. Overlaps joined into one mesh without a boolean union may be read wrongly.
+- **Structure** is a concept frame, not an engineered one: no loads, member sizes, spans, deflection, bracing or foundations are worked out, and some columns still pass through tunnels, hallways or stairs.
+- **Circulation** does not reach everywhere, and nothing in it is checked against building codes.
+- **Render view** is not photorealistic. Its surroundings are partly invented, and its timber framing is a concept picture.
 - **Cooling** is a proxy (distance-faded air speed), not a thermal comfort or energy simulation.
-- **Facades** are not part of any analysis. Joins can be uneven on rounded forms and at some corners of stepped ones.
+- **Facades** are not part of any analysis. Joins can be uneven on rounded forms and at some corners of stepped ones. Where rounded forms meet, some facades leave bare patches.
 - **Skin edges** can look ragged or wavy on walls turned at an angle to the grid, and on some stepped roofs.
 - **Floor plans** are concept diagrams, not construction drawings. They show no rooms, windows or occupied spaces, and have no export.
