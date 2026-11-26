@@ -66,7 +66,7 @@ export function createMeshView(uniforms, empty, dressSkin = () => {}) { // dress
   function* compute(tunnels, skin) {
     fresh();
     if (skin) { // (once the tunnels are done)
-      const built = yield* shell.build(tunnels, skin.cuts ?? null, skin.shapes?.shape ?? null, !!skin.shapes);
+      const built = yield* shell.build(tunnels, skin.cuts ?? null, skin.shapes?.shape ?? null, !!skin.shapes, skin.surface ?? null);
       if (built) return { kind: "skin", built, shapes: skin.shapes ?? null };
     }
     const { massBox } = tunnels, { edges } = tunnels.network();

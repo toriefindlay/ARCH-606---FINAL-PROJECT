@@ -124,7 +124,28 @@ export function createStudio(canvas, focus, onStatus) {
 
   let still = 0; // frames accumulated
   let dirty = true;
+  let waiting = null; // what to do once the picture is refined (see whenRefined)
   const restart = () => { still = 0; dirty = true; };
+
+  // Has the camera moved to be seen since the picture was begun? This is judged here, not from the controls' "change"
+  // event: with the axonometric camera that is raised on every frame (rounding in its far-off position is enough), and the
+  // picture would never be refined. The pose is compared with the one the picture was begun from, so that a slow drift
+  // still counts once it adds up.
+  const begun = { turn: new THREE.Quaternion(), target: new THREE.Vector3(), distance: 0, zoom: 1 };
+  const cameraMoved = () => {
+    const distance = camera.position.distanceTo(controls.target);
+    const moved =
+      camera.quaternion.angleTo(begun.turn) > 2e-4 ||
+      controls.target.distanceTo(begun.target) > viewHeight * 2e-4 ||
+      Math.abs(distance - begun.distance) > distance * 2e-4 ||
+      Math.abs(camera.zoom - begun.zoom) > camera.zoom * 2e-4;
+    if (moved) {
+      begun.turn.copy(camera.quaternion);
+      begun.target.copy(controls.target);
+      Object.assign(begun, { distance, zoom: camera.zoom });
+    }
+    return moved;
+  };
 
   const useCamera = (next) => {
     controls?.dispose();
@@ -136,7 +157,7 @@ export function createStudio(canvas, focus, onStatus) {
     controls.autoRotate = orbiting;
     controls.autoRotateSpeed = 60 / TURN_SECONDS;
     if (camera.isPerspectiveCamera) { controls.minDistance = 8; controls.maxDistance = reach * 7; }
-    controls.addEventListener("change", restart);
+    controls.enabled = !waiting;
     controls.update();
     restart();
   };
@@ -232,12 +253,20 @@ export function createStudio(canvas, focus, onStatus) {
   function tick(now) {
     const dt = Math.min((now - last) / 1000, 0.1);
     last = now;
-    controls.update(dt); // (raises "change", and so restarts the refining, whenever the camera moves)
+    controls.update(dt);
+    if (cameraMoved()) restart();
     if (orbiting) { showMoving(); onStatus(""); return; }
     if (dirty) { showMoving(); dirty = false; return; }
     if (still < SAMPLES) {
       accumulate();
       onStatus(still < SAMPLES ? `Refining the picture… ${Math.round((100 * still) / SAMPLES)}%` : "Picture refined");
+    }
+    // (asked for before or after the picture was finished, it is answered as soon as there is one)
+    if (still >= SAMPLES && waiting) {
+      const done = waiting;
+      waiting = null;
+      controls.enabled = true;
+      done();
     }
   }
 
@@ -269,6 +298,12 @@ export function createStudio(canvas, focus, onStatus) {
       useCamera(next);
     },
     get refined() { return !orbiting && still >= SAMPLES; },
+    // Calls `done` once, when the picture is refined (at the next frame if it already is). Until then the camera can't be
+    // dragged, which would begin the picture again. `null` calls off what was asked for.
+    whenRefined(done) {
+      waiting = done;
+      controls.enabled = !done;
+    },
     dispose() {
       renderer.setAnimationLoop(null);
       observer.disconnect();

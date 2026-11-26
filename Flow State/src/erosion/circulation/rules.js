@@ -25,6 +25,8 @@
 //  5. On every floor the hallways grow from the links' doors (and the entrances): the floor cell farthest from any hallway (walking) is joined to the
 //     network by the cheapest rectilinear route, until all of the floor is within `serve` metres of a hallway. A few straight shortcuts make loops.
 //  6. What is reachable from an entrance (through the links) is counted, and what is not is reported.
+// With `fill`, once the first stairs are cut into the floors (before step 5), more are added to join what they leave cut off ("joining what is cut off"
+// below), and every piece the floors are then in gets an exit or a start of its own.
 import { rerouteGraph } from "./reroute.js";
 
 const SQRT2 = Math.SQRT2;
@@ -61,10 +63,13 @@ const FILL_PIECE = 3; // a piece of a floor needs at least this many lattice nod
 const MIN_GAIN_FILL = 0.004; // with `fill`, a stair need only bring this part of the smaller of its two floors within reach
 const FILL_STAIRS = 6; // ...and at most this many (at least) between two floors
 const MAX_ROOTS = 8; // entrances, and starts of pieces with no way down, at the most
+const MAX_BRIDGES = 160; // with `fill`, stairs added at the most to join what is cut off (each must join more, so it stops long before this on most masses)
+const MAX_JOINS = 200, MAX_BRANCHES = 600; // on one floor: joins between hallways that start in the same space, and branches grown
 const MIN_ROOT = 0.02; // another root must bring at least this part of all the floor within reach
 const MAIN_STAIR = [6.0, 3.2]; // m: a main stair core (long side along one axis, short along the other)
 const MAIN_LIFT = 3.2; // m: the side of the lift core
 const NARROW_STAIR = [7.2, 1.6]; // m: a straight single-flight stair (long side, short side), used with `fill` where the two-flight stair does not fit
+const COMPACT_STAIR = [5.2, 2.0]; // m: a narrower two-flight stair (long side, short side), used with `fill` to join what is cut off
 const AUTO_SUPP = 2; // supplemental stairs between two floors at the most, in "main" mode with "auto"
 const MIN_GAIN_SUPP = 0.08; // ...and each must bring at least this part of the smaller of its two floors within reach
 const STACK_BONUS = 1.6; // a link above or below another at the same place is worth this much more (they make one core)
@@ -453,12 +458,14 @@ export function planCirculation(site, options = {}) {
 
   // ---- the entrances: on the ground floor, on the walls nearest a street ----
   const F0 = floors[0];
-  const entranceByComp = new Map(); // piece of the ground floor's hallway space -> its best run out to a wall (the entrance, if that piece is used)
-  {
+  // piece of the ground floor's hallway space -> its best run out to a wall (the entrance, if that piece is used). Worked out again once the stairs are cut
+  // into the floor, which splits it into other pieces.
+  const findEntrances = () => {
+    const entranceByComp = new Map();
     // A way out for every piece of the ground floor's hallway space: a walk from the piece, through every place that is clear of tunnels (and of the occupied
     // spaces) for a hallway's width, to a place that touches the outside (it may turn corners: the strips between the trunks reach a wall straight, but a
     // piece cut off by branches only by a bend). The wall's setback does not stop it: it is the door.
-    const dTs = chebyshev(F0.ts, na, nb), dOut0 = chebyshev(F0.outside, na, nb);
+    const dTs = chebyshev(F0.ts.map((v, k) => v | F0.core[k]), na, nb), dOut0 = chebyshev(F0.outside, na, nb); // (nor through a stair)
     // Within DOOR_ZONE of the wall a door may be narrower than a hallway (squeezed between two tunnel openings, which are only 6 m apart): it needs only
     // DOOR_NEED cells clear of tubes, not the full width.
     const doorNeed = Math.max(2, need - 1), doorZone = Math.round(DOOR_ZONE / g);
@@ -513,8 +520,10 @@ export function planCirculation(site, options = {}) {
       }
       if (best) entranceByComp.set(comp, best);
     }
-    if (!entranceByComp.size) warnings.push("No clear way from the ground-floor hallways to a wall was found, so there is no entrance (the tunnels leave no room).");
-  }
+    return entranceByComp;
+  };
+  const entranceByComp = findEntrances();
+  if (!entranceByComp.size) warnings.push("No clear way from the ground-floor hallways to a wall was found, so there is no entrance (the tunnels leave no room).");
   mark("entrance");
 
   // ---- how much floor a hallway serves, per piece of each floor's hallway space ----
@@ -771,18 +780,116 @@ export function planCirculation(site, options = {}) {
     if (o.fill) fillRest(state, Math.max(maxPer, o.fillStairs ?? FILL_STAIRS));
   }
   const links = state.chosen, entrances = state.entrances, detachedRoots = state.detached;
-  if (usable >= 2 && !links.length) warnings.push("No place is clear of tunnels on two neighbouring floors for a stair that a hallway can reach, so the floors are not joined.");
-  mark(`links (${links.length}), entrances (${entrances.length}), detached roots (${detachedRoots.length})`);
   // a link is solid on the two floors it joins: no hallway or walk through it
-  for (const k of links) {
-    k.a0 = a0 + k.ci * g; k.a1 = a0 + (k.ci + k.w) * g; k.b0 = b0 + k.cj * g; k.b1 = b0 + (k.cj + k.h) * g;
+  const cut = (k) => {
     for (const f of [k.s, k.s + 1]) {
       const F = floors[f];
       for (let j = k.cj; j < k.cj + k.h; j++) for (let i = k.ci; i < k.ci + k.w; i++) { const c = j * na + i; F.blocked[c] = 1; F.walk[c] = 0; F.core[c] = 1; }
     }
-  }
+  };
+  for (const k of links) cut(k);
   // (the comps of a floor change when the links are cut out of it: the roots are found again below by where they are)
   for (let f = 0; f < usable; f++) if (links.some((k) => k.s === f || k.s + 1 === f)) prepare(floors[f]);
+
+  // ---- joining what is cut off ----
+  // With the stairs cut in, the floors fall into the pieces people would really walk in. A piece is joined when an entrance leads to it, through the
+  // stairs. With `fill`, stairs are then added one at a time between a joined piece and one that is not, wherever there is room, until no more can be.
+  // Each is tried on the floors themselves and kept only if more is joined afterwards: a stair can also cut a hallway's way in two.
+  const joinedNow = () => { // { size: the hallway space joined to an entrance (lattice nodes), has(floor, piece) }
+    const parent = new Map();
+    const find = (x) => { let r = x; while (parent.has(r) && parent.get(r) !== r) r = parent.get(r); if (r !== x) parent.set(x, r); return r; };
+    const unite = (x, y) => { const p = find(x), q = find(y); if (p !== q) parent.set(p, q); };
+    links.forEach((k, li) => {
+      for (let side = 0; side < 2; side++) {
+        const f = k.s + side;
+        for (const d of k.doors[side]) if (floors[f].C[d.id]) unite(-1 - li, keyOf(f, floors[f].comp[d.id]));
+      }
+    });
+    const roots = new Set();
+    for (const e of entrances) if (floors[0].C[e.start]) roots.add(find(keyOf(0, floors[0].comp[e.start])));
+    const has = (f, comp) => roots.has(find(keyOf(f, comp)));
+    let size = 0;
+    for (let f = 0; f < usable; f++) floors[f].compSize.forEach((n2, comp) => { if (has(f, comp)) size += n2; });
+    return { size, has };
+  };
+  // every piece of the ground floor that has a way to a wall gets an exit
+  const addExits = () => {
+    if (!o.fill) return;
+    const have = new Set(entrances.filter((e) => floors[0].C[e.start]).map((e) => floors[0].comp[e.start]));
+    for (const [comp, e] of findEntrances()) if (!have.has(comp) && floors[0].compSize[comp] >= FILL_PIECE) entrances.push(e);
+  };
+  addExits();
+  if (o.fill && usable >= 2 && !(o.fixedCores && o.cores < 0)) {
+    // (these stairs may stand closer together than the others: each is tried on the floors, so it cannot crowd out a door that matters)
+    const tooClose = (c) => links.some((k) => Math.abs(k.s - c.s) <= 1 && (sameRect(k, c) ? k.s === c.s : rectsNear(k, c, need)));
+    // the stairs to choose from: those above, and a compact two-flight stair, as long but narrower, which fits in more of the gaps between the tunnels
+    const choices = cands.slice();
+    if (!o.lift) {
+      const long = odd(COMPACT_STAIR[0] / g), short = odd(COMPACT_STAIR[1] / g);
+      for (let s = 0; s + 1 < usable; s++) {
+        for (const [w, h] of [[long, short], [short, long]]) {
+          for (let cj = K + 1; cj + h + K < nb; cj += 2) {
+            for (let ci = K + 1; ci + w + K < na; ci += 2) {
+              if (rectBlocked(pairSat[s], ci, cj, w, h) !== 0) continue;
+              const c = { s, ci, cj, w, h, narrow: false, compact: true };
+              c.centre = centreOf(c);
+              choices.push(c);
+            }
+          }
+        }
+      }
+    }
+    const refused = new Set();
+    let now = joinedNow(), resSat = resSatFor(entrances);
+    for (let added = 0; added < MAX_BRIDGES; ) {
+      const ranked = [];
+      for (const c of choices) {
+        if (refused.has(c) || tooClose(c) || (c.s === 0 && rectBlocked(resSat, c.ci, c.cj, c.w, c.h) !== 0)) continue;
+        const low = doorsFor(c.ci, c.cj, c.w, c.h, c.s), up = doorsFor(c.ci, c.cj, c.w, c.h, c.s + 1);
+        if (!low.length || !up.length) continue;
+        let touches = false;
+        const fresh = new Map(); // the pieces it would join: key -> size
+        [low, up].forEach((doors, side) => {
+          for (const d of doors) {
+            const f = c.s + side, comp = floors[f].comp[d.id];
+            if (now.has(f, comp)) touches = true;
+            else fresh.set(keyOf(f, comp), floors[f].compSize[comp]);
+          }
+        });
+        if (!touches || !fresh.size) continue;
+        let gain = 0;
+        for (const v of fresh.values()) gain += v;
+        if (gain < FILL_PIECE) continue;
+        if (links.some((k) => sameRect(k, c))) gain *= STACK_BONUS;
+        if (c.narrow || c.compact) gain *= 0.85; // (the wider two-flight stair is the better one, where there is room for it)
+        ranked.push({ c, gain, low, up });
+      }
+      ranked.sort((p, q) => q.gain - p.gain);
+      let kept = false;
+      for (const { c, low, up } of ranked) {
+        const pair = [floors[c.s], floors[c.s + 1]];
+        const was = pair.map((F) => ({ blocked: F.blocked.slice(), walk: F.walk.slice(), core: F.core.slice(), D: F.D, C: F.C, comp: F.comp, compSize: F.compSize }));
+        const link = { ...c, doors: [low, up] };
+        cut(link);
+        pair.forEach(prepare);
+        links.push(link);
+        const next = joinedNow();
+        // (the stair takes some hallway space itself: what is joined must still grow by a fair piece)
+        if (next.size >= now.size + FILL_PIECE) { now = next; kept = true; added++; break; }
+        links.pop();
+        pair.forEach((F, i) => Object.assign(F, was[i]));
+        refused.add(c);
+      }
+      if (!kept) break;
+      // (the new stair may have split the ground floor)
+      const exits = entrances.length;
+      addExits();
+      if (entrances.length !== exits) { now = joinedNow(); resSat = resSatFor(entrances); }
+    }
+  }
+  for (const k of links) { k.a0 = a0 + k.ci * g; k.a1 = a0 + (k.ci + k.w) * g; k.b0 = b0 + k.cj * g; k.b1 = b0 + (k.cj + k.h) * g; }
+  if (usable >= 2 && !links.length) warnings.push("No place is clear of tunnels on two neighbouring floors for a stair that a hallway can reach, so the floors are not joined.");
+  mark(`links (${links.length}), entrances (${entrances.length}), detached roots (${detachedRoots.length})`);
 
   // ---- the hallways: grown on every floor from the doors (and the entrances) ----
   const route = (F, from, isTarget) => { // the cheapest rectilinear route over the hallway lattice from `from` to a node that isTarget: [that node, ..., from], or null
@@ -823,6 +930,16 @@ export function planCirculation(site, options = {}) {
       if (k.s === s) for (const d of k.doors[0]) roots.push(d.id);
       else if (k.s + 1 === s) for (const d of k.doors[1]) roots.push(d.id);
     }
+    // with `fill`, every piece with room gets hallways: one that the stairs have split off, and so has no door or start of its own, starts where it has
+    // most room
+    if (o.fill) {
+      const rooted = new Set(roots.map((id) => F.comp[id])), start = new Int32Array(F.compSize.length).fill(-1);
+      for (let id = 0; id < m; id++) {
+        const c = F.C[id] ? F.comp[id] : -1;
+        if (c >= 0 && (start[c] < 0 || F.D[nodeCell(id)] > F.D[nodeCell(start[c])])) start[c] = id;
+      }
+      F.compSize.forEach((size, c) => { if (size >= FILL_PIECE && !rooted.has(c)) roots.push(start[c]); });
+    }
     if (!roots.length) { if (s > 0) warnings.push(`Floor ${s + 1}: no stair reaches it, so it has no hallways.`); continue; }
     const net = new Uint8Array(m), parent = new Int32Array(m).fill(-1), depth = new Int32Array(m);
     for (const id of roots) net[id] = 1;
@@ -836,7 +953,7 @@ export function planCirculation(site, options = {}) {
       }
     }
     // roots in the same hallway space are joined first
-    for (let guard = 0; guard < 24; guard++) {
+    for (let guard = 0; guard < MAX_JOINS; guard++) {
       const L = labelLattice(net);
       let joined = false;
       for (const r1 of roots) {
@@ -882,7 +999,7 @@ export function planCirculation(site, options = {}) {
     spread(start);
     const has = new Uint8Array(F.compSize.length), dead = new Uint8Array(m);
     for (let id = 0; id < m; id++) if (net[id] && F.comp[id] >= 0) has[F.comp[id]] = 1;
-    for (let it = 0; it < 300; it++) {
+    for (let it = 0; it < MAX_BRANCHES; it++) {
       // the next branch goes to the node farthest from the hallways within the walk followed; if all that are left are farther than that, to the one cheapest to reach
       let u = -1, ud = serveCells, far = -1, farCost = Infinity;
       for (let id = 0; id < m; id++) {

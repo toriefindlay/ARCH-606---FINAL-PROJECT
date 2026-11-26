@@ -80,24 +80,6 @@ const wood = () =>
     speckle(ctx, w, h, rand, 2500, 2, 0.1);
   });
 
-// Gypsum board: paper face, with the taped joints and screw heads of 1.22 m sheets.
-const drywall = () =>
-  canvasTexture(512, 512, 1.22, 1.22, (ctx, w, h, rand) => {
-    ctx.fillStyle = "#e9e7e1";
-    ctx.fillRect(0, 0, w, h);
-    speckle(ctx, w, h, rand, 7000, 2, 0.07);
-    ctx.fillStyle = "rgba(190,184,170,0.55)";
-    ctx.fillRect(0, 0, 14, h);
-    ctx.fillStyle = "rgba(255,255,255,0.8)";
-    for (let k = 0; k < 6; k++) {
-      for (const x of [24, w / 2]) {
-        ctx.beginPath();
-        ctx.arc(x, ((k + 0.5) * h) / 6, 4, 0, 7);
-        ctx.fill();
-      }
-    }
-  });
-
 // Brushed sheet metal: fine streaks round the duct, read as roughness.
 const brushed = () =>
   canvasTexture(256, 256, 1, 1, (ctx, w, h, rand) => {
@@ -129,7 +111,6 @@ export function createMaterials() {
     seam: standard({ color: 0xaeb4ba, metalness: 1, roughness: 0.28, envMapIntensity: 1.2 }),
     wood: standard({ map: woodMap, roughness: 0.72 }),
     deck: standard({ map: woodMap, color: 0xd9c3a0, roughness: 0.8 }),
-    drywall: standard({ map: drywall(), roughness: 0.94 }),
     steel: standard({ color: 0x4a5158, metalness: 0.85, roughness: 0.45 }),
     door: standard({ map: woodMap, color: 0x8a5a38, roughness: 0.5 }),
     ghost: new THREE.LineBasicMaterial({ color: 0x4d4a45, transparent: true, opacity: 0.3 }),

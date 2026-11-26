@@ -1,5 +1,5 @@
 // VIEW (render): the interior systems with their materials. The wind tunnels as shiny metal ducting along the tunnels'
-// own paths and radii, and the people's circulation as timber framing with drywall, from the circulation plan. The framing
+// own paths and radii, and the people's circulation as bare timber framing, from the circulation plan. The framing
 // is a concept picture (spacings of ordinary light framing), not a structural design.
 import * as THREE from "three";
 
@@ -80,12 +80,57 @@ export function buildDucts(tubes, openings, heightAt, materials) {
   return group;
 }
 
-/* ---------- timber framing and drywall ---------- */
+/* ---------- the metal seen in the openings ---------- */
+
+const LINER_LONG = 2.2; // m: how far a liner runs on into its tunnel, at the most
+
+// How far in from the face an opening's reveal ends and the round tunnel begins (see erosion/exterior/skinShell.js): the
+// back of a facade's shaped niche, or the throat of the round flared reveal, which is a 30 degree cone.
+const throatDepth = (r, shaped) => (shaped ? 1.05 : (Math.min(r + 0.95 * r + 0.55, Math.max(r + 0.3, 2.8)) - r) / Math.tan(Math.PI / 6));
+
+// For the whole building: in every opening, a short length of the metal duct that starts where the reveal ends, along the
+// way its tube really runs, with a slim rim. It sits just inside the tunnel's own surface.
+export function buildLiners(tubes, openings, shaped, materials) {
+  const group = new THREE.Group();
+  const up = new THREE.Vector3(0, 1, 0), out = new THREE.Vector3(0, 0, 1);
+  for (const o of openings) {
+    // the tube that ends at this opening: the one with an end on the wall nearest to it, and the widest of those
+    let end = null, other = null, best = Infinity;
+    for (const e of tubes) {
+      for (const [p, q] of [[e.a, e.b], [e.b, e.a]]) {
+        if (!p.wall) continue;
+        const score = Math.hypot(p.x - o.x, p.y - o.y, p.z - o.z) + 0.01 * Math.abs(e.r - o.r);
+        if (score < best) { best = score; end = p; other = q; }
+      }
+    }
+    if (!end) continue;
+    const along = new THREE.Vector3(other.x - end.x, 0, other.z - end.z); // (into the building)
+    const flat = along.length();
+    along.set(other.x - end.x, other.y - end.y, other.z - end.z).normalize();
+    if (flat < 0.2) continue;
+    const inward = -(along.x * o.nx + along.z * o.nz); // how squarely the tube leaves the wall
+    if (inward < 0.35) continue;
+    const from = new THREE.Vector3(o.x, o.y, o.z).addScaledVector(along, throatDepth(o.r, shaped) / inward);
+    const length = Math.min(LINER_LONG, Math.max(0.5, new THREE.Vector3(other.x, other.y, other.z).sub(from).dot(along)));
+    const radius = o.r * 0.96;
+    const sleeve = new THREE.Mesh(new THREE.CylinderGeometry(radius, radius, length, 36, 1, true), materials.metal);
+    sleeve.position.copy(from).addScaledVector(along, length / 2);
+    sleeve.quaternion.setFromUnitVectors(up, along);
+    const rim = new THREE.Mesh(new THREE.TorusGeometry(radius, 0.05, 10, 48), materials.seam);
+    rim.position.copy(from);
+    rim.quaternion.setFromUnitVectors(out, along);
+    sleeve.castShadow = sleeve.receiveShadow = rim.castShadow = rim.receiveShadow = true;
+    group.add(sleeve, rim);
+  }
+  return group;
+}
+
+/* ---------- timber framing ---------- */
 
 const STUD_SPACING = 0.406; // m: 16 inches
 const STUD = 0.09, PLATE = 0.045; // m: a stud's depth, and a plate's or stud's thickness
 const JOIST_DEPTH = 0.18;
-const SHEET = 1.22; // m: a sheet of drywall or decking
+const SHEET = 1.22; // m: a sheet of decking
 
 // Collects boxes by material, then draws each material's boxes in one go.
 function boxes() {
@@ -136,22 +181,16 @@ function boxes() {
 
 const chance = (a, b, c) => { const v = Math.sin(a * 127.1 + b * 311.7 + c * 74.7) * 43758.5453; return v - Math.floor(v); };
 
-// A framed wall from (x0, z0) to (x1, z1), standing from y0 to y1: plates, studs, a row of blocking, and drywall on the
-// side (nx, nz). Where `sheet(k)` says no, that sheet is left off, so that the framing shows.
-function framedWall(out, materials, x0, z0, x1, z1, y0, y1, nx, nz, sheet) {
+// A framed wall from (x0, z0) to (x1, z1), standing from y0 to y1: plates, studs and a row of blocking, left unboarded.
+function framedWall(out, materials, x0, z0, x1, z1, y0, y1) {
   const length = Math.hypot(x1 - x0, z1 - z0);
   if (length < 0.2) return;
   const dx = (x1 - x0) / length, dz = (z1 - z0) / length, height = y1 - y0;
-  const at = (s, y, off = 0) => [x0 + dx * s + nx * off, y, z0 + dz * s + nz * off];
+  const at = (s, y) => [x0 + dx * s, y, z0 + dz * s];
   for (const [y, h] of [[y0 + PLATE / 2, PLATE], [y1 - PLATE / 2, PLATE], [y1 - PLATE * 1.6, PLATE]]) out.add(materials.wood, at(length / 2, y), [length, h, STUD], dx, dz);
   const studs = Math.max(1, Math.round(length / STUD_SPACING));
   for (let i = 0; i <= studs; i++) out.add(materials.wood, at(Math.min(length - PLATE / 2, Math.max(PLATE / 2, (i * length) / studs)), y0 + height / 2), [PLATE, height - 3 * PLATE, STUD], dx, dz);
   out.add(materials.wood, at(length / 2, y0 + height * 0.52), [length, PLATE, STUD * 0.8], dx, dz);
-  const sheets = Math.max(1, Math.round(length / SHEET)), wide = length / sheets;
-  for (let k = 0; k < sheets; k++) {
-    const cover = sheet(k); // 0: bare studs; else the share of the height that is boarded
-    if (cover > 0) out.add(materials.drywall, at((k + 0.5) * wide, y0 + (height * cover) / 2, STUD / 2 + 0.008), [wide - 0.012, height * cover, 0.016], dx, dz);
-  }
 }
 
 // The cells of one floor's connected hallways: the floor's joists and decking, and a framed wall along every open edge.
@@ -196,12 +235,7 @@ function hallwayFloor(out, materials, plan, floor) {
         const edge = alongA ? b0 + (line + (dj > 0 ? 1 : 0)) * g : a0 + (line + (di > 0 ? 1 : 0)) * g;
         const from = alongA ? world(a0 + s * g, edge, 0) : world(edge, b0 + s * g, 0);
         const to = alongA ? world(a0 + e * g, edge, 0) : world(edge, b0 + e * g, 0);
-        const nx = alongA ? B[0] * dj : A[0] * di, nz = alongA ? B[1] * dj : A[1] * di;
-        // the boarding is peeled back in places: most sheets are whole, some stop part way up, some are off
-        framedWall(out, materials, from[0], from[2], to[0], to[2], floor.y0, y1, nx, nz, (k) => {
-          const c = chance(line + di * 3, s + k, floor.s + dj * 5);
-          return c < 0.5 ? 1 : c < 0.68 ? 0.5 : 0;
-        });
+        framedWall(out, materials, from[0], from[2], to[0], to[2], floor.y0, y1);
       });
     }
   }
@@ -217,7 +251,7 @@ function core(out, materials, plan, c) {
   const dx = u[0], dz = u[1], vx = -dz, vz = dx; // along the long side, and across it
   const at = (x, y, z) => [cx + dx * x + vx * z, y, cz + dz * x + vz * z];
   const corner = (x, z) => { const p = at(x, 0, z); return [p[0], p[2]]; };
-  // the shaft: corner posts, a ring of beams at every floor, and boarding on the lower part of two sides
+  // the shaft: corner posts, a ring of beams at every floor, and two framed sides
   const hl = length / 2, hw = width / 2;
   for (const x of [-hl, hl]) for (const z of [-hw, hw]) out.add(materials.wood, at(x, bottom + height / 2, z), [0.14, height, 0.14], dx, dz);
   for (let s = c.s0; s <= c.s1; s++) {
@@ -227,8 +261,8 @@ function core(out, materials, plan, c) {
   }
   for (let s = c.s0; s < c.s1; s++) {
     const y0 = s * plan.storey, y1 = y0 + plan.storey - 0.1;
-    for (const [p, q, nx, nz] of [[corner(-hl, -hw), corner(hl, -hw), -vx, -vz], [corner(-hl, -hw), corner(-hl, hw), -dx, -dz]]) {
-      framedWall(out, materials, p[0], p[1], q[0], q[1], y0 + 0.1, y1, nx, nz, (k) => (chance(c.a0 + s, k, c.b0) < 0.35 ? 0.5 : 0));
+    for (const [p, q] of [[corner(-hl, -hw), corner(hl, -hw)], [corner(-hl, -hw), corner(-hl, hw)]]) {
+      framedWall(out, materials, p[0], p[1], q[0], q[1], y0 + 0.1, y1);
     }
   }
   if (c.kind === "lift") {
@@ -265,18 +299,71 @@ function core(out, materials, plan, c) {
   }
 }
 
+/* ---------- the entrances ---------- */
+
+// A door in its frame, at (x, z) on the ground, in a wall whose way out is (nx, nz).
+function doorway(out, materials, x, z, nx, nz, width) {
+  const tx = nz, tz = -nx; // (along the wall)
+  out.add(materials.door, [x, 1.1, z], [width - 0.16, 2.2, 0.08], tx, tz);
+  for (const side of [-width / 2, width / 2]) out.add(materials.wood, [x + tx * side, 1.18, z + tz * side], [0.12, 2.36, 0.2], tx, tz);
+  out.add(materials.wood, [x, 2.32, z], [width + 0.12, 0.14, 0.2], tx, tz);
+}
+
+// Where each entrance stands on the building's real face: [{ x, z, nx, nz, width }]. The plan puts them on the walls of the
+// tunnels' coarse height map, which can be well in front of or behind the massing itself, so each is moved along its way out
+// to the nearest face of `meshes` (the massings), and turned to lie flat on it.
+export function placeEntrances(plan, meshes) {
+  const ray = new THREE.Raycaster(), from = new THREE.Vector3(), way = new THREE.Vector3(), normal = new THREE.Vector3(), REACH = 4;
+  return (plan.parts ?? [plan]).flatMap((part) => part.entrances.map((e) => {
+    from.set(e.x + e.nx * REACH, 1.1, e.z + e.nz * REACH);
+    ray.set(from, way.set(-e.nx, 0, -e.nz).normalize());
+    ray.far = 2 * REACH;
+    let best = null;
+    for (const hit of ray.intersectObjects(meshes, false)) if (!best || Math.abs(hit.distance - REACH) < Math.abs(best.distance - REACH)) best = hit;
+    let nx = e.nx, nz = e.nz, x = e.x, z = e.z;
+    if (best) {
+      normal.copy(best.face.normal).transformDirection(best.object.matrixWorld);
+      if (normal.dot(way) > 0) normal.negate(); // (turned to face out)
+      const flat = Math.hypot(normal.x, normal.z);
+      if (flat > 0.5) { nx = normal.x / flat; nz = normal.z / flat; }
+      x = best.point.x + nx * 0.03;
+      z = best.point.z + nz * 0.03;
+    }
+    return { x, z, nx, nz, width: part.grid.width };
+  }));
+}
+
+export function buildEntrances(entrances, materials) {
+  const out = boxes();
+  for (const e of entrances) doorway(out, materials, e.x, e.z, e.nx, e.nz, e.width);
+  return out.build();
+}
+
+// Takes out of a facade (a geometry with its own corners for every triangle) the panels standing in front of the
+// entrances: every triangle that reaches into the way in. Returns a new geometry.
+export function clearEntrances(geometry, entrances) {
+  const position = geometry.attributes.position, keep = [];
+  const inWay = (i) => entrances.some((e) => {
+    const dx = position.getX(i) - e.x, dz = position.getZ(i) - e.z, out = dx * e.nx + dz * e.nz, along = dx * e.nz - dz * e.nx;
+    return out > -0.6 && out < 2.5 && Math.abs(along) < e.width / 2 + 0.1 && position.getY(i) < 2.45;
+  });
+  for (let i = 0; i + 2 < position.count; i += 3) if (!inWay(i) && !inWay(i + 1) && !inWay(i + 2)) keep.push(i, i + 1, i + 2);
+  const cleared = new THREE.BufferGeometry();
+  for (const [name, attribute] of Object.entries(geometry.attributes)) {
+    const size = attribute.itemSize, values = new Float32Array(keep.length * size);
+    keep.forEach((from, to) => { for (let k = 0; k < size; k++) values[to * size + k] = attribute.array[from * size + k]; });
+    cleared.setAttribute(name, new THREE.BufferAttribute(values, size));
+  }
+  return cleared;
+}
+
 // The circulation that is joined to an entrance: hallways, cores and doors. `plan` is circulation/structures.js's.
 export function buildFraming(plan, materials) {
   const out = boxes();
   for (const part of plan.parts ?? [plan]) {
     for (const floor of part.floors) if (floor?.mask) hallwayFloor(out, materials, part, floor);
     for (const c of part.cores) if (c.connected !== false) core(out, materials, part, c);
-    for (const e of part.entrances) {
-      const w = part.grid.width, tx = e.nz, tz = -e.nx; // (along the wall)
-      out.add(materials.door, [e.x, 1.1, e.z], [w - 0.16, 2.2, 0.08], tx, tz);
-      for (const side of [-w / 2, w / 2]) out.add(materials.wood, [e.x + tx * side, 1.18, e.z + tz * side], [0.12, 2.36, 0.2], tx, tz);
-      out.add(materials.wood, [e.x, 2.32, e.z], [w + 0.12, 0.14, 0.2], tx, tz);
-    }
+    for (const e of part.entrances) doorway(out, materials, e.x, e.z, e.nx, e.nz, part.grid.width);
   }
   return out.build();
 }

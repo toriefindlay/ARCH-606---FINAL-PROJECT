@@ -364,38 +364,22 @@ function instances(geometry, material, items, tint) {
 
 function buildTrees(features, R, where) {
   const rand = randomiser(41), broad = [], tall = [], shrubs = [], taken = new Set();
-  const place = (x, z, cypressShare, scale = 1) => {
+  const place = (x, z, cypressShare) => {
     if (broad.length + tall.length >= MAX_TREES || Math.hypot(x, z) > R - 4) return;
-    if (where.blocked(x, z) || where.nearMass(x, z, 5)) return;
+    if (!where.green(x, z) || where.blocked(x, z) || where.nearMass(x, z, 5)) return;
     const key = `${Math.round(x / 3.6)},${Math.round(z / 3.6)}`;
     if (taken.has(key)) return;
     taken.add(key);
-    const tree = { x, z, turn: rand() * 7, s: scale * (0.65 + rand() * 0.6), tall: 0.85 + rand() * 0.35 };
+    const tree = { x, z, turn: rand() * 7, s: 0.65 + rand() * 0.6, tall: 0.85 + rand() * 0.35 };
     (rand() < cypressShare ? tall : broad).push(tree);
     if (rand() < 0.5) shrubs.push({ x: x + (rand() - 0.5) * 5, z: z + (rand() - 0.5) * 5, turn: rand() * 7, s: 0.18 + rand() * 0.2 });
   };
-  // along the streets, at the back of the pavement
-  for (const road of features.roads) {
-    const off = roadWidth(road.kind) / 2 + PAVEMENT - 0.5;
-    for (let i = 0; i + 1 < road.pts.length; i++) {
-      const p = road.pts[i], q = road.pts[i + 1], dx = q.x - p.x, dz = -(q.y - p.y), len = Math.hypot(dx, dz);
-      for (let s = 4; s < len; s += 11) {
-        for (const side of [-1, 1]) {
-          if (rand() < 0.45) continue;
-          place(p.x + (dx / len) * s - (dz / len) * off * side, -p.y + (dz / len) * s + (dx / len) * off * side, 0.2, 0.75);
-        }
-      }
-    }
-  }
-  // thick in parks and gardens, thinner in the open ground between buildings (nearest the site first)
+  // only in the map's green spaces (parks, gardens, grass, woods), nearest the site first
   const step = 5.5, spots = [];
   for (let x = -R; x < R; x += step) for (let z = -R; z < R; z += step) spots.push([x + (rand() - 0.5) * step, z + (rand() - 0.5) * step]);
   spots.sort((a, b) => Math.hypot(...a) - Math.hypot(...b));
-  for (const [x, z] of spots) {
-    const park = where.green(x, z);
-    if (rand() < (park ? 0.6 : 0.2)) place(x, z, park ? 0.15 : 0.28, park ? 1 : 0.85);
-  }
-  for (const s of shrubs.splice(0)) if (!where.blocked(s.x, s.z) && !where.nearMass(s.x, s.z, 3)) shrubs.push({ ...s, y: -s.s * 2.6 });
+  for (const [x, z] of spots) if (rand() < 0.6) place(x, z, 0.15);
+  for (const s of shrubs.splice(0)) if (where.green(s.x, s.z) && !where.blocked(s.x, s.z) && !where.nearMass(s.x, s.z, 3)) shrubs.push({ ...s, y: -s.s * 2.6 });
 
   const group = new THREE.Group();
   const leaf = (c) => new THREE.MeshStandardMaterial({ color: c, vertexColors: true, roughness: 0.95, side: THREE.DoubleSide });

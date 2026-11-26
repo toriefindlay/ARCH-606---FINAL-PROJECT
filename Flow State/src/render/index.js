@@ -14,7 +14,7 @@ import { createForm } from "../erosion/exterior/form.js";
 import { getFacade } from "../facades/index.js";
 import { createMaterials, worldUV } from "./materials.js";
 import { buildSurroundings } from "./surroundings.js";
-import { buildDucts, buildFraming, buildOutline } from "./systems.js";
+import { buildDucts, buildLiners, buildFraming, buildOutline, placeEntrances, buildEntrances, clearEntrances } from "./systems.js";
 import { createStudio } from "./studio.js";
 
 let view = null; // { studio, parts, canvas, recorder }
@@ -57,18 +57,26 @@ function build(studio, source) {
 
   const placed = meshesUnder(mass.object);
   const skin = tunnels ? shown.skin : null;
-  for (const m of skin ? [skin] : placed) addMesh(envelope, m, materials.concrete);
-  // where the tunnels meet the outside, their linings are the same metal as the ducts
-  const linings = new THREE.Group();
-  if (tunnels && shown.walls && skin) addMesh(linings, shown.walls, materials.metal);
-  envelope.add(linings);
+  // The working view draws the skin in two pieces (the face, and what lies on the tunnels, split triangle by triangle). Here
+  // they are one concrete surface, so that the reveals of the openings match the wall, with no ragged line between them.
+  for (const m of skin ? [skin, shown.walls].filter(Boolean) : placed) addMesh(envelope, m, materials.concrete);
+  // the metal of the ducts shows as a clean round liner, set back inside every opening
+  if (tunnels && skin) {
+    const shaped = !!skin.userData.shapesKey && !skin.userData.shapesKey.startsWith("tint");
+    envelope.add(buildLiners(tunnels.network().edges, tunnels.openings(), shaped, materials));
+  }
+  // of the circulation, the whole building shows only its ground-floor entrances: the hallways and stairs would stand out
+  // wherever the skin cuts across them
+  const entrances = plan ? placeEntrances(plan, placed) : [];
   if (facade.mesh) {
-    const panels = new THREE.Mesh(facade.mesh.geometry.clone(), materials.facade(style));
     facade.mesh.updateWorldMatrix(true, false);
-    panels.geometry.applyMatrix4(facade.mesh.matrixWorld);
+    const whole = facade.mesh.geometry.clone().applyMatrix4(facade.mesh.matrixWorld);
+    const panels = new THREE.Mesh(clearEntrances(whole, entrances), materials.facade(style));
+    whole.dispose();
     panels.castShadow = panels.receiveShadow = true;
     envelope.add(panels);
   }
+  if (entrances.length) envelope.add(buildEntrances(entrances, materials));
 
   const form = createForm(mass);
   const heightAt = (x, z) => form?.heightAt(x, z) ?? 0;
@@ -80,15 +88,13 @@ function build(studio, source) {
   outlines.forEach((g) => g.dispose());
 
   const { ground, context } = buildSurroundings(state.features, state.site.radius, (x, z) => heightAt(x, z) > 0.5, mass.bounds);
-  // (in the full building the ducts are left out: they would stand inside the tunnels' own linings and crowd the openings.
-  // The framing stays, and shows where the hallways cut through the walls.)
-  const ducts = tunnels ? interior.children[0] : null;
+  // (`interior`, the ducts and the framing, belongs to the view of the systems alone: see showMode)
   studio.scene.add(ground, context, envelope, interior, outline);
   // (only metals mirror the bright sky strongly: on everything else it would wash out the sun's light and shade)
   studio.scene.traverse((o) => {
     for (const m of [o.material].flat()) if (m?.isMeshStandardMaterial && m.metalness < 0.5) m.envMapIntensity = 0.45;
   });
-  return { envelope, interior, outline, context, ducts };
+  return { envelope, interior, outline, context };
 }
 
 function showMode(mode) {
@@ -96,7 +102,7 @@ function showMode(mode) {
   const systems = mode === "systems";
   parts.envelope.visible = !systems;
   parts.outline.visible = systems && $("render-outline").checked;
-  if (parts.ducts) parts.ducts.visible = systems;
+  parts.interior.visible = systems;
   $("render-outline-label").classList.toggle("hidden", !systems);
   for (const b of document.querySelectorAll("[data-render-mode]")) b.classList.toggle("on", b.dataset.renderMode === mode);
   view.mode = mode;
@@ -104,6 +110,8 @@ function showMode(mode) {
 }
 
 function setOrbit(on) {
+  if (on) view.studio.whenRefined(null); // (a picture that was to be saved is given up: it can't be refined while orbiting)
+  if (on && $("render-note").textContent.startsWith("Saving the picture")) $("render-note").textContent = "Image not saved.";
   view.studio.setOrbit(on);
   $("render-orbit").textContent = on ? "Pause orbit" : "Play orbit";
 }
@@ -119,10 +127,21 @@ function download(blob, name) {
   setTimeout(() => URL.revokeObjectURL(url), 5000);
 }
 
+// Pauses the orbit and saves the view as it stands, once it is refined.
 function saveImage() {
   if (view.studio.orbiting) setOrbit(false);
-  view.saveWhenRefined = true;
-  $("render-note").textContent = "The picture will be saved once it has been refined. Keep the camera still.";
+  const current = view;
+  $("render-note").textContent = "Saving the picture once it is refined. The camera is held until then.";
+  current.studio.whenRefined(() => {
+    const name = `${siteName()}-render-${current.mode}.png`;
+    // (called straight after the frame is drawn, so the canvas holds the finished picture)
+    current.canvas.toBlob((blob) => {
+      if (view !== current) return;
+      if (!blob) return ($("render-note").textContent = "The image couldn't be made. Try a smaller window.");
+      download(blob, name);
+      $("render-note").textContent = `Saved ${name} to your downloads.`;
+    }, "image/png");
+  });
 }
 
 // Records the canvas through one whole orbit, as it plays.
@@ -171,15 +190,9 @@ async function open() {
     const box = source.mass.bounds, across = box.getSize(new THREE.Vector3());
     const focus = { centre: new THREE.Vector3((box.min.x + box.max.x) / 2, across.y * 0.42, (box.min.z + box.max.z) / 2), size: Math.max(across.x, across.z, across.y * 1.4) };
     studio = createStudio(canvas, focus, (text) => {
-      $("render-status").textContent = text;
-      if (view?.saveWhenRefined && view.studio.refined) {
-        view.saveWhenRefined = false;
-        const name = `${siteName()}-render-${view.mode}.png`;
-        canvas.toBlob((blob) => download(blob, name), "image/png");
-        $("render-note").textContent = `Saved ${name}.`;
-      }
+      if ($("render-status").textContent !== text) $("render-status").textContent = text;
     });
-    view = { studio, canvas, recorder: null, mode: "full", saveWhenRefined: false };
+    view = { studio, canvas, recorder: null, mode: "full" };
     view.parts = build(studio, source);
     $("render-projection").value = "perspective";
     $("render-surroundings").checked = true;
