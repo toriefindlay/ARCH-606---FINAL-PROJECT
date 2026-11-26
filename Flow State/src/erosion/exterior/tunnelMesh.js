@@ -63,10 +63,12 @@ export function createMeshView(uniforms, empty, dressSkin = () => {}) { // dress
   };
 
   // What a redraw makes, a slice at a time: { kind: "skin", built } for the skin, or { kind: "tunnels", ... } for the tunnels alone.
-  function* compute(tunnels, skin) {
+  // `within` (optional): { solid() } for rounded massings, whose tunnel walls are trimmed to what is really inside them: under a
+  // curved-in side the height map takes the air for stone, and the tunnels would stand out there as stubs.
+  function* compute(tunnels, skin, within = null) {
     fresh();
     if (skin) { // (once the tunnels are done)
-      const built = yield* shell.build(tunnels, skin.cuts ?? null, skin.shapes?.shape ?? null, !!skin.shapes);
+      const built = yield* shell.build(tunnels, skin.cuts ?? null, skin.shapes?.shape ?? null, !!skin.shapes, skin.surface ?? null);
       if (built) return { kind: "skin", built, shapes: skin.shapes ?? null };
     }
     const { massBox } = tunnels, { edges } = tunnels.network();
@@ -105,9 +107,20 @@ export function createMeshView(uniforms, empty, dressSkin = () => {}) { // dress
     if (due()) { yield; fresh(); }
     // the walls: marching cubes on the finer field, only what lies inside the mass (the ends of the tunnels that reach out of a wall are left open)
     const g = { nx: fnx, nz: fnz, ny: fny, ox, oy: 0, oz, fc }, geo = { position: [], normal: [] };
+    const solid = within?.solid() ?? null, columns = new Map();
+    const crossings = (x, z) => {
+      const key = `${Math.round(x * 20)},${Math.round(z * 20)}`;
+      let found = columns.get(key);
+      if (!found) columns.set(key, (found = solid.crossings(x, z)));
+      return found;
+    };
+    const trim = 0.3 * fc; // (the walls stop just short of the surface, so that no ragged end shows beyond it)
     yield* march(field, g, ISO, 0, (ca, cm, cb) => {
       const cx = ox + (ca + 0.5) * fc, cy = (cm + 0.5) * fc, cz = oz + (cb + 0.5) * fc;
-      return tunnels.heightAt(cx, cz) < cy - 0.1 || cy < 0.2 ? null : geo; // (and nothing below the ground)
+      if (cy < 0.2) return null; // (nothing below the ground)
+      if (!solid) return tunnels.heightAt(cx, cz) < cy - 0.1 ? null : geo;
+      for (const [u, v] of [[0, 0], [trim, 0], [-trim, 0], [0, trim], [0, -trim]]) if (!solid.insideAt(crossings(cx + u, cz + v), cy)) return null;
+      return solid.insideAt(crossings(cx, cz), cy + trim) && solid.insideAt(crossings(cx, cz), Math.max(0.05, cy - trim)) ? geo : null;
     });
     return { kind: "tunnels", g, bytes, geo };
   }
@@ -145,6 +158,8 @@ export function createMeshView(uniforms, empty, dressSkin = () => {}) { // dress
 
   return {
     clear,
+    // What is drawn now, for exporting: the skin (or null), the tunnels' walls (or null), and whether a redraw is under way.
+    meshes: () => ({ skin: skinMesh, walls: mesh, busy: !!job }),
     // Shows or hides the tunnels' walls (cheap to call every frame). Hidden, they are still worked out, so showing them again is instant.
     setVisible(on) {
       visible = !!on;
@@ -156,7 +171,7 @@ export function createMeshView(uniforms, empty, dressSkin = () => {}) { // dress
     // `skin` ({ cuts: the circulation's hallways as boxes, cutsKey: says when they have changed }, optional) gives the outside of the mass its skin once the
     // tunnels are done (see skinShell.js): a flat facade with crisp openings and angled reveals. Without it the mass's own surface is kept, with the raw openings.
     // `lining` (a colour, or null) is for the openings and tunnels where there is no skin to carry it.
-    update(parent, tunnels, skin = null, lining = null) {
+    update(parent, tunnels, skin = null, lining = null, within = null) {
       if (!parent || !tunnels || !tunnels.carved) return clear();
       if (job && job.parent !== parent) job = null;
       if (!skin && wall) { // (without a skin the tunnels' walls take their colour at once: it needs no redraw)
@@ -165,10 +180,10 @@ export function createMeshView(uniforms, empty, dressSkin = () => {}) { // dress
         else wall.color.copy(plain);
       }
       if (!job) {
-        const key = `${tunnels.id}|${parent.id}|${tunnels.version}|${tunnels.done && skin ? `skin|${skin.cutsKey ?? ""}|${skin.shapes?.key ?? ""}` : "raw"}`;
+        const key = `${tunnels.id}|${parent.id}|${tunnels.version}|${tunnels.done && skin ? `skin|${skin.cutsKey ?? ""}|${skin.shapes?.key ?? ""}` : `raw|${within ? "trimmed" : ""}`}`;
         if (key === lastKey && group?.parent === parent) return;
         if (group?.parent === parent && performance.now() - lastTime < MIN_INTERVAL) return;
-        job = { key, parent, gen: compute(tunnels, tunnels.done ? skin : null) };
+        job = { key, parent, gen: compute(tunnels, tunnels.done ? skin : null, within) };
       }
       fresh();
       try {

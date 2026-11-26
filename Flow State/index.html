@@ -77,6 +77,9 @@
       <input type="text" id="save-name" placeholder="Name this site" maxlength="60" aria-label="Site name">
       <button id="save-site" type="button" class="tool">Save site</button>
       <p id="save-status" class="hint"></p>
+      <button type="button" id="open-render" class="tool" title="A realistic orbiting render of the building, or of its interior systems alone">Render view</button>
+      <button type="button" id="export-3dm" class="tool" title="Download the massing, wind tunnels, connected circulation and facade as separate meshes on their own layers">Export to Rhino (.3dm)</button>
+      <p id="export-status" class="hint" role="status"></p>
     </div>
     <div class="stats" id="stats"></div>
     <details id="model-panel" class="section tone-model">
@@ -109,6 +112,10 @@
     <details class="section tone-circulation">
       <summary>Circulation</summary>
       <div id="circulation-panel"></div>
+    </details>
+    <details class="section tone-structure">
+      <summary>Structure</summary>
+      <div id="structure-panel"></div>
     </details>
     <details class="section tone-cost">
       <summary>Cost savings</summary>
@@ -183,6 +190,31 @@
   </aside>
 
   <div id="dropzone" class="hidden">Drop a .3dm file to place it on the pin</div>
+
+  <!-- Render view (src/render/): covers the working view -->
+  <section id="render-view" class="hidden" aria-label="Render view">
+    <div class="render-bar">
+      <div class="render-modes" role="group" aria-label="What to show">
+        <button type="button" data-render-mode="full">Full building</button>
+        <button type="button" data-render-mode="systems">Interior systems only</button>
+      </div>
+      <select id="render-projection" aria-label="Projection">
+        <option value="perspective">Perspective</option>
+        <option value="axo">Axonometric</option>
+      </select>
+      <label><input type="checkbox" id="render-surroundings" checked> Surroundings</label>
+      <label id="render-outline-label"><input type="checkbox" id="render-outline" checked> Massing outline</label>
+      <label id="render-structure-label"><input type="checkbox" id="render-structure" checked> Structure</label>
+      <button type="button" id="render-orbit">Pause orbit</button>
+      <button type="button" id="render-save">Save image</button>
+      <button type="button" id="render-record">Record orbit</button>
+      <button type="button" id="render-close">Close</button>
+    </div>
+    <div class="render-foot">
+      <p id="render-status" role="status"></p>
+      <p id="render-note"></p>
+    </div>
+  </section>
 
   <script type="module" src="src/main.js"></script>
 </body>

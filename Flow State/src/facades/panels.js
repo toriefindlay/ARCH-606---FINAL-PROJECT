@@ -106,7 +106,8 @@ function triangular(out, wall, size) {
         const ys = corners.map((p) => p[1]);
         if (Math.max(...ys) <= wall.y0 + 0.05 || Math.min(...ys) >= wall.y1 - 0.05) continue;
         const cu = (corners[0][0] + corners[1][0] + corners[2][0]) / 3, cy = (corners[0][1] + corners[1][1] + corners[2][1]) / 3;
-        if (wall.curved && !wall.covers(cu, cy)) continue; // (on a rounded massing: only the shades on this view's part of it)
+        // (on a rounded massing: only the shades on this view's own part of it, and only where the surface carries on under all of one)
+        if (wall.curved && (!wall.owns(cu, cy) || !wall.whole(cu, cy, corners))) continue;
         const open = openness(key, cu, cy);
         const fold = 0.97 - 0.79 * open; // how far each sail's tip is from its side towards the middle
         const reach = (0.42 + 0.48 * open) * size, base = 0.14; // how far the tips stand out
@@ -126,9 +127,12 @@ function triangular(out, wall, size) {
 }
 /* ---------- organic: a flowing web ---------- */
 
-// A web of thick, curving white ribs: the borders between irregular cells, bent by a slow warp, swelling out from the wall in
-// places. A tunnel opening is one of its cells, made larger, so the ribs flow round it. One web wraps right round each
-// massing. Drawn on a fine grid, with smooth outlines and sides.
+// A web of broad, curving white ribs: the borders between irregular cells, bent by a slow warp, lying flush on the wall: a
+// thin, even layer, so that the wall, the roof's edge and the corners line up with it. A tunnel opening is one of its cells,
+// made larger, so the ribs flow round it. One web wraps right round each massing. Drawn on a fine grid, with smooth
+// outlines and sides.
+const FLUSH = 0.1; // m: how far the ribs' faces stand from the wall (at every panel size)
+const BEDDED = 0.03; // m: how far their sides run back into the wall, so that no gap shows behind them where it is not quite flat
 function organic(out, wall, size) {
   const ring = ringOf(wall.side.f), ribs = wall.web ?? web(size, wall.massing, ring.length, []);
   const H = wall.nominal, height = wall.side.f.height, top = Math.abs(wall.y1 - height) < 0.6 ? Math.min(wall.y1, height) : wall.y1;
@@ -161,8 +165,6 @@ function organic(out, wall, size) {
     }
   }
   const white = hex(0xeceae6), side = hex(0xc9c6c0);
-  // the rib's front: rounded off towards its edges, and swelling out in broad patches
-  const front = (p) => size * (0.4 + 0.65 * ribs.swell(p.s, p.y)) * (0.72 + 0.28 * smooth(-p.g / (0.24 * size)));
   // `d` out from the wall; at a corner the point also moves along the wall by as much (a mitre), so that both walls reach it
   const put = (p, d) => wall.point(p.u + p.lean * d, p.y, p.at, d);
   for (let j = 0; j < ny; j++) {
@@ -184,11 +186,11 @@ function organic(out, wall, size) {
         }
       }
       if (inside.length < 3) continue;
-      const tops = inside.map((p) => put(p, front(p)));
+      const tops = inside.map((p) => put(p, FLUSH));
       for (let n = 1; n + 1 < tops.length; n++) out.tri(tops[0], tops[n], tops[n + 1], white);
       for (let n = 0; n < inside.length; n++) { // the rib's sides, along the outline
         const m = (n + 1) % inside.length, p = inside[n], q = inside[m];
-        if (cuts.includes(p) && cuts.includes(q) && p.leaving) out.quad(tops[n], tops[m], put(q, 0.03), put(p, 0.03), side);
+        if (cuts.includes(p) && cuts.includes(q) && p.leaving) out.quad(tops[n], tops[m], put(q, -BEDDED), put(p, -BEDDED), side);
       }
     }
   }

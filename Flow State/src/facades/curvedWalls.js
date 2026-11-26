@@ -6,13 +6,18 @@
 // (walls.js); each of its points is then set on the surface found there and stands out along the surface's own normal, so the
 // panels follow the curves. The views give walls that the panel designs can use like any other.
 
+import { outward } from "../core/solid.js";
+
 const CELL = 0.35; // m: the grid of each view
 const MAX_CELLS = 160000; // per view (made coarser above that)
 const FACING = 0.3; // a surface turned further than this from a view (the cosine) is not read by it
 const SEAM = 2; // cells a view reaches past the part it faces most, so that neighbouring views meet without a gap
+const STRETCH = 2.2; // a panel is not laid where the surface is this many times longer than its flat design...
+const TURN = 0.45; // ...or turns further than this from its middle to an end (the cosine)
 
-// frames and triangles: as readWalls (walls.js). tunnels: the finished tunnels (tunnels.js), or null.
-export function readCurvedWalls(frames, triangles, tunnels = null) {
+// frames and triangles: as readWalls (walls.js). tunnels: the finished tunnels (tunnels.js), or null. solid: what is inside
+// the massings (core/solid.js).
+export function readCurvedWalls(frames, triangles, tunnels = null, solid = null) {
   const massings = frames.map((f, index) => {
     const cos = Math.cos(f.turn), sin = Math.sin(f.turn);
     return { f, index, cos, sin, local: (x, z) => { const dx = x - f.x, dz = z - f.z; return [dx * cos - dz * sin, dx * sin + dz * cos]; }, found: [[], [], [], [], []] };
@@ -37,10 +42,12 @@ export function readCurvedWalls(frames, triangles, tunnels = null) {
     const m = nearest((ax + bx + cx) / 3, (az + bz + cz) / 3);
     const p = [m.local(ax, az), m.local(bx, bz), m.local(cx, cz)], ys = [ay, by, cy];
     let lnx = nx * m.cos - nz * m.sin, lnz = nx * m.sin + nz * m.cos;
-    // The normal is turned to point out of the massing: upwards where it leans at all, away from the middle where it is
-    // upright (a mesh's own winding cannot be relied on).
-    const mx = (p[0][0] + p[1][0] + p[2][0]) / 3, mz = (p[0][1] + p[1][1] + p[2][1]) / 3;
-    if (Math.abs(ny) > 0.08 ? ny < 0 : lnx * mx + lnz * mz < 0) { ny = -ny; lnx = -lnx; lnz = -lnz; }
+    // The normal is turned to point out of the massings (a mesh's own winding cannot be relied on): this is asked of the
+    // massings themselves, as under the curved-in side of a rounded form the way out is downwards. A surface buried inside
+    // them (where two overlap) is left out.
+    const way = outward(solid, (ax + bx + cx) / 3, (ay + by + cy) / 3, (az + bz + cz) / 3, nx, ny, nz);
+    if (!way) return;
+    if (way < 0) { ny = -ny; lnx = -lnx; lnz = -lnz; }
     const towards = [lnx, -lnx, lnz, -lnz, ny]; // the views: from +x, -x, +z, -z, and above
     const most = Math.max(...towards);
     for (let view = 0; view < 5; view++) {
@@ -131,6 +138,12 @@ function makeView(m, view, list, edges) {
     const i = Math.round((u - u0) / g), j = Math.round((y - y0) / g);
     return i >= 0 && j >= 0 && i < nu && j < ny && given[j * nu + i] === 1;
   };
+  // is (u, y) in the part that faces this view most? A panel belongs to the view that owns its middle, so that two views
+  // never both put one in the same place.
+  const owns = (u, y) => {
+    const i = Math.round((u - u0) / g), j = Math.round((y - y0) / g);
+    return i >= 0 && j >= 0 && i < nu && j < ny && mine[j * nu + i] === 1;
+  };
   const { f, cos, sin } = m, sign = view % 2 ? -1 : 1, top = view === 4;
   // the point on the surface at (u, y), in the massing's own directions: [x, y, z]
   const place = (u, y, w) => (top ? [u, w, y - f.halfZ - 1] : view < 2 ? [sign * w, y, u] : [u, y, sign * w]);
@@ -150,6 +163,24 @@ function makeView(m, view, list, edges) {
     u0, u1, y0, y1, openings: [], taken: new Set(),
     corner: () => null,
     covers,
+    owns,
+    // Does the surface carry on smoothly from (u, y) to every one of `points` ([u, y])? Not where it jumps to another part
+    // of the massings further in or out, or turns sharply away: a panel laid across such a place would be stretched out
+    // into long slivers.
+    whole(u, y, points) {
+      const here = surface(u, y), from = wall.surfacePoint(u, y);
+      return points.every(([pu, py]) => {
+        // (looked at part of the way too, so that a gap between the two ends is not stepped over)
+        let last = from, lastU = u, lastY = y;
+        for (let s = 1; s <= 3; s++) {
+          const qu = u + ((pu - u) * s) / 3, qy = y + ((py - y) * s) / 3, at = wall.surfacePoint(qu, qy);
+          if (Math.hypot(at[0] - last[0], at[1] - last[1], at[2] - last[2]) > STRETCH * Math.hypot(qu - lastU, qy - lastY) + 0.2) return false;
+          last = at; lastU = qu; lastY = qy;
+        }
+        const n = surface(pu, py).n;
+        return here.n[0] * n[0] + here.n[1] * n[1] + here.n[2] * n[2] > TURN;
+      });
+    },
     depth: (u, y) => (covers(u, y) ? surface(u, y).w : null),
     face: (u, y) => (covers(u, y) ? surface(u, y).w : null),
     carried: (u, y) => surface(u, y).w,

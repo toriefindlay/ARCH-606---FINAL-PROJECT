@@ -11,6 +11,7 @@
 // Everything is done a slice at a time (generators, see marching.js) so that no frame is held up by it.
 import { distance3d } from "./distance.js";
 import { march, fresh, due } from "./marching.js";
+import { exactHeights, exactDistance } from "./exactMass.js";
 
 const INF = 1e20;
 const MAX_CELLS = 1.5e6; // cells of the grid at most (a grid of about half a metre is enough, and quick)
@@ -161,8 +162,8 @@ function sharpen({ position: p, normal: n }, degrees) {
 export function createSkinShell() {
   let cache = null; // what is kept while the tunnels stay the same: the grid, the mass's distance field, the tunnels' field
 
-  function* prepare(tunnels) {
-    const key = `${tunnels.id}|${tunnels.version}`;
+  function* prepare(tunnels, surface) {
+    const key = `${tunnels.id}|${tunnels.version}|${surface ? "exact" : "coarse"}`;
     if (cache?.key === key) return cache;
     cache = null;
     const openings = tunnels.openings();
@@ -177,11 +178,14 @@ export function createSkinShell() {
     const at = (a, m, b) => (m * nz + b) * nx + a;
 
     // the mass as placed: solid below its height at every column, and on down below the ground under it (but not under the open ground beside
-    // it, whose top would show as a lip round the foot of the walls), then its signed distance
+    // it, whose top would show as a lip round the foot of the walls), then its signed distance. Where the massings' triangles are given (`surface`), both
+    // come from them, so that the skin lies on their faces (see exactMass.js); without them, from the tunnels' coarse height map
+    const tris = surface?.() ?? null;
+    const heights = tris ? yield* exactHeights(tris, g) : null;
     const solid = new Uint8Array(N), grid = new Float32Array(N), phi = new Float32Array(N);
     for (let b = 0; b < nz; b++) {
       for (let a = 0; a < nx; a++) {
-        const h = tunnels.heightAt(ox + (a + 0.5) * fc, oz + (b + 0.5) * fc);
+        const h = heights ? heights[b * nx + a] : tunnels.heightAt(ox + (a + 0.5) * fc, oz + (b + 0.5) * fc);
         for (let m = 0; m < ny; m++) {
           const y = oy + (m + 0.5) * fc;
           if (h > Math.max(0, y)) solid[at(a, m, b)] = 1;
@@ -197,6 +201,7 @@ export function createSkinShell() {
     distance3d(grid, nx, nz, ny);
     for (let k = 0; k < N; k++) if (solid[k]) phi[k] = -Math.min(LIMIT, (Math.sqrt(grid[k]) - 0.5) * fc);
     yield; fresh();
+    if (tris) yield* exactDistance(tris, phi, g);
 
     // the tunnels: the distance to the nearest tube's surface (negative inside), near them only
     const tun = new Float32Array(N).fill(99);
@@ -232,8 +237,9 @@ export function createSkinShell() {
     // x and z): the skin is cut along the outline of every one that reaches it (see below).
     // `shaper` (optional) is a function of the openings that returns their shapes (see SHAPED OPENINGS), or null for the round ones.
     // `fine` tells the inside of the openings from the face as finely as for shaped ones, for openings that are given a colour of their own.
-    *build(tunnels, cuts = null, shaper = null, fine = false) {
-      const c = yield* prepare(tunnels);
+    // `surface` (optional) is a function giving the massings' own triangles (a flat array of world positions): see prepare.
+    *build(tunnels, cuts = null, shaper = null, fine = false, surface = null) {
+      const c = yield* prepare(tunnels, surface);
       if (!c) return null;
       const { g, phi, tun, openings, fun, tmp, sh } = c, { ox, oy, oz, fc, nx, nz, ny } = g;
       const at = (a, m, b) => (m * nz + b) * nx + a;

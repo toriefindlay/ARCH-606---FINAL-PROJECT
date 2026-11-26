@@ -71,6 +71,8 @@ export function createCirculationView() {
     const shaft = new THREE.Mesh(new THREE.BoxGeometry(Lx, H, Lz), new THREE.MeshLambertMaterial({ color: CORE_COLOUR, transparent: true, opacity: 0.16, side: THREE.DoubleSide, depthWrite: false }));
     shaft.position.y = y0 + H / 2;
     shaft.renderOrder = 8;
+    shaft.userData.noExport = true; // (only a see-through marker of where the core is: it would hide the stair in an export)
+    gr.userData.noExport = c.connected === false; // (the export holds only what is joined to an entrance)
     gr.add(shaft);
     const edges = new THREE.LineSegments(new THREE.EdgesGeometry(shaft.geometry), new THREE.LineBasicMaterial({ color: CORE_COLOUR }));
     edges.position.copy(shaft.position);
@@ -127,6 +129,7 @@ export function createCirculationView() {
     const arrow = new THREE.Mesh(new THREE.ConeGeometry(0.45, 1.2, 16), mat);
     arrow.rotation.x = Math.PI / 2; // (the cone's tip along +z, then turned to the way out below)
     arrow.position.set(0, 1.1, 1.0);
+    arrow.userData.noExport = true; // (a sign, not part of the building)
     gr.add(arrow);
     gr.position.set(e.x, 0, e.z);
     gr.rotation.y = Math.atan2(e.nx, e.nz); // (its +z along the way out)
@@ -147,6 +150,7 @@ export function createCirculationView() {
       for (const one of plan.parts ?? [plan]) { // (each structure's plan has its own grid)
         const h = hallways(one);
         halls.push(h);
+        h.detached.userData.noExport = true; // (cut off from every entrance)
         group.add(h.mask, h.detached);
         for (const c of one.cores) group.add(core(one, c));
         for (const e of one.entrances) group.add(door(one, e));

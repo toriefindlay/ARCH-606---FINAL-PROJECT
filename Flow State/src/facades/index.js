@@ -16,6 +16,8 @@ import { PANELS, createMeshData } from "./panels.js";
 import { readWalls as readPlainWalls } from "./plainWalls.js";
 import { PLAIN_PANELS } from "./plainPanels.js";
 import { readCurvedWalls } from "./curvedWalls.js";
+import { curvedWeb } from "./curvedWeb.js";
+import { createSolid, meshTriangles } from "../core/solid.js";
 import { findFaces, faceWalls } from "./faceWalls.js";
 import { triangleGrid } from "./openings.js";
 
@@ -127,9 +129,12 @@ function markShadesOver(openings, size) {
 function buildPanels(frames, skin, tunnels) {
   const size = sizeNow() / 100;
   const data = createMeshData(), triangles = surfaceTriangles(skin), openings = tunnels?.openings() ?? [];
-  if (hasRoundedMass()) {
+  const rounded = hasRoundedMass() ? meshTriangles(getMassInfo().object, THREE.Vector3) : null, solid = rounded ? createSolid(rounded) : null;
+  if (rounded && settings.style === "organic") { // (one web all over the surface: see curvedWeb.js)
+    curvedWeb(data, rounded, solid, tunnels?.network().edges ?? [], size);
+  } else if (rounded) {
     const draw = PLAIN_PANELS[settings.style] ?? PANELS[settings.style];
-    for (const wall of readCurvedWalls(frames, triangles, tunnels)) {
+    for (const wall of readCurvedWalls(frames, triangles, tunnels, solid)) {
       if (settings.style === "triangle") markShadesOver(wall.openings, size);
       draw(data, wall, size);
     }
@@ -195,7 +200,7 @@ function panelFrame() {
     return setNote(shaped ? "Shaping the tunnel openings to the panels…" : "Cutting the tunnel openings again…");
   }
   const key = `${settings.style}|${sizeNow()}|${placed}|${skin?.geometry.uuid ?? "mass"}|${tunnels ? `${tunnels.id}:${tunnels.version}` : ""}`;
-  if (key === builtKey && mesh) { mesh.visible = true; return setNote(""); }
+  if (key === builtKey && mesh) { wantKey = key; mesh.visible = true; return setNote(""); }
   if (key !== wantKey) {
     wantKey = key;
     wantSince = performance.now();
@@ -212,6 +217,12 @@ function panelFrame() {
     setNote("The panels could not be made (see the console).");
   }
   builtKey = key; // (a failure is not retried until something changes)
+}
+
+// The facade's panels for exporting: { mesh (or null), pending (a facade is chosen and its panels are about to be made) }.
+export function getFacade() {
+  const chosen = settings.style !== "none";
+  return { mesh: chosen && mesh?.visible ? mesh : null, pending: chosen && !!wantKey && wantKey !== builtKey };
 }
 
 function mountFacades() {

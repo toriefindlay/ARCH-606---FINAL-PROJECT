@@ -97,11 +97,11 @@ export function ringOf({ halfX, halfZ }) {
 // The web of one massing, wrapped right round it so that it carries on round every corner: cells round points scattered on a
 // loose grid and bent by a slow warp, with one larger cell for each opening ({ s: along the ring, y, r }) in place of the
 // points close to it. In (s along the ring, y up): rib(s, y) is below 0 inside a rib; hole(i, s, y) below 0 inside
-// opening i; swell(s, y) is 0 to 1, how far the ribs stand out there. All repeat after one way round.
+// opening i. Both repeat after one way round.
 export function web(size, massing, length, openings) {
   const columns = Math.max(3, Math.round(length / (4.4 * size))), cw = length / columns, ch = 3.9 * size, seed = massing * 69.2;
   const turns = (scale) => (2 * Math.PI * Math.max(1, Math.round(length * scale / (2 * Math.PI)))) / length; // (waves that fit a whole number of times round)
-  const k1 = turns(1 / (5.1 * size)), k2 = turns(1 / (3.9 * size)), kThick = turns(0.19), kSwell = turns(0.23);
+  const k1 = turns(1 / (5.1 * size)), k2 = turns(1 / (3.9 * size)), kThick = turns(0.19);
   const gap = (d) => d - length * Math.round(d / length); // the shorter way round between two places
   const warp = (s, y) => [
     s + size * 1.5 * Math.sin(y / (2.7 * size) + 1.3 * Math.sin(k1 * s) + seed),
@@ -152,7 +152,6 @@ export function web(size, massing, length, openings) {
       const cell = which === i ? thick(s, y) - (second - first) / 2 : thick(s, y) + 0.3;
       return Math.min(cell, clearance(i, s, y));
     },
-    swell: (s, y) => 0.5 + 0.5 * Math.sin(kSwell * s + 1.6 * Math.sin(y * 0.31 + seed)),
   };
 }
 

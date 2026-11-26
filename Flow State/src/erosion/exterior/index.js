@@ -1,3 +1,5 @@
+import * as THREE from "three";
+import { createSolid, meshTriangles } from "../../core/solid.js";
 import { $ } from "../../core/dom.js";
 import { on } from "../../core/events.js";
 import { state, layers } from "../../core/state.js";
@@ -217,8 +219,15 @@ function tunnelShowFrame(force = false) {
   // massing keeps its own surface, and the openings are cut in that)
   const rounded = hasRoundedMass();
   setRounded(rounded);
-  if (t) tunnelView.update(layers.model, t, rounded ? null : { cuts: skinCuts, cutsKey: skinCutsKey, shapes: skinShapes }, skinShapes?.lining ?? null);
+  const within = rounded ? { solid: () => createSolid(meshTriangles(getMassInfo().object, THREE.Vector3)) } : null;
+  if (t) tunnelView.update(layers.model, t, rounded ? null : { cuts: skinCuts, cutsKey: skinCutsKey, shapes: skinShapes, surface: massTriangles }, skinShapes?.lining ?? null, within);
   else tunnelView.clear();
+}
+
+// The massings' own triangles in world metres (a flat array, 9 numbers each), which the skin is made to lie on.
+function massTriangles() {
+  const info = getMassInfo(), out = info ? meshTriangles(info.object, THREE.Vector3).flat() : [];
+  return out.length ? out : null;
 }
 
 // The cooling data layer (x-ray mode): a floor plan per storey shaded by cooling, once the tunnels are done and their airflow is solved.
@@ -323,6 +332,9 @@ export function setSkinShapes(shapes) {
 export function getFinishedTunnels() {
   return tunnels && form && tunnels.builtOn === form.version && tunnels.done ? tunnels : null;
 }
+
+// The skin and the tunnels' walls as drawn now (see tunnelMesh.js), for exporting.
+export const getShownMeshes = () => tunnelView.meshes();
 
 export function mountExterior() {
   particles = createWindParticles();
